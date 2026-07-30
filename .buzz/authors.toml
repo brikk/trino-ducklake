@@ -1,0 +1,14 @@
+# Buzz identity → git author mapping.
+#
+# Maps a Buzz / Nostr pubkey (hex) to the git author identity that an agent
+# commits under when that person issues the work. The pubkey is authoritative
+# for *who asked* (every Buzz event is signed); this file is authoritative for
+# *what git name/email that key commits as*. Edits are reviewed like code.
+#
+# Add yourself with a new [<hex-pubkey>] table. npub shown in the comment for
+# human readability; the table key must be the 64-char hex form.
+
+# apatrida — npub15y023zvugw4rheukx4dq26fqqq9ckmvu9qnvvmyzsqzllmyxaypqgp0wpc
+[a11ea8899c43aa3be796355a056920000b8b6d9c2826c66c828005ffec86e902]
+name  = "Jayson Minard"
+email = "jayson.minard@gmail.com"

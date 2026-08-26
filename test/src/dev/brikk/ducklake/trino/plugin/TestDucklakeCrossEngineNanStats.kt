@@ -61,6 +61,61 @@ internal class TestDucklakeCrossEngineNanStats : AbstractDucklakeCrossEngineTest
         }
     }
 
+    /**
+     * Trino-side pruning probe for the shared-catalog `float-nan-prune-guard` question: does Trino,
+     * running against the CURRENT (0.3.0) catalog that has NO NaN guard, ever return a WRONG result
+     * because a `contains_nan` file gets pruned on its NaN-excluding max?
+     *
+     * Trino's SCALAR float comparisons are IEEE (proven from `DoubleType`: `<`/`<=` are `left < right`,
+     * `>`/`>=` are the flipped `<`, `=` is `left == right`), so `nan() > 5` is FALSE and NaN never
+     * satisfies `> / >= / < / <= / =`. The RISK is the pruning path: `DucklakeSplitManager` extracts
+     * bounds from `Domain`'s `ranges.span`, which is ordered by the NaN-LAST total-ordering comparator
+     * — and a NEGATED predicate like `NOT (x <= 5)` DOES match NaN at the scalar level. If Trino pushes
+     * such a domain into `constraint.summary` and our max/min bounds prune the NaN file (files are
+     * removed from the split list and cannot be recovered), the NaN row would be silently dropped.
+     *
+     * Fixture: one file holding `1.0` and `nan()`, `contains_nan = TRUE`, min/max = [1.0, 1.0].
+     */
+    @Test
+    fun trinoNanPruningIsCorrectWithoutTheGuard() {
+        computeActual("CREATE TABLE test_schema.nan_trino (x DOUBLE)")
+        try {
+            computeActual("INSERT INTO test_schema.nan_trino VALUES (DOUBLE '1.0'), (nan())")
+            assertRowsWrittenToParquet("nan_trino")
+            assertThat(containsNanPersisted("nan_trino")).`as`("contains_nan persisted TRUE").isTrue()
+
+            val q = "SELECT count(*) FROM test_schema.nan_trino"
+
+            // Sanity: both rows are present and NaN is readable.
+            assertThat(scalarLong("$q")).`as`("total rows").isEqualTo(2L)
+            assertThat(scalarLong("$q WHERE is_nan(x)")).`as`("is_nan finds the NaN row").isEqualTo(1L)
+
+            // IEEE-satisfying predicates: NaN never matches, and the [1.0,1.0] file is correctly
+            // absent from these results whether or not it is pruned. Expected 0.
+            assertThat(scalarLong("$q WHERE x > 5")).`as`("x > 5 (NaN excluded, IEEE)").isEqualTo(0L)
+            assertThat(scalarLong("$q WHERE x >= 5")).`as`("x >= 5").isEqualTo(0L)
+
+            // THE CRITICAL CASES — NaN DOES satisfy these at the scalar level. If the file is wrongly
+            // pruned on max = 1.0 < 5, these return 0 and the guard is a real Trino correctness need.
+            assertThat(scalarLong("$q WHERE NOT (x <= 5)"))
+                    .`as`("NOT (x <= 5): NaN matches (NaN<=5 is false), must NOT be pruned away")
+                    .isEqualTo(1L)
+            assertThat(scalarLong("$q WHERE NOT (x < 5)"))
+                    .`as`("NOT (x < 5): NaN matches; 1.0 also matches (1.0<5 -> NOT -> false) -> only NaN")
+                    .isEqualTo(1L)
+            assertThat(scalarLong("$q WHERE x <> 5"))
+                    .`as`("x <> 5: both 1.0 and NaN satisfy <>")
+                    .isEqualTo(2L)
+        }
+        finally {
+            tryDropTable("test_schema.nan_trino")
+        }
+    }
+
+    /** Run a `SELECT count(*)`-shaped query and return the single long value. */
+    private fun scalarLong(sql: String): Long =
+            computeActual(sql).materializedRows[0].getField(0) as Long
+
     /** TRUE iff some active data file for `tableName` records `contains_nan = true`. */
     private fun containsNanPersisted(tableName: String): Boolean {
         val catalog = getIsolatedCatalog()

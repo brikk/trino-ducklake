@@ -1268,16 +1268,26 @@ cross-reference (see also the read-path list in `TODO-READ-MODE.md`).
   operator is `return left < right;` and `LESS_THAN_OR_EQUAL` is `return left <= right;`
   — plain IEEE primitives; `GREATER_THAN`/`>=` are synthesized as the flipped `LESS_THAN`,
   and `EQUAL` is `left == right`. So `nan() > 5` ≡ `5 < nan()` = **false**, and
-  `x = nan()` is always false. NaN's "greatest value" total ordering is used ONLY by
-  `COMPARISON_UNORDERED_{FIRST,LAST}` (ORDER BY) and `IDENTICAL` (`IS NOT DISTINCT FROM`),
-  NOT by the predicate operators. **Consequence:** a `contains_nan` file whose stored max
-  EXCLUDES NaN can be safely pruned on `x > C` in Trino — NaN rows never match a range
-  predicate anyway. So read-side NaN pruning is **not a Trino correctness bug**; the shared
-  catalog `float-nan-prune-guard` (now implemented) is a fail-open *over-*conservatism for
-  Trino (harmless — never drops matching rows) that exists for total-ordering engines
-  (datafusion/Arrow #203) and pending Doris confirmation. This corrects an earlier draft
-  that wrongly flipped this verdict on an unverified assumption. See `TODO-READ-MODE.md`
-  `float-nan-prune-guard`.
+  `x = nan()` is always false. NaN's "greatest value" total ordering backs the
+  `COMPARISON_UNORDERED_{FIRST,LAST}` operator (which drives Range/TupleDomain, DISTINCT,
+  GROUP BY, ORDER BY, window framing) and `IDENTICAL` (`IS NOT DISTINCT FROM`) — but it does
+  NOT govern the scalar `<`/`>`/`=` predicate operators. **End-to-end verified too:** because
+  connector pruning reads `Domain.ranges.span` (which uses the total-ordering comparator), a
+  NEGATED predicate that matches NaN (`NOT (x <= C)`) was the real risk — so
+  `TestDucklakeCrossEngineNanStats.trinoNanPruningIsCorrectWithoutTheGuard` runs it against the
+  current 0.3.0 catalog (no guard) and confirms the `contains_nan` file is NOT wrongly pruned
+  (`NOT (x <= 5)` → 1, `x <> 5` → 2, `x > 5` → 0). So read-side NaN pruning is **not a Trino
+  correctness bug**; the shared-catalog `float-nan-prune-guard` is a fail-open over-conservatism
+  for Trino (harmless) that exists for total-ordering engines (datafusion/Arrow #203) and pending
+  Doris confirmation. This corrects an earlier draft that wrongly flipped this verdict on an
+  unverified assumption.
+  ⚠️ **Perf note (catalog-owned):** our writers compute `contains_nan` only for TOP-LEVEL float
+  channels and the catalog write path collapses `false → SQL NULL`. Because the guard fails open on
+  `contains_nan != false`, a NULL-flagged (i.e. every non-NaN) float column has its max-side pruning
+  disabled on the guarded catalog — a blanket regression, not a correctness issue. Upstream writes
+  explicit `true`/`false` per float column; the fix (write explicit `false` for floats; keep the
+  nested-leaf gap honest via a nullable "unknown" rather than a lying `false`) lives in the catalog
+  repo. Tracked there; no Trino-side change needed beyond eventually computing nested-float NaN.
   Source: [TODO-possible-terra-issues.md § contains_nan](TODO-possible-terra-issues.md).
 
 ## Hive Partition Path Encoding on Writes — ✅ DONE 2026-07-13

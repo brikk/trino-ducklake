@@ -534,13 +534,19 @@ write-path; NOW-2/3 below are read-path).
   compare, NaN sorts above every value, so `x > C` can wrongly prune a REAL/DOUBLE file. The fix
   (gate the max side on `contains_nan = false`) lives in the shared catalog
   (`findDataFileIdsInRange`/`rangePruneRetainsFile`); Trino inherits it on the next bump.
-  ✅ **NOT a Trino correctness bug — PROVEN.** Trino 483 `DoubleType`/`RealType` implement `<`,
-  `<=`, `=` as plain IEEE primitives (`left < right`, `left == right`), and `>`/`>=` as flipped
-  `<`; the NaN-is-greatest total ordering is used only by ORDER BY / `IS NOT DISTINCT FROM`. So
-  `nan() > 5` = false and NaN never satisfies a range predicate — pruning on the NaN-excluding max
-  is already SAFE in Trino. The inherited catalog guard is therefore a harmless fail-open
-  over-conservatism for us (never drops matching rows); it matters for total-ordering engines
-  (datafusion/Arrow) and pending Doris confirmation. No Trino action. [v: CURRENT]
+  ✅ **NOT a Trino correctness bug — PROVEN two ways.** (1) SOURCE: Trino 483 `DoubleType`/`RealType`
+  implement `<`/`<=` as IEEE primitives (`left < right`), `>`/`>=` as the flipped `<`, and `=` as
+  `left == right`, so `nan() > 5` = false and NaN never satisfies `> / >= / < / <= / =`. (The
+  NaN-is-greatest total ordering DOES back the `COMPARISON_UNORDERED_*` operator used by
+  Range/TupleDomain, DISTINCT, GROUP BY, ORDER BY and window framing — NOT just ORDER BY — but that
+  operator does not govern scalar predicate truth.) (2) EMPIRICAL end-to-end: the pruning path
+  (`DucklakeSplitManager.extractPredicateBounds` reads `ranges.span`, total-ordering) was the real
+  risk for a NEGATED predicate that matches NaN. `TestDucklakeCrossEngineNanStats.
+  trinoNanPruningIsCorrectWithoutTheGuard` — run against the current 0.3.0 catalog (NO guard) on a
+  `contains_nan` file with min/max `[1.0,1.0]` — confirms `NOT (x <= 5)` → 1, `NOT (x < 5)` → 1,
+  `x <> 5` → 2, `x > 5` → 0: the NaN file is NOT wrongly pruned. So the inherited guard is a
+  harmless fail-open over-conservatism for Trino (never drops matching rows); it matters for
+  total-ordering engines (datafusion/Arrow) and pending Doris confirmation. No Trino action. [v: CURRENT]
 - **cdc-field-id-at-window-end** — datafusion-ducklake #253 (states this matches official
   DuckLake): the change-feed table functions must resolve each data file's columns **by field
   id as of the window's END snapshot**, not by current name. Reproduce rename / drop-and-readd

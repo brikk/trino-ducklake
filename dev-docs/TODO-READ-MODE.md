@@ -510,6 +510,53 @@ write-path; NOW-2/3 below are read-path).
   `min>max`; never lexical. Brief handed to the catalog agent 2026-07-21; won't self-heal
   until affected files are rewritten under ≥1.5.5. Trino side unchanged (we only feed the
   bounds via `ColumnRangePredicate`).
+
+<!-- Added by 2026-08-26 upstream survey (see RESEARCH-upstreams.md "Latest baselines"). -->
+- **global-stats-time-travel** — ⚠️ CONFIRMED bug-shaped (Trino-side). `DucklakeMetadata.
+  getTableStatistics` (`DucklakeMetadata.kt:424`) sets `recordCount` from
+  `catalog.getTableStats(table.tableId)` — the **whole-table/global** row count — regardless of
+  `table.snapshotId`. So a `FOR VERSION/TIMESTAMP AS OF` read reports the CURRENT snapshot's row
+  count for a HISTORICAL scan, misleading planner cardinality (upstream fixed the same class in
+  ducklake `main` `d2f4b9c0` "Only apply global statistics to current-snapshot table scans"). The
+  correct snapshot-scoped count is **already computed** two lines down —
+  `activeDataFileRowCount` = Σ active `DucklakeDataFile.recordCount` (`:450-456`). Fix: when the
+  pin is a non-current snapshot, use `activeDataFileRowCount` instead of the global count (the
+  delete-file / inlined-delete cases already `return TableStatistics.empty()` above, so the sum is
+  exact for the path that reaches here). Column stats are already snapshot-scoped
+  (`getColumnStats(tableId, snapshotId)`, `:458`), so only the row count is wrong. Add a
+  time-travel row-count assertion to the cross-engine harness. [v: CURRENT] ~1h.
+- **widening-invalidated-bounds** — 🔻 CATALOG-REPO (handed off 2026-08-26, see
+  `ducklake-catalog/dev-docs/TODO-UPSTREAM-2026-08.md` P2). Upstream ducklake `main` `0c929bd7`
+  + `94f2cc53`: after `ALTER TYPE` widening, keep safe bounds but mark invalidated bounds UNKNOWN.
+  Fix lives in the shared catalog range-overlap; Trino inherits it. No Trino code change. [v: CURRENT]
+- **float-nan-prune-guard** — 🔻 CATALOG-REPO fix (implemented 2026-08-26 in the catalog working
+  tree). datafusion-ducklake #203: catalog float min/max EXCLUDE NaN and, under total-ordering
+  compare, NaN sorts above every value, so `x > C` can wrongly prune a REAL/DOUBLE file. The fix
+  (gate the max side on `contains_nan = false`) lives in the shared catalog
+  (`findDataFileIdsInRange`/`rangePruneRetainsFile`); Trino inherits it on the next bump.
+  ✅ **NOT a Trino correctness bug — PROVEN.** Trino 483 `DoubleType`/`RealType` implement `<`,
+  `<=`, `=` as plain IEEE primitives (`left < right`, `left == right`), and `>`/`>=` as flipped
+  `<`; the NaN-is-greatest total ordering is used only by ORDER BY / `IS NOT DISTINCT FROM`. So
+  `nan() > 5` = false and NaN never satisfies a range predicate — pruning on the NaN-excluding max
+  is already SAFE in Trino. The inherited catalog guard is therefore a harmless fail-open
+  over-conservatism for us (never drops matching rows); it matters for total-ordering engines
+  (datafusion/Arrow) and pending Doris confirmation. No Trino action. [v: CURRENT]
+- **cdc-field-id-at-window-end** — datafusion-ducklake #253 (states this matches official
+  DuckLake): the change-feed table functions must resolve each data file's columns **by field
+  id as of the window's END snapshot**, not by current name. Reproduce rename / drop-and-readd
+  across a `table_changes`/`table_insertions`/`table_deletions` window in the cross-engine
+  harness and confirm renamed-before-window rows return their values (not NULL) and
+  dropped-then-readded columns return NULL. [v: CURRENT] ~1h spike.
+- **missing-stats-keep-file** (parity confirm) — datafusion-ducklake #250: an absent per-file
+  bound must be a typed null so one statless file doesn't disable column pruning for the whole
+  candidate set. We already keep unknown-stats files (LEFT-JOIN semantics, see the perf item
+  below); confirm parity — likely no action.
+- **spec-v1.1-watch** — DuckLake `main` bumped `DUCKLAKE_LATEST_VERSION` to `V1_1_DEV_1` (new
+  `DuckLakeMetadataManagerV1_1` + `MigrateV10`): `_ducklake_`-prefixed inlined metadata columns,
+  `epoch_year`/`epoch_month`/`epoch_day`/`epoch_hour` partition transforms, expire column tags on
+  `DROP COLUMN`. Still **main-only** (not backported; DuckDB 1.5.5 keeps catalog spec `V1_0`). When
+  it ships, our partition-read + inlined-column code must handle the new epoch transforms and the
+  renamed inlined columns. [v: NEXT]
 - **uint-type-promotion-audit** — upstream PR #1128 fixed type promotion for
   UINTEGER. Verify it's purely DuckDB-execution (not in `ducklake_column.column_type`
   catalog representation). ~10-min PR-and-test read.

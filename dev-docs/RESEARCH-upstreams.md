@@ -206,23 +206,35 @@ run. For the long-form historical record see
 
 | Repo | Branch | Baseline SHA | Surveyed on |
 |---|---|---|---|
-| `datafusion-ducklake/` | `main` | `c07cc79` (v0.5.0 + unreleased: CDC official-semantics rewrite; compaction; write-side stats) | 2026-07-18 |
-| `ducklake/` | `v1.5-variegata` | `d8a1881e` (was `84ef2d14`; only new content is PR #1321 inline-table cleanup on commit — engine-side write/maintenance, read-neutral for us) | 2026-07-21 |
-| `ducklake/` | `main` | `2856687c` (add_files canonicalize/validate; orphan-sweep now also `.puffin`; expire empty-version) | 2026-07-18 |
-| `ducklake-web/` | `main` | `c7b5b19` (CSS/footer only; no behavioral docs change) | 2026-07-18 |
-| `ducklake-web/` | `quack` | `9a8dcf9` (unchanged content from 2026-05-22) | 2026-07-18 |
-| `pg_ducklake/` | `main` | `e43c6b8` (#228 DuckDB-dialect UDFs for partition flush over SPI; #226 TRUNCATE) | 2026-07-18 |
-| `pg_ducklake/` | `v1.0` | `6d751f5` (v1.0.1; unchanged) | 2026-07-13 |
-| `duckdb-quack/` | `main` | `2cb2728` (fetch-ahead/read-ahead streaming; server-side client-id hashing) | 2026-07-18 |
-| `duckdb-quack/` | `v1.5-variegata` | `b2466e4` (RETURNING reject; count(*)→EMPTY vcol + forbid rowid; fetch-tag pushdown hardening; EXTRA_HTTP_HEADERS) | 2026-07-18 |
-| `duckdb-web/` | `main` | `a48a99fb` (unchanged for our purposes; no DuckLake/Quack behavior docs) | 2026-07-18 |
-| `duckdb/` (core) | `v1.5-variegata` | `d8cdaa33` (toward 1.5.5, not yet tagged; DuckLake pin `84ef2d14`→`d8a1881e`; **DECIMAL `RETURN_STATS` min/max swap fix #23693** → read-side prune-guard handed to catalog agent, see `TODO-READ-MODE.md` decimal-swapped-minmax-prune-guard) | 2026-07-21 |
+| `datafusion-ducklake/` | `main` | `v0.7.0` + unreleased (was v0.5.0; NaN-aware float pruning #203, missing-stats-keep-file #250, CDC-by-field-id #253, delete-bearing bounds inexact, tz-aware UTC min/max #260, sort order, partitioned writes) | 2026-08-26 |
+| `ducklake/` | `v1.5-variegata` | `5ef9e03d` (was `d8a1881e`; **DuckDB 1.5.5 released/tagged**; `hive_file_pattern` on flush; still catalog spec `V1_0`) | 2026-08-26 |
+| `ducklake/` | `main` | `a92e65b8` (was `2856687c`; **spec bump to `V1_1_DEV_1`** — MetadataManagerV1_1/MigrateV10, `_ducklake_` inlined cols, epoch partition transforms, expire tags on DROP COLUMN; global-stats-only-current-snapshot; column-bounds across widenings + keep-invalidated-unknown; cache-not-across-schemas; `newer_than` on merge_adjacent_files) | 2026-08-26 |
+| `ducklake-web/` | `main` | `c7b5b19` (not re-surveyed 2026-08-26) | 2026-07-18 |
+| `ducklake-web/` | `quack` | `9a8dcf9` (not re-surveyed 2026-08-26) | 2026-07-18 |
+| `pg_ducklake/` | `main` | `e43c6b8` (not diffed 2026-08-26; latest tag is now `v1.0.2`, was `v1.0.1`) | 2026-07-18 |
+| `pg_ducklake/` | `v1.0` | `6d751f5` (tag `v1.0.2` now exists; not diffed) | 2026-07-13 |
+| `duckdb-quack/` | `main` | `2cb2728` (not re-surveyed 2026-08-26; branches unchanged: `main`, `v1.5-variegata`) | 2026-07-18 |
+| `duckdb-quack/` | `v1.5-variegata` | `b2466e4` (not re-surveyed 2026-08-26) | 2026-07-18 |
+| `duckdb-web/` | `main` | `a48a99fb` (not re-surveyed 2026-08-26) | 2026-07-18 |
+| `duckdb/` (core) | `v1.5-variegata` | **`v1.5.5` tagged/released** (our pin `duckdb=1.5.5.0` is current); DECIMAL `RETURN_STATS` min/max swap fix #23693 shipped in 1.5.5 (read-side guard still tracked, see `decimal-swapped-minmax-prune-guard`) | 2026-08-26 |
 
-**Note (2026-07-21 survey):** the next DuckLake **catalog spec change** is staged on
-`ducklake/main` and was deliberately **not** backported to the `v1.5` branches — so 1.5.5
-keeps the catalog on spec **v1.0** (migration ladder tops out at `1.0` in
-`ducklake_initializer.cpp`; unchanged from our baseline). No catalog migration or new
-version number ships in 1.5.5. Track the spec bump on `main` for a future DuckDB line.
+**Note (2026-08-26 survey):** the next DuckLake **catalog spec change** has now MATERIALIZED on
+`ducklake/main` as `DuckLakeVersion::V1_1_DEV_1` (`DUCKLAKE_LATEST_VERSION`) with a dedicated
+`DuckLakeMetadataManagerV1_1` and `MigrateV10()` migration step. It remains **main-only** — no
+`v1.6` release branch exists yet and it was **not** backported to `v1.5-variegata`, so the shipped
+**DuckDB 1.5.5** keeps the catalog on spec **v1.0** (its migration ladder tops out at `V1_0`).
+What v1.1 carries: `_ducklake_`-prefixed / centralized inlined-metadata columns,
+`epoch_year`/`epoch_month`/`epoch_day`/`epoch_hour` partition transforms (gated on DuckLake 1.1),
+and expiring column tags on `DROP COLUMN`. Read-side correctness fixes also landed on `main` this
+window (global-stats-only-on-current-snapshot, column-bounds-across-widenings +
+keep-invalidated-bounds-unknown) and were folded into `TODO-READ-MODE.md` Open Research Items.
+Track the spec bump on `main` for the DuckDB line that ships it.
+
+**Survey scope note (2026-08-26):** the `vendor/` mirrors were not present in this checkout, so
+this pass used `git ls-remote` for version/branch signal + fetched the `ducklake` submodule's
+`main` and `v1.5-variegata` for the commit-level diff, plus the published `datafusion-ducklake`
+CHANGELOG for cross-check. `ducklake-web`, `duckdb-web`, `duckdb-quack`, and `pg_ducklake` were
+checked only at the tag/branch level (versions above), not diffed commit-by-commit.
 
 Older baselines and the per-run substantive findings are preserved
 verbatim in [`archive/RESEARCH-LOG.md`](archive/RESEARCH-LOG.md). The

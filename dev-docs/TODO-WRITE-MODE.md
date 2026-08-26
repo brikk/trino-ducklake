@@ -1184,6 +1184,54 @@ cross-reference (see also the read-path list in `TODO-READ-MODE.md`).
   release. Signal only; expect docs/site (ducklake-web `docs/stable`) to promote
    the full feature set — re-survey ducklake-web when v1.1 tags.
 
+<!-- Added by 2026-08-26 upstream refresh (ducklake main a92e65b8, v1.5-variegata -->
+<!-- 5ef9e03d = DuckDB 1.5.5 released; datafusion-ducklake v0.7.0 cross-check). -->
+- **merge-adjacent-newer-than** `[v: CURRENT]` — ducklake `main` `4ab9b124` added a
+  `newer_than` option to `ducklake_merge_adjacent_files` (only compact files written
+  after a cutoff — skip already-compacted cold data). Direct reference for our F6/M8
+  compaction: mirror the param when M8 lands so a scheduled compaction can bound its
+  working set by recency. ~30-min add once M8 exists. Pairs with the shipped
+  `max_compacted_files` bound (NOW-5).
+- **flush-hive-file-pattern** `[v: CURRENT]` — ducklake `main` `664400c5` + on
+  `v1.5-variegata` (in 1.5.5): `flush_inlined_data` gained a `hive_file_pattern` option
+  (controls the output path/layout of flushed files, incl. disabling hive partitioning
+  on flush). Our `DucklakeFlushInlinedDataProcedure` writes flushed files with a fixed
+  layout; check whether a Trino-flushed table's file paths still round-trip when the
+  table is hive-partitioned, and whether we should expose/honor the pattern. ~1h verify.
+- **cache-not-across-schemas** `[v: CURRENT]` — ducklake `main` `38a60651` ("Dont serve
+  cache to different schemas") + `5cc0dc2e` ("Cache the begin snapshot of a committed
+  schema version"): upstream's in-memory catalog cache was keyed too loosely and could
+  serve one schema's entry to another. Our metadata cache is our own
+  (`JdbcDucklakeCatalog` + any Trino-side caching); confirm our cache keys include
+  schema/catalog identity and the committed schema version so a multi-schema catalog
+  can't cross-serve. Parity/verify, ~1h — bug-shaped if our keys are loose.
+- **v1.1-epoch-partition-transforms** `[v: NEXT]` — ducklake `main` added first-class
+  `epoch_year`/`epoch_month`/`epoch_day`/`epoch_hour` **partition transforms** (`c5a662e1`
+  et al.), gated on DuckLake 1.1. Distinct from our legacy `temporal-partition-encoding=
+  epoch` VALUE encoding (§ "Practical divergences"): these are new transform *kinds*. When
+  we write/read v1.1 catalogs, `DucklakePartitionTransform` + the DDL that declares
+  partitions must recognize them. Sub-item of **ducklake-v1.1-format-horizon** below.
+- **v1.1-expire-tags-on-drop-column** `[v: NEXT]` — ducklake `main` `c52f9849` "Expire
+  column tags on DROP COLUMN": on v1.1, dropping a column also end-dates its
+  `ducklake_column_tag` rows (COMMENTs etc.). Our `DROP COLUMN` write path must do the
+  same when we write v1.1, else stale tags linger. Sub-item of the v1.1 horizon.
+- **tz-timestamp-utc-minmax-stats** `[v: CURRENT]` — datafusion-ducklake #260: a
+  `TIMESTAMP WITH TIME ZONE` column's file min/max stats must be recorded in **UTC** (an
+  instant), else cross-engine pruning on a `timestamptz` predicate compares against a
+  wrong wall-clock and can drop matching files. Verify our writers (`ParquetFileWriter` /
+  `DuckDbFileWriter` stats extraction) normalize `timestamptz` min/max to UTC the same way
+  DuckDB does, and that the read-side `parseStatValue` / `ColumnRangePredicate` for
+  `timestamptz` compares as instants. datafusion also notes pre-change catalogs stay
+  readable with *absent* bounds (our LEFT-JOIN keep-file already covers that). ~1h verify
+  + a cross-engine `timestamptz` prune test across a non-UTC session TZ.
+- **delete-bearing-file-bounds** (parity confirm) — datafusion-ducklake unreleased:
+  a data file that carries a delete file has bounds that are "inexact" for readers that
+  APPLY deletes (the live row count changes; the physical min/max still hold). We already
+  go conservative — `DucklakeMetadata.getTableStatistics` returns `empty()` when any
+  delete/inlined-delete is present (`DucklakeMetadata.kt:410-419`), and range pruning uses
+  physical min/max (a delete can't make a non-matching file match), so pruning stays safe.
+  Likely no action; confirm and close.
+
 ## `flush_inlined_data` must preserve row identity + count — ✅ DONE 2026-07-13
 
 - [x] **Flush is now an identity-preserving, count-neutral storage move.** Shipped:
@@ -1214,7 +1262,22 @@ cross-reference (see also the read-path list in `TODO-READ-MODE.md`).
   NaN row rather than pruning the file). Corpus stats/insert/general 502p/0f.
   **Follow-up (open):** nested float leaves (struct/array/map of float) aren't
   scanned on the parquet path (rare); the read-side Trino pruning honoring
-  `contains_nan` is a separate, lesser concern (Trino `NaN > 5` is false).
+  `contains_nan` is a separate concern.
+  ✅ **PROVEN (2026-08-26): the "Trino `NaN > 5` is false" claim is CORRECT.** Source of
+  truth is Trino 483 `io.trino.spi.type.DoubleType` (and `RealType`): the `LESS_THAN`
+  operator is `return left < right;` and `LESS_THAN_OR_EQUAL` is `return left <= right;`
+  — plain IEEE primitives; `GREATER_THAN`/`>=` are synthesized as the flipped `LESS_THAN`,
+  and `EQUAL` is `left == right`. So `nan() > 5` ≡ `5 < nan()` = **false**, and
+  `x = nan()` is always false. NaN's "greatest value" total ordering is used ONLY by
+  `COMPARISON_UNORDERED_{FIRST,LAST}` (ORDER BY) and `IDENTICAL` (`IS NOT DISTINCT FROM`),
+  NOT by the predicate operators. **Consequence:** a `contains_nan` file whose stored max
+  EXCLUDES NaN can be safely pruned on `x > C` in Trino — NaN rows never match a range
+  predicate anyway. So read-side NaN pruning is **not a Trino correctness bug**; the shared
+  catalog `float-nan-prune-guard` (now implemented) is a fail-open *over-*conservatism for
+  Trino (harmless — never drops matching rows) that exists for total-ordering engines
+  (datafusion/Arrow #203) and pending Doris confirmation. This corrects an earlier draft
+  that wrongly flipped this verdict on an unverified assumption. See `TODO-READ-MODE.md`
+  `float-nan-prune-guard`.
   Source: [TODO-possible-terra-issues.md § contains_nan](TODO-possible-terra-issues.md).
 
 ## Hive Partition Path Encoding on Writes — ✅ DONE 2026-07-13

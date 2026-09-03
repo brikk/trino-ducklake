@@ -456,6 +456,146 @@ open class TestDucklakeCrossEngineCatalogMetadata
         }
     }
 
+    /**
+     * A Trino-created view must not brick the catalog for DuckDB. Upstream parses
+     * `ducklake_view.column_aliases` with `DuckLakeUtil::ParseQuotedList` at catalog load
+     * (`ducklake_metadata_manager.cpp` view query) and throws on anything that isn't a quoted
+     * list — an earlier revision of this connector stored the serialized
+     * `ConnectorViewDefinition` JSON there, which made EVERY DuckDB query against the catalog
+     * fail (`Failed to parse quoted value - expected a quote`) while the view existed.
+     *
+     * Now the aliases are the real column names, the dialect is plain `trino`, and Trino's
+     * extra metadata rides on `ducklake_tag` rows keyed by `view_id`, which upstream loads
+     * opaquely (`ducklake_catalog.cpp` view entries: `comment` → view comment, other keys →
+     * tags). This test pins, with the view still ACTIVE:
+     *  * DuckDB attaches and reads a table (catalog load succeeds);
+     *  * `duckdb_views()` lists the view with our column aliases and the view comment;
+     *  * DuckDB `COMMENT ON VIEW` updates only the `comment` tag, and Trino sees the new
+     *    comment while its own `trino.*` tags survive (interop in both directions);
+     *  * nothing we wrote for the view is JSON.
+     */
+    @Test
+    @Throws(Exception::class)
+    fun testDuckdbLoadsCatalogWithActiveTrinoViewAndSharesComment()
+    {
+        val viewName = "xengine_active_trino_view"
+        try {
+            computeActual("CREATE VIEW test_schema.$viewName AS SELECT id AS the_id, name AS \"the,name\" FROM test_schema.simple_table")
+            computeActual("COMMENT ON VIEW test_schema.$viewName IS 'from trino'")
+            computeActual("COMMENT ON COLUMN test_schema.$viewName.the_id IS 'id col'")
+
+            createDuckdbConnection().use { conn ->
+                conn.createStatement().use { stmt -> assertDuckdbSeesTrinoViewAndCommentsOnIt(stmt, viewName) }
+            }
+
+            assertThat(computeActual("SHOW CREATE VIEW test_schema.$viewName").onlyValue.toString())
+                    .`as`("Trino reads the comment DuckDB wrote to the shared `comment` tag")
+                    .contains("COMMENT 'from duckdb'")
+            // Still executable by Trino after DuckDB touched it (trino.* tags intact).
+            assertThat(computeActual("SELECT count(*) FROM test_schema.$viewName").onlyValue as Long).isGreaterThan(0)
+            assertThat(computeActual("SELECT comment FROM information_schema.columns " +
+                    "WHERE table_schema = 'test_schema' AND table_name = '$viewName' AND column_name = 'the_id'").onlyValue)
+                    .isEqualTo("id col")
+        }
+        finally {
+            try {
+                computeActual("DROP VIEW test_schema.$viewName")
+            }
+            catch (ignored: Exception) {
+            }
+        }
+    }
+
+    /**
+     * Another Trino connector may write `dialect = 'trino'` with its own (or no) tags. Such a
+     * view must be LISTED (so an operator can find and drop it) but never executed with a
+     * guessed definition: SELECT / COMMENT fail with INVALID_VIEW naming the reason, DROP works.
+     */
+    @Test
+    @Throws(Exception::class)
+    fun testForeignTrinoDialectViewIsListedButRefusedAndDroppable()
+    {
+        val viewName = "xengine_foreign_trino_view"
+        val catalog = getIsolatedCatalog()
+        try {
+            // Simulate the other connector: a spec-conformant row (quoted-list aliases,
+            // dialect 'trino') with none of our tags.
+            DriverManager.getConnection(catalog.jdbcUrl, catalog.user, catalog.password).use { pg ->
+                pg.createStatement().use { st ->
+                    st.executeUpdate(
+                            "INSERT INTO ducklake_view (view_id, view_uuid, begin_snapshot, end_snapshot, schema_id, " +
+                                    "view_name, dialect, sql, column_aliases) " +
+                                    "SELECT (SELECT max(next_catalog_id) FROM ducklake_snapshot) + 1000, gen_random_uuid(), " +
+                                    "(SELECT max(snapshot_id) FROM ducklake_snapshot), NULL, s.schema_id, '$viewName', 'trino', " +
+                                    "'SELECT id FROM test_schema.simple_table', '\"id\"' " +
+                                    "FROM ducklake_schema s WHERE s.schema_name = 'test_schema' AND s.end_snapshot IS NULL")
+                }
+            }
+
+            assertThat(computeActual("SHOW TABLES FROM test_schema").onlyColumnAsSet).contains(viewName)
+            // Bulk listing skips it (with a warning) rather than failing the whole schema.
+            val listedViews: Set<Any?> = computeActual(
+                    "SELECT table_name FROM information_schema.views WHERE table_schema = 'test_schema'").onlyColumnAsSet
+            assertThat(listedViews).doesNotContain(viewName)
+            assertQueryFails("SELECT * FROM test_schema.$viewName",
+                    ".*View test_schema.$viewName cannot be executed by this connector: the 'trino.column_types' tag .* is missing.*CREATE OR REPLACE VIEW.*")
+            assertQueryFails("COMMENT ON VIEW test_schema.$viewName IS 'x'",
+                    ".*cannot be executed by this connector.*")
+            // Remedy 1: replace it from this connector.
+            computeActual("CREATE OR REPLACE VIEW test_schema.$viewName AS SELECT id FROM test_schema.simple_table")
+            assertThat(computeActual("SELECT count(*) FROM test_schema.$viewName").onlyValue as Long).isGreaterThan(0)
+        }
+        finally {
+            // Remedy 2: drop it.
+            try {
+                computeActual("DROP VIEW test_schema.$viewName")
+            }
+            catch (ignored: Exception) {
+            }
+        }
+    }
+
+    /** DuckDB side of [testDuckdbLoadsCatalogWithActiveTrinoViewAndSharesComment]. */
+    @Throws(Exception::class)
+    private fun assertDuckdbSeesTrinoViewAndCommentsOnIt(stmt: java.sql.Statement, viewName: String)
+    {
+        // Catalog load + table scan while the Trino view is active.
+        stmt.executeQuery("SELECT count(*) FROM ducklake_db.test_schema.simple_table").use { rs ->
+            assertThat(rs.next()).isTrue()
+            assertThat(rs.getLong(1)).isGreaterThan(0)
+        }
+        stmt.executeQuery(
+                "SELECT comment, sql FROM duckdb_views() WHERE database_name = 'ducklake_db' AND view_name = '$viewName'").use { rs ->
+            assertThat(rs.next()).`as`("DuckDB lists the Trino view").isTrue()
+            assertThat(rs.getString(1)).isEqualTo("from trino")
+            assertThat(rs.getString(2)).`as`("column aliases surfaced to DuckDB")
+                    .contains("the_id").contains("\"the,name\"")
+        }
+        // Raw catalog shape: quoted-list aliases, plain dialect, tags, no JSON.
+        stmt.executeQuery(
+                "SELECT dialect, column_aliases FROM __ducklake_metadata_ducklake_db.ducklake_view " +
+                        "WHERE view_name = '$viewName' AND end_snapshot IS NULL").use { rs ->
+            assertThat(rs.next()).isTrue()
+            assertThat(rs.getString(1)).isEqualTo("trino")
+            assertThat(rs.getString(2)).isEqualTo("\"the_id\",\"the,name\"")
+        }
+        stmt.executeQuery(
+                "SELECT t.key, t.value FROM __ducklake_metadata_ducklake_db.ducklake_tag t " +
+                        "JOIN __ducklake_metadata_ducklake_db.ducklake_view v ON v.view_id = t.object_id " +
+                        "WHERE v.view_name = '$viewName' AND v.end_snapshot IS NULL AND t.end_snapshot IS NULL ORDER BY t.key").use { rs ->
+            val tags = LinkedHashMap<String, String>()
+            while (rs.next()) {
+                tags[rs.getString(1)] = rs.getString(2)
+            }
+            assertThat(tags).containsEntry("comment", "from trino")
+            assertThat(tags).containsEntry("trino.column_types", "\"integer\",\"varchar\"")
+            assertThat(tags).containsEntry("trino.column_comments", "\"id col\",\"\"")
+            tags.values.forEach { assertThat(it).doesNotStartWith("{") }
+        }
+        // DuckDB writes the comment tag; Trino must pick it up and keep its own tags.
+        stmt.execute("COMMENT ON VIEW ducklake_db.test_schema.$viewName IS 'from duckdb'")
+    }
+
     @Throws(Exception::class)
     private fun readCurrentSchemaVersion(catalog: DucklakeCatalogGenerator.IsolatedCatalog): Long
     {

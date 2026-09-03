@@ -25,7 +25,8 @@ detekt {
 // repo, wired centrally by the buildlogic.kotlin.brikk convention plugin (applied above).
 repositories {
     // dev.brikk.ducklake catalog + corpus-replay: released versions resolve from mavenCentral;
-    // -SNAPSHOTs from the Central Portal snapshots repo (wired in buildlogic.kotlin.brikk).
+    // -SNAPSHOTs from ~/.m2 (local two-repo dev loop) then the Central Portal snapshots repo —
+    // both wired, in that order, in buildlogic.kotlin.brikk.
     mavenCentral()
 }
 

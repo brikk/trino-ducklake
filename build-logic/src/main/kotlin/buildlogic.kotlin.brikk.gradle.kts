@@ -20,6 +20,16 @@ plugins {
 // The brikk *dependencies* stay in each module's build.gradle.kts (they differ per module);
 // only the snapshot-repo wiring lives here.
 repositories {
+    // Local two-repo dev loop: `./gradlew publishToMavenLocal` in ../ducklake-catalog, then build
+    // here against it. Declared FIRST so a locally published -SNAPSHOT wins over the (possibly
+    // older) timestamped one in the Central Portal snapshots repo — Gradle takes the first
+    // repository that has the module. Scoped to dev.brikk.ducklake snapshots only, so it can
+    // never shadow a release or any other dependency. If ~/.m2 has nothing, it is simply skipped.
+    // Stale local snapshot? `rm -rf ~/.m2/repository/dev/brikk/ducklake`.
+    mavenLocal {
+        mavenContent { snapshotsOnly() }
+        content { includeGroup("dev.brikk.ducklake") }
+    }
     maven {
         name = "centralPortalSnapshots"
         url = uri("https://central.sonatype.com/repository/maven-snapshots/")

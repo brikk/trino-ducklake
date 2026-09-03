@@ -16,7 +16,6 @@ package dev.brikk.ducklake.trino.plugin
 import com.google.common.collect.ImmutableList
 import com.google.common.collect.ImmutableMap
 import io.airlift.json.JsonCodec
-import io.airlift.json.JsonCodecFactory
 import io.airlift.log.Logger
 import io.airlift.slice.Slice
 import dev.brikk.ducklake.catalog.DucklakeCatalog
@@ -1449,6 +1448,25 @@ class DucklakeMetadata(
         return views.build()
     }
 
+    /**
+     * Existence check used by DROP VIEW / CREATE OR REPLACE VIEW / ALTER VIEW RENAME (via
+     * Trino's `Metadata.isView`). Deliberately does NOT decode the definition, so a
+     * Trino-family view written by another connector in a format we can't read is still
+     * droppable / replaceable — the remedies [DucklakeTrinoViewCodec.decode]'s error points at.
+     */
+    override fun isView(session: ConnectorSession, viewName: SchemaTableName): Boolean
+    {
+        val snapshotId = snapshotResolver.resolveSnapshotId(session)
+        val view: DucklakeView = catalog.getView(viewName.schemaName, viewName.tableName, snapshotId)
+            ?: return false
+        return isViewAccessible(view)
+    }
+
+    /**
+     * Definition for execution (query analysis, COMMENT ON, SHOW CREATE VIEW). Throws
+     * INVALID_VIEW with the reason when the view exists but was not written in this
+     * connector's format — never returns a guessed or partial definition.
+     */
     override fun getView(session: ConnectorSession, viewName: SchemaTableName): Optional<ConnectorViewDefinition>
     {
         val snapshotId = snapshotResolver.resolveSnapshotId(session)
@@ -1481,7 +1499,7 @@ class DucklakeMetadata(
             for (view in catalog.listViews(schema.schemaId, snapshotId)) {
                 if (isViewAccessible(view)) {
                     val name = SchemaTableName(schema.schemaName, view.viewName)
-                    decodeTrinoView(view, name).ifPresent { def -> views.put(name, def) }
+                    decodeTrinoViewOrSkip(view, name).ifPresent { def -> views.put(name, def) }
                 }
             }
         }
@@ -1499,19 +1517,19 @@ class DucklakeMetadata(
             }
         }
 
-        // Store the original SQL in the sql field (spec-compliant).
-        // Store the full ConnectorViewDefinition as JSON in column_aliases
-        // so we can round-trip column names and types.
-        val originalSql: String = definition.originalSql
-        val viewMetadataJson: String = VIEW_CODEC.toJson(definition)
-
+        // sql = the Trino SQL, dialect = 'trino', column_aliases = the spec quoted list of column
+        // names, everything else Trino needs as `ducklake_tag` rows (see DucklakeTrinoViewCodec).
+        // Never put engine payloads in column_aliases: upstream DuckDB parses it at catalog load
+        // and refuses the WHOLE catalog otherwise.
+        val encoded = DucklakeTrinoViewCodec.encode(definition)
         translateCatalogExceptions {
             catalog.createView(
                 viewName.schemaName,
                 viewName.tableName,
-                originalSql,
-                TRINO_VIEW_DIALECT,
-                viewMetadataJson
+                definition.originalSql,
+                DucklakeTrinoViewCodec.DIALECT,
+                encoded.columnAliases,
+                encoded.tags,
             )
         }
     }
@@ -1556,15 +1574,7 @@ class DucklakeMetadata(
                 definition.path
         )
 
-        translateCatalogExceptions {
-            catalog.replaceViewMetadata(
-                viewName.schemaName,
-                viewName.tableName,
-                updated.originalSql,
-                TRINO_VIEW_DIALECT,
-                VIEW_CODEC.toJson(updated)
-            )
-        }
+        replaceTrinoView(viewName, updated)
     }
 
     override fun setViewColumnComment(session: ConnectorSession, viewName: SchemaTableName, columnName: String, comment: Optional<String>)
@@ -1598,13 +1608,20 @@ class DucklakeMetadata(
                 definition.path
         )
 
+        replaceTrinoView(viewName, updatedDefinition)
+    }
+
+    private fun replaceTrinoView(viewName: SchemaTableName, definition: ConnectorViewDefinition)
+    {
+        val encoded = DucklakeTrinoViewCodec.encode(definition)
         translateCatalogExceptions {
             catalog.replaceViewMetadata(
                 viewName.schemaName,
                 viewName.tableName,
-                updatedDefinition.originalSql,
-                TRINO_VIEW_DIALECT,
-                VIEW_CODEC.toJson(updatedDefinition)
+                definition.originalSql,
+                DucklakeTrinoViewCodec.DIALECT,
+                encoded.columnAliases,
+                encoded.tags,
             )
         }
     }
@@ -1628,46 +1645,49 @@ class DucklakeMetadata(
         if (!isViewAccessible(view)) {
             throw ViewNotFoundException(viewName)
         }
-
-        return decodeTrinoView(view, viewName)
-                .orElseThrow { ViewNotFoundException(viewName, "View metadata is unavailable") }
+        return DucklakeTrinoViewCodec.decode(view, viewName)
     }
 
     /**
-     * Only Trino-dialect views are currently accessible.
-     * Non-Trino dialects (e.g., duckdb) require a SQL transpiler to safely expose.
+     * Views this connector LISTS: those whose SQL is Trino SQL (dialect `trino`, or a
+     * `trino/<variant>` written by some other Trino connector). Non-Trino dialects (e.g.
+     * `duckdb`) are hidden — exposing them needs a SQL transpiler.
+     *
+     * Listing is deliberately wider than serving: a Trino-family view we cannot decode
+     * (foreign variant, missing/inconsistent tags) still shows up in SHOW TABLES so an operator
+     * can see it and DROP it; using it fails with a precise INVALID_VIEW error from
+     * [DucklakeTrinoViewCodec.decode]. Bulk paths (`getViews`) skip such views with a warning
+     * rather than failing the whole listing.
      */
     private fun isViewAccessible(view: DucklakeView): Boolean
     {
-        val dialect: String = view.dialect.lowercase(Locale.ROOT)
-        if (TRINO_VIEW_DIALECT == dialect) {
+        if (DucklakeTrinoViewCodec.isTrinoFamily(view)) {
             return true
         }
         // Future: check viewSqlDialects set + transpiler availability
-        log.debug("Skipping view %s with non-Trino dialect: %s (transpiler not configured)", view.viewName, dialect)
+        log.debug("Skipping view %s with non-Trino dialect: %s (transpiler not configured)", view.viewName, view.dialect)
         return false
     }
 
     /**
-     * Decode a Trino-dialect view from the catalog.
-     * Column metadata is stored as JSON in the column_aliases field.
-     * Falls back to original SQL if metadata is missing or corrupt.
+     * Single-view resolution: throws with the reason when the view is Trino-family but not in
+     * this connector's format. Callers that must never throw use [decodeTrinoViewOrSkip].
      */
     private fun decodeTrinoView(view: DucklakeView, viewName: SchemaTableName): Optional<ConnectorViewDefinition>
     {
-        // Trino views store the full ConnectorViewDefinition as JSON in column_aliases
-        val viewMetadata = view.viewMetadata
-        if (viewMetadata != null && !viewMetadata.isBlank()) {
-            try {
-                return Optional.of(VIEW_CODEC.fromJson(viewMetadata))
-            }
-            catch (e: RuntimeException) {
-                log.warn(e, "Failed to decode Trino view metadata for %s", viewName)
-            }
-        }
+        return Optional.of(DucklakeTrinoViewCodec.decode(view, viewName))
+    }
 
-        log.warn("View %s has no Trino metadata in column_aliases, cannot resolve column types", viewName)
-        return Optional.empty()
+    /** Bulk resolution (information_schema.views): incompatible views are skipped, loudly logged. */
+    private fun decodeTrinoViewOrSkip(view: DucklakeView, viewName: SchemaTableName): Optional<ConnectorViewDefinition>
+    {
+        val reason = DucklakeTrinoViewCodec.incompatibilityReason(view)
+        if (reason != null) {
+            log.warn("Skipping view %s in bulk view listing — it cannot be executed by this connector: %s " +
+                    "(dialect '%s'). Recreate it from this connector or DROP VIEW it.", viewName, reason, view.dialect)
+            return Optional.empty()
+        }
+        return Optional.of(DucklakeTrinoViewCodec.decode(view, viewName))
     }
 
     companion object {
@@ -1694,13 +1714,6 @@ class DucklakeMetadata(
                 }
             }
         }
-        private val VIEW_CODEC: JsonCodec<ConnectorViewDefinition> = JsonCodecFactory().jsonCodec(ConnectorViewDefinition::class.java)
-        // `trino/brikk` — base dialect is Trino SQL, `/brikk` marks that this row also carries
-        // our plugin-specific JSON sidecar in `ducklake_view.column_aliases` (serialized
-        // `ConnectorViewDefinition`). Other writers that understand plain Trino SQL should skip
-        // rows with this suffix unless they want to cross-parse our metadata.
-        private const val TRINO_VIEW_DIALECT: String = "trino/brikk"
-
         private fun getSnapshotIdFromVersion(version: ConnectorTableVersion): Long
         {
             val versionType: Type = version.versionType

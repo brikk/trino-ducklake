@@ -254,8 +254,8 @@ operators and functions are not available through Trino.
 | Metadata tables (`$current_snapshot`) | Yes | Current snapshot info |
 | Metadata tables (`$snapshot_changes`) | Yes | Snapshot audit trail |
 | Virtual (hidden) columns | Yes | `$path`, `$snapshot_id`, `$file_row_number`, `$row_id`, `$file_size_bytes` — see [Virtual Columns](#virtual-columns) below |
-| Views (Trino dialect) | Yes | |
-| Views (other dialects) | No | Filtered out; only Trino-created views exposed |
+| Views (Trino dialect) | Yes | Views written by this connector. Other Trino connectors' `trino` views are listed but refused with `INVALID_VIEW` unless they carry our `trino.*` tags (see [View storage](#view-storage)) |
+| Views (other dialects) | No | Filtered out; e.g. `duckdb` views need a transpiler |
 | Puffin deletion vectors | Yes | DuckLake's Roaring-bitmap delete files (`write_deletion_vectors=true` on the writer) |
 | Sorted table optimizations | Yes | Catalog sort spec surfaces as `SortingProperty` so the planner can skip sort operators when `ORDER BY` matches the leading prefix |
 
@@ -300,7 +300,7 @@ are intentionally not exposed (see [DESIGN-virtual-columns.md](dev-docs/DESIGN-v
 | DROP SCHEMA | Yes | Non-empty schema drop rejected |
 | CREATE TABLE | Yes | Supports nested types and partition spec |
 | DROP TABLE | Yes | |
-| CREATE VIEW | Yes | Stored with Trino dialect marker |
+| CREATE VIEW | Yes | `dialect = 'trino'`; column names in `column_aliases`; Trino metadata as `ducklake_tag` rows |
 | DROP VIEW | Yes | |
 | RENAME VIEW | Yes | |
 | COMMENT ON VIEW | Yes | |
@@ -596,11 +596,31 @@ Session properties for annotating write snapshots (DuckDB `set_commit_message` e
 required columns are not in the DuckLake spec's `ducklake_snapshot` table, so writing them would
 risk cross-engine divergence. Revisit only if DuckLake upstream defines them.
 
-### Cross-Dialect View Transpilation
+### View storage
 
-Views created by DuckDB (or other engines) are not visible in Trino. Only Trino-dialect
-views are exposed. Cross-dialect transpilation (e.g., DuckDB SQL to Trino SQL) is a
-research item.
+A Trino view is stored using only slots the DuckLake spec defines and DuckDB understands, so a
+catalog holding Trino views stays fully loadable by DuckDB / pg_ducklake:
+
+| Trino | DuckLake |
+|---|---|
+| view SQL | `ducklake_view.sql`, `dialect = 'trino'` |
+| column names | `ducklake_view.column_aliases` (spec quoted list, e.g. `"id","name"`) |
+| view comment | `ducklake_tag` key `comment` — the same tag DuckDB's `COMMENT ON VIEW` uses, so comments round-trip between engines |
+| column types, column comments, catalog/schema, owner, `SECURITY INVOKER`, path | `ducklake_tag` keys `trino.column_types`, `trino.column_comments`, `trino.catalog`, `trino.schema`, `trino.owner`, `trino.run_as_invoker`, `trino.path` (quoted lists where plural) |
+
+Nothing is stored as JSON. `column_aliases` in particular must be a spec quoted list — DuckDB parses
+it at catalog load and refuses the **whole catalog** otherwise.
+
+**Views from other writers.** `dialect = 'trino'` only says the SQL is Trino SQL; a different
+DuckLake connector for Trino may write it with different (or no) tags. Such a view — and any
+`trino/<variant>` dialect — is *listed* (so you can find it) but any use fails with an
+`INVALID_VIEW` error stating the view, the reason (e.g. `the 'trino.column_types' tag ... is
+missing`), and the remedy: `CREATE OR REPLACE VIEW` from this connector, or `DROP VIEW`. Both
+remedies always work; the connector never executes a guessed definition. `information_schema.views`
+skips such views (with a server-side warning) rather than failing for the schema.
+
+Views created by DuckDB (or other engines) in their own dialect are not visible in Trino.
+Cross-dialect transpilation (e.g., DuckDB SQL to Trino SQL) is a research item.
 
 ### Catalog Backends
 

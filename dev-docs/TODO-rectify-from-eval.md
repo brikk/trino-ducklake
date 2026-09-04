@@ -14,19 +14,26 @@ Labels are stable so items can be addressed one at a time:
 | `R-*` | connector read path | this repo |
 | `W-*` | connector write path | this repo |
 | `T-*` | type mapping + DDL | this repo (some catalog) |
-| `TR-*` | trino-side adoptions of ducklake-catalog 0.5.0 API changes | this repo |
+| `TR-*` | trino-side adoptions of ducklake-catalog API changes | this repo |
 | `P-*` | maintenance procedures | this repo (some catalog) |
 
 Severity suffix: `C` critical (data loss / silent wrong rows / catalog unloadable by DuckDB),
 `H` high, `M` medium, `L` low, `N` nit. Mark `[x]` with a dated one-liner when done. Where two
 reviews found the same issue it is listed once with the other labels in parentheses.
 
-**2026-09-04 update:** the ducklake-catalog repo resolved most `E-*` items in `abb26ce..5ba4864`
+**2026-09-04 update:** ducklake-catalog 0.5.0 resolved most `E-*` items in `abb26ce..5ba4864`;
+0.6.0 (`861f67c..90927e3`) resolves the remaining catalog parity/DDL items below. The connector is
+on 0.6.0. One 0.6 API blocker remains: `listAllReferencedFiles().tableFiles` carries `tablePath`
+but not the owning schema path, even though the catalog itself documents table paths as
+schema-relative. The connector therefore cannot safely resolve relative files belonging to a
+dropped table/schema. P-H1/P-M1 stay open until the ref also carries `schemaPath` + relativity (or
+a fully resolved table base path); no connector-side metadata-SQL workaround will be added.
+
+The ducklake-catalog repo resolved most `E-*` items in `abb26ce..5ba4864`
 (its own review doc uses labels `W/R/C/Q/S/X`). Items below are annotated with the resolving commit;
 the connector-side adoptions those commits require are collected in **`## Connector follow-ups
-(TR-*)`** right below (TR = trino; `T-*` stays Types & DDL). Catalog items still open: E-L5 (DB clock half), E-L8, E-L11, E-M5, E-N3
-(wording), E-N8, P-H1/P-M1 (`listReferencedFilePaths` across all tables — data loss), T-H5, T-L2,
-T-L5, T-M4.
+(TR-*)`** right below (TR = trino; `T-*` stays Types & DDL). After 0.6.0, only the P-H1/P-M1
+payload gap above and minor documentation/re-check nits E-N3/E-N8 remain catalog-related.
 
 Cross-cutting themes (fix these as families, not one-offs):
 1. **Silent fallbacks instead of fail-loud** — E-M6, R-C1, R-M8, T-M1, W-M7, P-M2, R-L5.
@@ -38,11 +45,11 @@ Cross-cutting themes (fix these as families, not one-offs):
 
 ---
 
-## Connector follow-ups from ducklake-catalog 0.5.0 (`X-*`)
+## Connector follow-ups from ducklake-catalog (`TR-*`)
 
 The catalog repo ran its own review (its `TODO-rectify-from-eval.md`, labels `W/R/C/Q/S/X`) and, in
 commits `abb26ce..5ba4864`, resolved nearly every `E-*` item above and changed several APIs. These
-are the connector-side adoptions it hands over, collected here so the 0.5.0 pin bump is one piece
+are the connector-side adoptions it hands over, collected here so catalog bumps are one piece
 of work. Order = suggested order.
 
 - [x] **TR-1 — Map the typed catalog exceptions** (`db9c1f6`, `9f418a3`, `6c104b9`).
@@ -123,7 +130,8 @@ of work. Order = suggested order.
   the connector maps `DucklakeInvalidOperationException` (TR-1) to a clear DDL error.
 
 - [x] **TR-13 — Bump the pin to the released `0.5.0`** (drop `-SNAPSHOT`) once published; the
-  DONE 2026-09-04 `48ce139` (pin `0.5.0` from Maven Central). Harness: `9dfd6cc` fixes the corpus engine for the 0.5.0 driver's re-ATTACH `connect()`.
+  DONE 2026-09-04 `48ce139` (0.5.0), then 0.6.0 after the catalog parity follow-up release.
+  Harness: `9dfd6cc` fixes the corpus engine for the replay driver's re-ATTACH `connect()`.
   scoped `mavenLocal()` in `buildlogic.kotlin.brikk` stays for the dev loop.
 
 ---
@@ -228,8 +236,10 @@ of work. Order = suggested order.
   `LatestInlinedTableQuery` (`:2486-2492, 2705-2719`) → column-count mismatch or positional
   mis-bind after a rename.
 
-- [ ] **E-M5 — `renameSchema` allocates a new `schema_id`.**
-  Not changed (`renameSchema` still `allocateCatalogId()` at `:3495`). Still open.
+- [x] **E-M5 — `renameSchema` allocates a new `schema_id`.**
+  DONE in ducklake-catalog 0.6.0 `26cd2ca`. The review's proposed same-id replacement was invalid
+  because `schema_id` is a primary key: the correct fix keeps the new id but preserves the UUID,
+  migrates schema-scoped settings, versions tags/comments, and records every table's schema history.
   `JdbcDucklakeCatalog.kt:2826-2844`. Orphans schema-scoped settings (`scope_id`) and schema
   comments (`ducklake_tag.object_id`); no `ducklake_schema_versions` rows for re-pointed tables.
   Keep the id; end-snapshot + re-insert (upstream pattern).
@@ -269,8 +279,9 @@ of work. Order = suggested order.
 - [x] **E-L4** — `ducklake_schema_versions` rows with `table_id = NULL` (`:2102-2110`); upstream
   DONE in ducklake-catalog `21ca360` (one row per created/altered table, none for view/schema DDL).
   never writes them. Stop.
-- [ ] **E-L5** — Timestamp time-travel ordered by `snapshot_id DESC` (`:243`) vs upstream
-  PARTIAL in ducklake-catalog `060f4b5`: ordering is now `snapshot_time DESC, snapshot_id DESC`. `snapshot_time` is still the app clock (`nowUtc()`, `JdbcDucklakeCatalog.kt:2640-2647`) — DB `NOW()` half still open (low).
+- [x] **E-L5** — Timestamp time-travel ordered by `snapshot_id DESC` (`:243`) vs upstream
+  DONE in ducklake-catalog 0.6.0 `90927e3`: `snapshot_time DESC, snapshot_id DESC`; snapshot and
+  scheduled-file timestamps use backend `CURRENT_TIMESTAMP`.
   `snapshot_time DESC` (`:4116-4126`); `snapshot_time` from app clock (`:2156`) vs DB `NOW()`.
   Prefer the DB clock.
 - [x] **E-L6** — `record_count` decremented on delete (`:3949-3955`); upstream never does.
@@ -278,16 +289,16 @@ of work. Order = suggested order.
 - [x] **E-L7** — `ducklake_table_column_stats.contains_nan` NULL instead of `false` (`:3586`,
   DONE in ducklake-catalog `21ca360` + `31d65ef` (explicit `false` for floats; tri-state MergeStats semantics).
   `:1320`) vs upstream explicit boolean (`:4441-4446`).
-- [ ] **E-L8** — `orZero(row_id_start)` (`:423`, `:553`) aliases NULL to 0. Fail loud.
-  Not changed (`orZero(ROW_ID_START)` at `:521`, `:4571`). Still open.
+- [x] **E-L8** — `orZero(row_id_start)` (`:423`, `:553`) aliases NULL to 0. Fail loud.
+  DONE in ducklake-catalog 0.6.0 `90927e3`: NULL is catalog corruption.
 - [x] **E-L9** — Compaction recorded as `deleted_from_table`+`inserted_into_table` (`:3697-3698`)
   DONE in ducklake-catalog `bd37ecb` (`rewrite_delete` / `merge_adjacent` change kinds).
   → concurrent DuckDB inserts abort; upstream `merge_adjacent` doesn't conflict with inserts.
 - [x] **E-L10** — Temporal stats compared lexically (`DucklakeStatTypes.kt`) vs upstream value
   DONE in ducklake-catalog `0e6c6f8` (`ComparisonClass`; temporal/boolean by value, text by code point, blob/interval/nested never pruned; `BoundsAccumulator` = upstream MergeStats).
   compare (`ducklake_stats.hpp:18-20`). Breaks on `(BC)` dates / mixed renderings (see W-H3).
-- [ ] **E-L11** — `getDataFiles` orders by `file_order` (`:409`), NULL for upstream files →
-  Not changed (`orderBy(file.FILE_ORDER)` at `:507`). Still open.
+- [x] **E-L11** — `getDataFiles` orders by `file_order` (`:409`), NULL for upstream files →
+  DONE in ducklake-catalog 0.6.0 `90927e3`: deterministic `data_file_id` tie-break.
   nondeterministic. Order by `data_file_id`.
 
 ### Nits
@@ -669,8 +680,9 @@ of work. Order = suggested order.
   `TIMESTAMP_S→_MS→µs→_NS`, `INT→DECIMAL`, decimal widening, `DECIMAL→FLOAT/DOUBLE`,
   `BIGINT→HUGEINT`.
 
-- [ ] **T-H5 — `dropColumn` skips upstream's partition/sort guards.** `DucklakeMetadata.
-  Not changed in catalog (`dropColumn` has no partition/sort guard). Still open.
+- [x] **T-H5 — `dropColumn` skips upstream's partition/sort guards.** `DucklakeMetadata.
+  DONE in ducklake-catalog 0.6.0 `f64072a`: active partition (including descendants), sort, and
+  last-top-level-column guards; typed connector mapping landed in TR-1.
   dropColumn:888-893` → `JdbcDucklakeCatalog.dropColumn:3026-3043` no checks; upstream
   `ducklake_table_entry.cpp:841-865` refuses dropping a column in the active partition or sort spec.
   Leaves `ducklake_partition_column.column_id` dangling → both engines' inserts break.
@@ -688,8 +700,8 @@ of work. Order = suggested order.
   `column.comment`; `createTable:744-774` / `beginCreateTable:1099-1138` drop table and column
   comments (upstream persists as `ducklake_tag`/`ducklake_column_tag`).
 
-- [ ] **T-M4 — Reserved column names not rejected.** Upstream `ducklake_util.cpp:343-347`,
-  Not changed in catalog for `createTable`/`addColumn`; `a8bf82c` honours `CanInlineColumns` (system column names) only when creating inlined tables. Still open at the DDL boundary.
+- [x] **T-M4 — Reserved column names not rejected.** Upstream `ducklake_util.cpp:343-347`,
+  DONE in ducklake-catalog 0.6.0 `f64072a`: CREATE/ADD/RENAME reject all inlined-system names.
   `ducklake_table_entry.cpp:730-737,777-784` refuse `row_id`, `begin_snapshot`, `end_snapshot`,
   `_ducklake_internal_snapshot_id`, `_ducklake_internal_row_id`. Connector `toColumnSpec:802-828`
   has no check → DuckDB's next inlined insert into that table fails.
@@ -718,13 +730,14 @@ of work. Order = suggested order.
 
 - [ ] **T-L1** — `getTableMetadata:273-279` returns empty properties → `SHOW CREATE TABLE` omits
   `partitioned_by`/`location`; no `setTableProperties` (no `SET PARTITIONED BY`/`SET SORTED BY`).
-- [ ] **T-L2** — `column_order`: top-level 1-based / children 0-based (`insertColumnTree:2532,
-  Not changed in catalog (`insertColumnTree` still 1-based/0-based). Still open; interoperable.
+- [x] **T-L2** — `column_order`: top-level 1-based / children 0-based (`insertColumnTree:2532,
+  DONE in ducklake-catalog 0.6.0 `90927e3`: every new row uses `column_order = column_id`.
   2542-2544`); upstream `column_order = column_id`. Interoperable; mixed-writer tables non-monotone.
 - [ ] **T-L3** — Bounded-varchar and `CharType` branches in `DucklakeAddFilesTypeChecker.kt:
   98-104` dead (CHAR rejected upstream of them).
-- [ ] **T-L5** — `renameTable`/`dropTable` clash checks case-sensitive (`JdbcDucklakeCatalog.kt:
-  Not changed in catalog. Still open.
+- [x] **T-L5** — `renameTable`/`dropTable` clash checks case-sensitive (`JdbcDucklakeCatalog.kt:
+  DONE in ducklake-catalog 0.6.0 `f64072a`: schema/table/view lookup, resolution and clashes are
+  case-insensitive like DuckDB.
   2759`); upstream catalog is case-insensitive.
 
 ### Nits
@@ -786,7 +799,11 @@ of work. Order = suggested order.
 ### High
 
 - [ ] **P-H1 — `remove_orphan_files` known-set omits dropped-but-unexpired tables → deletes
-  Not changed in catalog: `listReferencedFilePaths(tableId)` is still per table and still mixes root-relative scheduled paths into the table-relative list (`JdbcDucklakeCatalog.kt:736-751`). Needs a catalog API (`listAllReferencedFiles()` across all tables at all snapshots, scheduled rows returned separately) + connector change. **Still the top open data-loss item on the procedure side.**
+  CATALOG API PARTIAL in 0.6.0 `861f67c`: `listAllReferencedFiles()` now includes every table at
+  every snapshot and separates scheduled paths. **Blocked:** each `DucklakeTableFilePathRef` lacks
+  the schema path required to resolve its schema-relative `tablePath`, especially after table or
+  schema drop. Catalog must add that path (or return the resolved table base). The connector stays
+  on the old path rather than guess. **Still the top open procedure data-loss item.**
   catalog-referenced files.** Targets from `listTables/listSchemas(snapshotId)` (`DucklakeRemove
   OrphanFilesProcedure.kt:141,146,190-193`) are `activeAt` filtered (`JdbcDucklakeCatalog.kt:266,
   283`); `listReferencedFilePaths` only runs for those. Upstream `GetKnownFilesForCleanupQuery`
@@ -836,7 +853,8 @@ of work. Order = suggested order.
 ### Medium
 
 - [ ] **P-M1 — Root-relative scheduled paths resolved against the table path in the orphan
-  Not changed in catalog (see P-H1 — fix together).
+  Catalog 0.6.0 separates scheduled paths correctly, but adoption is blocked by the table-file
+  schema-path gap described in P-H1. Fix/adopt together.
   known-set.** `listReferencedFilePaths` (`JdbcDucklakeCatalog.kt:627-632`) mixes
   `ducklake_files_scheduled_for_deletion` (root-relative) into the table-relative list; procedure
   resolves all with `resolveKnown(ref, tableDataPath)` (`:152-155,322-323`). A DuckDB-scheduled

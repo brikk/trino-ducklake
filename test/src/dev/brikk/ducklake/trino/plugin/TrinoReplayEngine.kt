@@ -52,7 +52,14 @@ class TrinoReplayEngine : ReplayReadEngine {
     private var currentCatalog: String? = null
     private var currentAlias: String? = null
     private var currentSession: Session? = null
-    private var lastDatabase: String? = null
+
+    /**
+     * Trino catalogs already registered, keyed by the lake they point at (rewritten metadata URI +
+     * data path). The driver memoises the rewritten target per corpus file, so a DETACH / re-ATTACH
+     * cycle calls [connect] again for the SAME lake without re-running [metadataRewriter]; Trino
+     * catalogs cannot be re-created under the same name, so we reuse the one we have.
+     */
+    private val catalogsByLake: MutableMap<Pair<String, String>, String> = HashMap()
 
     init {
         val session =
@@ -72,24 +79,31 @@ class TrinoReplayEngine : ReplayReadEngine {
     val metadataRewriter: (String) -> String = { _ ->
         val db = "corpus_" + counter.incrementAndGet()
         server.createDatabase(db)
-        lastDatabase = db
         // Fixture returns the full ATTACH uri including the `ducklake:` prefix;
         // the driver re-adds that prefix, so hand back only the remainder.
         server.getDuckDbAttachUri(db).removePrefix("ducklake:")
     }
 
     override fun connect(attachment: OracleAttachment) {
-        val db = lastDatabase ?: error("metadataRewriter did not run before connect()")
-        val catalog = "corpus_" + counter.get()
-        val properties =
-            ImmutableMap.builder<String, String>()
-                .put("ducklake.catalog.database-url", server.getJdbcUrl(db))
-                .put("ducklake.catalog.database-user", server.getUser())
-                .put("ducklake.catalog.database-password", server.getPassword())
-                .put("ducklake.data-path", attachment.dataPath)
-                .put("fs.hadoop.enabled", "true")
-                .buildOrThrow()
-        runner.createCatalog(catalog, "ducklake", properties)
+        // The PG database is in the (rewritten) URI the oracle attached — never rely on
+        // "the last database the rewriter minted": a re-ATTACH reuses an earlier one.
+        val db = Regex("dbname=([A-Za-z0-9_]+)").find(attachment.metadataUri)?.groupValues?.get(1)
+            ?: error("connect(): rewritten metadata URI carries no dbname: ${attachment.metadataUri}")
+        val catalog = catalogsByLake.getOrPut(attachment.metadataUri to attachment.dataPath) {
+            // Unique Trino catalog name per lake; a lake re-attached with a different DATA_PATH is
+            // a different catalog (same metadata, other files), hence the composite key.
+            val name = "${db}_c${catalogsByLake.size}"
+            val properties =
+                ImmutableMap.builder<String, String>()
+                    .put("ducklake.catalog.database-url", server.getJdbcUrl(db))
+                    .put("ducklake.catalog.database-user", server.getUser())
+                    .put("ducklake.catalog.database-password", server.getPassword())
+                    .put("ducklake.data-path", attachment.dataPath)
+                    .put("fs.hadoop.enabled", "true")
+                    .buildOrThrow()
+            runner.createCatalog(name, "ducklake", properties)
+            name
+        }
         currentCatalog = catalog
         currentAlias = attachment.catalogAlias
         currentSession =

@@ -275,7 +275,7 @@ internal class TestDucklakeStatsExtractor {
         assertThat(stats[0].valueCount).isEqualTo(70L)
         assertThat(stats[0].nullCount).isEqualTo(30L)
         // The contract downstream code depends on: non-null value_count + null_count == row count.
-        assertThat(stats[0].valueCount + stats[0].nullCount).isEqualTo(100L)
+        assertThat(stats[0].valueCount!! + stats[0].nullCount!!).isEqualTo(100L)
     }
 
     // ==================== Thrift FileMetaData builders ====================

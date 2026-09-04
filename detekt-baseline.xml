@@ -50,7 +50,7 @@
     <ID>LongMethod:DucklakeStatsExtractor.kt:DucklakeStatsExtractor$internal fun convertStatValue: String?</ID>
     <ID>LongMethod:DucklakeTypeConverter.kt:DucklakeTypeConverter$open fun toTrinoType: Type</ID>
     <ID>LongMethod:TestDucklakeCrossEngineCatalogMetadata.kt:TestDucklakeCrossEngineCatalogMetadata$@Test @Throws(Exception::class) fun testDuckdbParsesTrinoWrittenChangesMadeAcrossAllChangeKinds</ID>
-    <ID>LongMethod:TestDucklakeCrossEngineCatalogMetadata.kt:TestDucklakeCrossEngineCatalogMetadata$@Test @Throws(Exception::class) fun testDuckdbReadsTrinoTableWithNullDefaultValueDialect</ID>
+    <ID>LongMethod:TestDucklakeCrossEngineCatalogMetadata.kt:TestDucklakeCrossEngineCatalogMetadata$@Test @Throws(Exception::class) fun testDuckdbReadsTrinoTableWithUpstreamDefaultValueDialect</ID>
     <ID>LongMethod:TestDucklakeCrossEngineTypeAudit.kt:TestDucklakeCrossEngineTypeAudit$@Test @Throws(Exception::class) fun testDuckdbInlineAlterThenInlineMatchesTrino</ID>
     <ID>LoopWithTooManyJumpStatements:DucklakeAddFilesNameMapper.kt:DucklakeAddFilesNameMapper$for</ID>
     <ID>LoopWithTooManyJumpStatements:DucklakeBucketPartitionMatcher.kt:DucklakeBucketPartitionMatcher$for</ID>
@@ -89,7 +89,7 @@
     <ID>NestedBlockDepth:TestDucklakeCrossEngineCatalogMetadata.kt:TestDucklakeCrossEngineCatalogMetadata$@Test @Throws(Exception::class) fun testDuckdbParsesTrinoWrittenChangesMadeAcrossAllChangeKinds</ID>
     <ID>NestedBlockDepth:TestDucklakeCrossEngineCatalogMetadata.kt:TestDucklakeCrossEngineCatalogMetadata$@Test @Throws(Exception::class) fun testDuckdbParsesTrinoWrittenChangesMadeWithPathologicalNames</ID>
     <ID>NestedBlockDepth:TestDucklakeCrossEngineCatalogMetadata.kt:TestDucklakeCrossEngineCatalogMetadata$@Test @Throws(Exception::class) fun testDuckdbParsesTrinoWrittenViewAndSchemaDdlChanges</ID>
-    <ID>NestedBlockDepth:TestDucklakeCrossEngineCatalogMetadata.kt:TestDucklakeCrossEngineCatalogMetadata$@Test @Throws(Exception::class) fun testDuckdbReadsTrinoTableWithNullDefaultValueDialect</ID>
+    <ID>NestedBlockDepth:TestDucklakeCrossEngineCatalogMetadata.kt:TestDucklakeCrossEngineCatalogMetadata$@Test @Throws(Exception::class) fun testDuckdbReadsTrinoTableWithUpstreamDefaultValueDialect</ID>
     <ID>NestedBlockDepth:TestDucklakeCrossEnginePuffinDeleteRoundTrip.kt:TestDucklakeCrossEnginePuffinDeleteRoundTrip$@Test @Throws(Exception::class) fun testDuckdbPuffinDeleteSuppressesRowsInTrino</ID>
     <ID>NestedBlockDepth:TestDucklakeCrossEngineRoundTrip.kt:TestDucklakeCrossEngineRoundTrip$@Test @Throws(Exception::class) fun testDiagnosticTrinoWriteThenDuckdbRead</ID>
     <ID>NestedBlockDepth:TestDucklakeCrossEngineRoundTrip.kt:TestDucklakeCrossEngineRoundTrip$@Test @Throws(Exception::class) fun testDuckdbDescribeTrinoTable</ID>

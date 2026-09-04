@@ -420,16 +420,11 @@ class DucklakeMetadata(
 
         val hasLiveInlinedRows = hasLiveInlinedRows(table)
 
-        val tableStats: DucklakeTableStats? = catalog.getTableStats(table.tableId)
-        val recordCount: Long
-        if (tableStats != null) {
-            recordCount = tableStats.recordCount
-        }
-        else {
-            val fallbackRecordCount = getFallbackRecordCount(table)
-                    ?: return TableStatistics.empty()
-            recordCount = fallbackRecordCount
-        }
+        // ducklake_table_stats.record_count is the GROSS row count (upstream never decrements it on
+        // DELETE; DuckDB uses record_count == live as the "no row was ever deleted" proof). The live
+        // count at this snapshot is derived from the catalog the way upstream's
+        // GetNetDataFileRowCount + GetNetInlinedRowCount do.
+        val recordCount: Long = catalog.getLiveRowCount(table.tableId, table.snapshotId)
 
         val stats: TableStatistics.Builder = TableStatistics.builder()
                 .setRowCount(Estimate.of(recordCount.toDouble()))
@@ -469,14 +464,19 @@ class DucklakeMetadata(
 
             val colBuilder: ColumnStatistics.Builder = ColumnStatistics.builder()
 
-            val totalCount = colStats.totalValueCount + colStats.totalNullCount
-            if (activeDataFileRowCount > 0 && totalCount != activeDataFileRowCount) {
-                // If file-level stats for this column do not cover all active data-file rows
-                // (e.g., column added via schema evolution), expose unknown instead of wrong.
-                continue
-            }
-            if (totalCount > 0) {
-                colBuilder.setNullsFraction(Estimate.of(colStats.totalNullCount.toDouble() / totalCount.toDouble()))
+            // Counts are null when any active file lacks them (upstream MergeStats: unknown, not 0).
+            val totalValueCount: Long? = colStats.totalValueCount
+            val totalNullCount: Long? = colStats.totalNullCount
+            if (totalValueCount != null && totalNullCount != null) {
+                val totalCount = totalValueCount + totalNullCount
+                if (activeDataFileRowCount > 0 && totalCount != activeDataFileRowCount) {
+                    // If file-level stats for this column do not cover all active data-file rows
+                    // (e.g., column added via schema evolution), expose unknown instead of wrong.
+                    continue
+                }
+                if (totalCount > 0) {
+                    colBuilder.setNullsFraction(Estimate.of(totalNullCount.toDouble() / totalCount.toDouble()))
+                }
             }
 
             if (colStats.totalSizeBytes > 0) {
@@ -491,13 +491,15 @@ class DucklakeMetadata(
         return stats.build()
     }
 
-    // ANALYZE — refresh DuckLake's cached table-level statistics. The engine scans the table to
-    // produce an authoritative live ROW_COUNT (net of deletes/inlined rows); the connector then
-    // rebuilds the per-column aggregates from the authoritative per-file stats in the catalog
-    // (DucklakeCatalog.analyzeTable), which also tightens any min/max that incremental maintenance
-    // left stale after a delete. We deliberately do NOT declare column statistics here: doing so
-    // would force the engine to hand back typed min/max blocks we'd have to re-encode into
-    // DuckLake's string form, duplicating logic the per-file aggregation already gets right.
+    // ANALYZE — refresh DuckLake's cached table-level statistics. The catalog recomputes
+    // ducklake_table_stats (record_count = GROSS rows of the active files + live inlined rows, as
+    // upstream defines it) and rebuilds the per-column aggregates from the authoritative per-file
+    // stats (DucklakeCatalog.analyzeTable), which also tightens any min/max that incremental
+    // maintenance left stale after a delete. The engine's scanned ROW_COUNT is not what
+    // record_count means, so it is not written; we still declare it so ANALYZE has a plan shape.
+    // We deliberately do NOT declare column statistics here: doing so would force the engine to
+    // hand back typed min/max blocks we'd have to re-encode into DuckLake's string form,
+    // duplicating logic the per-file aggregation already gets right.
     override fun getStatisticsCollectionMetadata(
             session: ConnectorSession,
             tableHandle: ConnectorTableHandle,
@@ -527,43 +529,13 @@ class DucklakeMetadata(
             computedStatistics: Collection<ComputedStatistics>)
     {
         val table = tableHandle as DucklakeTableHandle
-        // ANALYZE without GROUP BY yields a single ungrouped ComputedStatistics; sum defensively.
-        var rowCount = 0L
-        for (statistics in computedStatistics) {
-            val block = statistics.tableStatistics[TableStatisticType.ROW_COUNT] ?: continue
-            if (!block.isNull(0)) {
-                rowCount += BIGINT.getLong(block, 0)
-            }
-        }
-        translateCatalogExceptions { catalog.analyzeTable(table.tableId, rowCount) }
+        translateCatalogExceptions { catalog.analyzeTable(table.tableId) }
     }
 
     private fun hasLiveInlinedRows(table: DucklakeTableHandle): Boolean =
             // getInlinedDataInfos carries a per-descriptor live-rows flag (resolved in the same probe
             // that lists it), so no second per-table hasInlinedRows round trip is needed here.
             catalog.getInlinedDataInfos(table.tableId, table.snapshotId).any { it.hasLiveRows }
-
-    private fun getFallbackRecordCount(table: DucklakeTableHandle): Long?
-    {
-        // Align with Iceberg/Delta behavior: if we can prove there is no data at this snapshot,
-        // return row count 0 instead of unknown.
-        if (!catalog.getDataFiles(table.tableId, table.snapshotId).isEmpty()) {
-            // Data files exist but no table stats were found. Keep row count unknown.
-            return null
-        }
-
-        val inlinedInfos: List<DucklakeInlinedDataInfo> = catalog.getInlinedDataInfos(table.tableId, table.snapshotId)
-        if (inlinedInfos.isEmpty()) {
-            return 0
-        }
-
-        // Count via SELECT COUNT(*) per schema version rather than materialising the inlined
-        // row payload into memory just to call .size() (pg_ducklake #195 warns about OOM on
-        // large inlined heaps; a count is negligible by comparison).
-        return inlinedInfos.stream()
-                .mapToLong { info -> catalog.countInlinedRows(info.tableId, info.schemaVersion, table.snapshotId) }
-                .sum()
-    }
 
     /**
      * Map the change-feed table function to a [ChangeFeedTableHandle] *scan*, so the engine's
@@ -1412,10 +1384,13 @@ class DucklakeMetadata(
 
         // Commit atomically in a single snapshot — critical for UPDATE (delete+insert must be atomic)
         if (!deleteFragments.isEmpty() && !insertFragments.isEmpty()) {
-            translateCatalogExceptions { catalog.commitMerge(tableHandle.tableId, deleteFragments, insertFragments) }
+            // The planning snapshot lets the catalog abort (non-retryably) if another writer
+            // committed a delete file for one of our data files after we planned — otherwise our
+            // replacement delete file would supersede theirs without its positions.
+            translateCatalogExceptions { catalog.commitMerge(tableHandle.tableId, deleteFragments, insertFragments, tableHandle.snapshotId) }
         }
         else if (!deleteFragments.isEmpty()) {
-            translateCatalogExceptions { catalog.commitDelete(tableHandle.tableId, deleteFragments) }
+            translateCatalogExceptions { catalog.commitDelete(tableHandle.tableId, deleteFragments, tableHandle.snapshotId) }
         }
         else if (!insertFragments.isEmpty()) {
             translateCatalogExceptions { catalog.commitInsert(tableHandle.tableId, insertFragments) }

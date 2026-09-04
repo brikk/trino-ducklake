@@ -122,13 +122,14 @@ class TestDucklakeSnapshotAndSchemaVersion
             previousSchemaVersion = dropColumnRow.schemaVersion
             previousBeginSnapshot = dropColumnRow.beginSnapshot
 
+            // DROP TABLE bumps ducklake_snapshot.schema_version but writes NO ducklake_schema_versions
+            // row: upstream InsertNewSchema only records created/altered tables (a dropped table has
+            // no schema to version). ducklake-catalog 21ca360 aligned the library with that.
+            val schemaVersionBeforeDrop = getCurrentSchemaVersion()
             computeActual("DROP TABLE $qualifiedTableName")
+            assertThat(getCurrentSchemaVersion()).isGreaterThan(schemaVersionBeforeDrop)
             schemaVersionRows = getSchemaVersionRows(tableId)
-            assertThat(schemaVersionRows).hasSize(5)
-            val dropTableRow = schemaVersionRows.last()
-            assertThat(dropTableRow.schemaVersion).isGreaterThan(previousSchemaVersion)
-            assertThat(dropTableRow.beginSnapshot).isGreaterThan(previousBeginSnapshot)
-            assertSchemaVersionRowConsistent(dropTableRow)
+            assertThat(schemaVersionRows).hasSize(4)
             assertThat(schemaVersionRows).allMatch { row -> row.tableId == tableId }
         }
         finally {

@@ -34,9 +34,10 @@ import java.sql.DriverManager
  *  * `ducklake_snapshot_changes.changes_made` — every change-kind we emit must round-
  *    trip through DuckDB's `ParseChangeType`/`ParseQuotedValue`, including
  *    names with characters that exercise the quoting helpers.
- *  * `ducklake_column.default_value_dialect` — we write SQL NULL on no-user-default
- *    columns; this guards against a regression to writing the string `'duckdb'`
- *    (which would lie about the dialect of a NULL).
+ *  * `ducklake_column.default_value_dialect` — the catalog writes `'duckdb'` on every new
+ *    column row, exactly as upstream `ColumnToSQLRecursive` does (ducklake-catalog `21ca360`);
+ *    this pins that DuckDB reads such rows and that the `'NULL'` sentinel / `'literal'` type
+ *    are intact.
  *  * View/schema DDL — view rename folds into `altered_view` (upstream's
  *    `ParseChangeType` has no `RENAMED_*`), and view/schema DDL bumps
  *    `schema_version` so DuckDB readers don't miss writes that bypass table DDL.
@@ -210,21 +211,19 @@ open class TestDucklakeCrossEngineCatalogMetadata
         }
     }
 
-    // ==================== default_value_dialect NULL round-trip ====================
+    // ==================== default_value_dialect round-trip ====================
 
     /**
-     * Pins our policy on `ducklake_column.default_value_dialect`: we write SQL NULL
-     * when there is no user-defined default (the common case — every column we write today).
-     * The spec (`ducklake_column.md:36`) says the dialect is "especially useful for
-     * expressions"; upstream's own migration (`ducklake_metadata_manager.cpp:297`) adds the
-     * column with `DEFAULT NULL`, and upstream's ducklake extension never reads the field
-     * anywhere in its C++ source. This test confirms DuckDB can read a Trino-written table
-     * with NULL there without barfing, via both a normal `SELECT` (which loads column
-     * metadata) and `DESCRIBE` (which exercises the full type-and-default-aware path).
+     * Pins the default-value column shape the catalog writes for a no-user-default column:
+     * `default_value = 'NULL'` (the spec sentinel), `default_value_type = 'literal'` and
+     * `default_value_dialect = 'duckdb'` — the same row upstream's `ColumnToSQLRecursive`
+     * (`ducklake_metadata_manager.cpp:2396-2398`) writes. (Earlier revisions wrote SQL NULL for
+     * the dialect; ducklake-catalog `21ca360` aligned it with upstream.) DuckDB must read such a
+     * table via both a normal `SELECT` and `DESCRIBE` (the type-and-default-aware path).
      */
     @Test
     @Throws(Exception::class)
-    fun testDuckdbReadsTrinoTableWithNullDefaultValueDialect()
+    fun testDuckdbReadsTrinoTableWithUpstreamDefaultValueDialect()
     {
         val tableName = "xengine_null_dialect"
         val fullTrino = "test_schema.$tableName"
@@ -234,7 +233,7 @@ open class TestDucklakeCrossEngineCatalogMetadata
             computeActual("CREATE TABLE $fullTrino (id INTEGER, name VARCHAR, amount DOUBLE)")
             computeActual("INSERT INTO $fullTrino VALUES (1, 'alice', 1.5), (2, 'bob', 2.5)")
 
-            // Confirm we wrote SQL NULL (not the string 'NULL') to default_value_dialect.
+            // Confirm the upstream-shaped default triple on every column row.
             val catalog = getIsolatedCatalog()
             DriverManager.getConnection(
                     catalog.jdbcUrl, catalog.user, catalog.password).use { pgConn ->
@@ -256,12 +255,12 @@ open class TestDucklakeCrossEngineCatalogMetadata
                             .`as`("default_value_type should remain 'literal' (spec-preferred)")
                             .isEqualTo("literal")
                     assertThat(r.get(col.DEFAULT_VALUE_DIALECT))
-                            .`as`("default_value_dialect should be SQL NULL when we don't touch the default")
-                            .isNull()
+                            .`as`("default_value_dialect is 'duckdb' like upstream ColumnToSQLRecursive")
+                            .isEqualTo("duckdb")
                 }
             }
 
-            // Normal read — must survive the NULL dialect.
+            // Normal read.
             createDuckdbConnection().use { duck ->
                 duck.createStatement().use { stmt ->
                     stmt.executeQuery("SELECT id, name, amount FROM $fullDuckdb ORDER BY id").use { rs ->
@@ -428,14 +427,14 @@ open class TestDucklakeCrossEngineCatalogMetadata
             val afterDropSchema = readCurrentSchemaVersion(catalog)
             assertThat(afterDropSchema).`as`("DROP SCHEMA bumps schema_version").isGreaterThan(afterDropView)
 
-            // Non-table-scoped bumps must land in ducklake_schema_versions with table_id = NULL
-            // (spec ducklake_schema_versions.md: table_id is BIGINT, nullable). A future DuckDB
-            // version that reads per-table snapshots via this table still needs the broadcast
-            // bump, which is keyed on table_id IS NULL.
+            // ducklake_schema_versions is PER TABLE upstream (InsertNewSchema writes one row per
+            // created/altered table and nothing for view/schema DDL; the V0.3->0.4 migration deletes
+            // any table_id IS NULL rows). View/schema DDL bumps ducklake_snapshot.schema_version
+            // (asserted above) but must NOT leave broadcast rows behind (ducklake-catalog 21ca360).
             val nonTableScopedRows = countSchemaVersionRowsWithNullTableId(catalog, before)
             assertThat(nonTableScopedRows)
-                    .`as`("expected one schema_versions row with NULL table_id per view/schema DDL (6 total)")
-                    .isGreaterThanOrEqualTo(6)
+                    .`as`("view/schema DDL must not write ducklake_schema_versions rows with NULL table_id")
+                    .isEqualTo(0L)
         }
         finally {
             try {
@@ -611,9 +610,8 @@ open class TestDucklakeCrossEngineCatalogMetadata
     {
         DriverManager.getConnection(catalog.jdbcUrl, catalog.user, catalog.password).use { pgConn ->
             val dsl = CatalogTestSupport.dsl(pgConn)
-            // Schema-version rows with table_id IS NULL track view/schema-level DDL events
-            // (CREATE VIEW, DROP SCHEMA, etc.) — the predicate isn't generic enough to live
-            // in CatalogQueries, so it's expressed inline against the generated columns.
+            // Schema-version rows with table_id IS NULL are a shape upstream never writes (and its
+            // migration deletes); we count them to prove view/schema DDL leaves none behind.
             val schver = DUCKLAKE_SCHEMA_VERSIONS.`as`("schver")
             val count = dsl.selectCount()
                     .from(schver)

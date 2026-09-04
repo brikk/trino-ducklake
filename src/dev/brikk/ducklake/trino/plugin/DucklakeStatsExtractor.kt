@@ -67,7 +67,11 @@ object DucklakeStatsExtractor {
             var totalCompressedSize: Long = 0
             var totalValueCount: Long = 0
             var totalNullCount: Long = 0
-            val containsNan = false
+            // Parquet footers carry no NaN flag and exclude NaN from min/max, so this extractor
+            // cannot know. NULL = unknown (upstream MergeStats semantics; readers then fail open on
+            // max-side float pruning). Writers that DID observe the values overwrite it — see
+            // ParquetFileWriter for top-level REAL/DOUBLE columns.
+            val containsNan: Boolean? = null
             var minValue: String? = null
             var maxValue: String? = null
             var hasStats = false

@@ -127,11 +127,18 @@ class ParquetFileWriter(
 
         val extracted: List<DucklakeFileColumnStats> =
                 DucklakeStatsExtractor.extractStats(fileMetaData, leafStatsTargets)
-        // Footer min/max can't express NaN; fold in the contains_nan bits observed during write
-        // (top-level REAL/DOUBLE columns, keyed by field_id).
-        val columnStats: List<DucklakeFileColumnStats> =
-                if (nanColumnIds.isEmpty()) extracted
-                else extracted.map { if (it.columnId in nanColumnIds) it.copy(containsNan = true) else it }
+        // Footer min/max can't express NaN, so the extractor leaves contains_nan NULL (unknown).
+        // We DID observe every value of the top-level REAL/DOUBLE columns as they streamed
+        // through, so for those we can assert TRUE or FALSE. Nested float leaves stay unknown —
+        // never claim "no NaN" for values we did not look at (DuckDB prunes on that claim).
+        val scannedFloatColumnIds: Set<Long> = floatChannels.map { it.columnId }.toSet()
+        val columnStats: List<DucklakeFileColumnStats> = extracted.map { stat ->
+            when {
+                stat.columnId in nanColumnIds -> stat.copy(containsNan = true)
+                stat.columnId in scannedFloatColumnIds -> stat.copy(containsNan = false)
+                else -> stat
+            }
+        }
 
         return DucklakeWriteFragment(
                 relativePath,

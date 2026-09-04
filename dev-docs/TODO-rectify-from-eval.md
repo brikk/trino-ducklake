@@ -58,7 +58,8 @@ of work. Order = suggested order.
   `getTableHandle` (and for inlined splits) using `catalog.isEncrypted()`, with a named
   `NOT_SUPPORTED` error instead of Trino's "not a parquet file".
 
-- [ ] **TR-3 — Row counts: `record_count` is gross** (`db23b77`; closes R-L2 too).
+- [x] **TR-3 — Row counts: `record_count` is gross** (`db23b77`; closes R-L2 too).
+  DONE 2026-09-04 `48ce139` (`getLiveRowCount`, nullable counts, `analyzeTable(tableId)`). Closes R-L2.
   `DucklakeMetadata.getTableStatistics` must use `catalog.getLiveRowCount(tableId, snapshotId)`
   instead of `getTableStats().recordCount`; `finishStatisticsCollection` should call
   `analyzeTable(tableId)` (the `(tableId, rowCount)` overload is deprecated). Handle nullable
@@ -70,7 +71,8 @@ of work. Order = suggested order.
   `flushInlinedDataWithSnapshots(tableId, List<FlushedInlinedFile>, preservedRowIdStart)`. Until
   then the legacy path still has the P-C1 race.
 
-- [ ] **TR-5 — Per-file stats: pass unknown as `null`** (`31d65ef`; closes R-M2/W-M1 write half).
+- [x] **TR-5 — Per-file stats: pass unknown as `null`** (`31d65ef`; closes R-M2/W-M1 write half).
+  DONE 2026-09-04 `48ce139` (extractor → `null`; writer asserts TRUE/FALSE for scanned top-level floats only). Closes the write half of R-M2/W-M1; nested float leaves are now honestly unknown.
   `DucklakeStatsExtractor.kt:70` `containsNan = false` → `null` unless values were inspected;
   `value_count`/`null_count` nullable on `DucklakeFileColumnStats` (write together or not at all).
 
@@ -84,7 +86,8 @@ of work. Order = suggested order.
   `readPositionsWithSnapshots` and fall back) instead of `currentDeletePartialMax`; flush-written
   files have `partial_max = NULL` and multi-snapshot embedded ids.
 
-- [ ] **TR-8 — Pass the read snapshot to `commitDelete`/`commitMerge`** (`0f0e4e8`).
+- [x] **TR-8 — Pass the read snapshot to `commitDelete`/`commitMerge`** (`0f0e4e8`).
+  DONE 2026-09-04 `48ce139`.
   `DucklakeMetadata.kt` ~`:1415/1418` must call the `(tableId, fragments, readSnapshotId)`
   overloads with `tableHandle.snapshotId`; the old signatures are `@Deprecated` and degrade the
   stale-delete guard to the attempt's base snapshot.
@@ -111,7 +114,8 @@ of work. Order = suggested order.
   `DucklakeTypeConverter.toDucklakeType` output is accepted for every Trino type we allow and that
   the connector maps `DucklakeInvalidOperationException` (TR-1) to a clear DDL error.
 
-- [ ] **TR-13 — Bump the pin to the released `0.5.0`** (drop `-SNAPSHOT`) once published; the
+- [x] **TR-13 — Bump the pin to the released `0.5.0`** (drop `-SNAPSHOT`) once published; the
+  DONE 2026-09-04 `48ce139` (pin `0.5.0` from Maven Central). Harness: `9dfd6cc` fixes the corpus engine for the 0.5.0 driver's re-ATTACH `connect()`.
   scoped `mavenLocal()` in `buildlogic.kotlin.brikk` stays for the dev loop.
 
 ---
@@ -363,6 +367,7 @@ of work. Order = suggested order.
 ### Medium
 
 - [ ] **R-M2 — `contains_nan` hard-coded `false` on write; NaN row groups dropped from min/max**
+  PARTIAL `48ce139` (TR-5): `false` is no longer claimed for unobserved leaves — NULL/unknown instead. Remaining: scan nested float leaves so they can be TRUE/FALSE too, and keep NaN-bearing row groups out of min/max only when `contains_nan` is TRUE.
   Catalog `31d65ef` now accepts `containsNan = null` (unknown) and NULL counts with upstream MergeStats semantics — the connector should pass `null` unless it inspected values (→ **TR-5**).
   (also W-M1). `DucklakeStatsExtractor.kt:70-73,150-163`. Upstream tracks `has_nan`
   (`ducklake_insert.cpp:100-102`) and pruning consults it (`GenerateConstantFilterDouble`). A
@@ -421,7 +426,8 @@ of work. Order = suggested order.
 ### Low
 
 - [ ] **R-L1** — `DucklakeSnapshotResolver.kt:89-91` rejects snapshot id 0 (valid upstream).
-- [ ] **R-L2** — `getTableStatistics :424` uses current-only `getTableStats` under time travel;
+- [x] **R-L2** — `getTableStatistics :424` uses current-only `getTableStats` under time travel;
+  DONE with TR-3 (`48ce139`).
   column stats are per-snapshot → inconsistent estimates.
 - [ ] **R-L3** — Change-feed data columns built without `initialDefault`
   (`AbstractChangeFeedTableFunction.kt:100-106`); inlined change rows skip nested identity mapping

@@ -61,13 +61,13 @@ import java.time.Instant
  *    for deletion ([DucklakeCatalog.listReferencedFilePaths]); a listed file not in that set, and
  *    not inside a known dataset directory (lance/vortex dirs), is a candidate orphan.
  *  - **Type-scoped, not a blind diff**: only files that are recognizably DuckLake residue are
- *    deleted — a `ducklake-`-prefixed data/delete file (`.parquet`/`.puffin`/`.db`/`.vortex`) or a
+ *    deleted — a `ducklake-`-prefixed data/delete file (`.parquet`/`.puffin`/`.vortex`) or a
  *    member of a `ducklake-*.lance` dataset directory (see [isDucklakeManagedResidue]). Foreign
  *    files a user parked under the data path (`_SUCCESS`, `foo.txt`, `.crc`, their own
  *    non-`ducklake-` parquet) are never touched. This is broader than upstream DuckDB's
  *    `ducklake_delete_orphaned_files`, which sweeps `.parquet`/`.puffin` only as of DuckLake 1.5.5
  *    (`.puffin` added upstream in ducklake main `1e2e74ee`; before that it was `.parquet`-only) —
- *    it still abandons `.db`/`.vortex`/`.lance` residue, which we reclaim — and narrower than a raw
+ *    it still abandons `.vortex`/`.lance` residue, which we reclaim — and narrower than a raw
  *    unreferenced-file sweep.
  *  - The retention threshold is the grace period that keeps the op safe without a global lock: a
  *    file young enough to still be referenced by an in-flight (possibly cross-engine) writer is
@@ -78,7 +78,9 @@ import java.time.Instant
  * Modeled on upstream DuckLake's `ducklake_delete_orphaned_files` (filesystem set minus known set,
  * mtime-gated), scoped to one table's data path in the Trino procedure idiom — but type-scoped to
  * DuckLake-managed residue (see above) rather than upstream's `.parquet`/`.puffin`-only filter
- * (upstream added `.puffin` in DuckLake 1.5.5; still no `.db`/`.vortex`/`.lance`).
+ * (upstream added `.puffin` in DuckLake 1.5.5; still no `.vortex`/`.lance`). `.db` is deliberately
+ * NOT eligible: DuckDB explicitly supports placing the metadata catalog under `data_path`, and a
+ * `ducklake-*.db` catalog must never be mistaken for an orphan data file.
  */
 class DucklakeRemoveOrphanFilesProcedure @Inject constructor(
         private val catalog: DucklakeCatalog,
@@ -296,9 +298,10 @@ class DucklakeRemoveOrphanFilesProcedure @Inject constructor(
      * or delete-file residue — the only files `remove_orphan_files` may delete. Two shapes:
      *
      *  - A **single data/delete file**: basename starts with the `ducklake-` prefix that every
-     *    DuckLake writer uses (`ducklake-<uuid>.parquet|.db|.vortex`, and delete files
+     *    DuckLake writer uses (`ducklake-<uuid>.parquet|.vortex`, and delete files
      *    `ducklake-delete-<uuid>.<ext>` (this connector) / `ducklake-<uuid>-delete.<ext>` (DuckDB))
-     *    AND ends with a managed extension (`.parquet`/`.puffin`/`.db`/`.vortex`).
+     *    AND ends with a managed extension (`.parquet`/`.puffin`/`.vortex`). `.db` is excluded:
+     *    a DuckLake metadata database can legally live under the data path.
      *  - A **Lance dataset member**: Lance is a *directory* (`ducklake-<uuid>.lance/`) whose internal
      *    files (the `data` and `_versions` subdir entries) do NOT carry the prefix — recognized by
      *    the enclosing `ducklake-<uuid>.lance` dataset directory anywhere in the path.
@@ -306,7 +309,7 @@ class DucklakeRemoveOrphanFilesProcedure @Inject constructor(
      * Anything else (foreign files, a user's own non-`ducklake-` parquet, `_SUCCESS`, …) returns
      * false and is left untouched. This is intentionally narrower than a raw filesystem diff and
      * broader than upstream DuckDB's `.parquet`/`.puffin` sweep (upstream added `.puffin` in DuckLake
-     * 1.5.5; we also reclaim our `.db`/`.vortex`/`.lance` residue, which DuckDB abandons).
+     * 1.5.5; we also reclaim our `.vortex`/`.lance` residue, which DuckDB abandons).
      */
     private fun isDucklakeManagedResidue(path: String): Boolean {
         val basename = path.substringAfterLast('/')
@@ -354,7 +357,7 @@ class DucklakeRemoveOrphanFilesProcedure @Inject constructor(
         private const val LANCE_DATASET_SUFFIX: String = ".lance"
 
         /** Single-file data/delete formats this connector or DuckDB can write. Lance is a dir (handled separately). */
-        private val MANAGED_FILE_EXTENSIONS: List<String> = listOf(".parquet", ".puffin", ".db", ".vortex")
+        private val MANAGED_FILE_EXTENSIONS: List<String> = listOf(".parquet", ".puffin", ".vortex")
 
         private val REMOVE_ORPHAN_FILES: MethodHandle = MethodHandles.lookup().findVirtual(
                 DucklakeRemoveOrphanFilesProcedure::class.java,

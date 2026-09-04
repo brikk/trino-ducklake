@@ -170,6 +170,9 @@ class TestDucklakeRemoveOrphanFiles : AbstractTestQueryFramework() {
                 plantOrphan(dir, "my-export.parquet", ageDays = 30),
                 // Right prefix but not a managed data/delete extension — must survive.
                 plantOrphan(dir, "ducklake-scratch.log", ageDays = 30),
+                // A DuckDB metadata catalog can legally live under data_path. Even with the
+                // managed prefix it must never be eligible for orphan deletion (P-M3).
+                plantOrphan(dir, "ducklake-metadata.db", ageDays = 30),
             )
             // A genuine aged ducklake- orphan as a positive control (proves the sweep ran).
             val realOrphan = plantOrphan(dir, "ducklake-orphan-aged.parquet", ageDays = 30)

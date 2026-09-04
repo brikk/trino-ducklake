@@ -40,9 +40,9 @@ import org.apache.parquet.format.CompressionCodec
 import java.io.IOException
 import java.io.OutputStream
 import java.io.UncheckedIOException
-import java.util.LinkedHashSet
 import java.util.NavigableMap
 import java.util.TreeMap
+import java.util.TreeSet
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletableFuture.completedFuture
@@ -287,7 +287,12 @@ open class DucklakeMergeSink(
         val range: DataFileRange = checkNotNull(findDataFileRange(dataFileId)) {
             "No data file range for data file $dataFileId"
         }
-        val unionPositions: LinkedHashSet<Long> = LinkedHashSet()
+        // Upstream's delete writer uses std::set, and its reader rejects positions that are not
+        // strictly increasing. A LinkedHashSet preserved "prior file, then new arrival order", so
+        // deleting a lower position in a later statement produced e.g. [4, 1] and made DuckDB
+        // refuse the table. TreeSet also deduplicates pathological input while enforcing the wire
+        // invariant for both Parquet and Puffin writers.
+        val unionPositions: TreeSet<Long> = TreeSet()
         for (existingPath in range.existingDeleteFilePaths) {
             unionPositions.addAll(readPriorPositions(existingPath, range))
         }
@@ -318,7 +323,7 @@ open class DucklakeMergeSink(
         val prior = DucklakeDeleteFileReader.readPositions(
                 fileSystem, existingPath, 0L, parquetReaderOptions, fileFormatDataSourceStats)
         // Legacy `row_id` files carry GLOBAL ids → rebase to file-local; spec/puffin are already local.
-        return if (prior.global) prior.values.mapTo(LinkedHashSet()) { it - range.rowIdStart } else prior.values
+        return if (prior.global) prior.values.mapTo(TreeSet()) { it - range.rowIdStart } else prior.values
     }
 
     /** Write the union positions as a DuckLake puffin deletion-vector (bare blob) delete file. */

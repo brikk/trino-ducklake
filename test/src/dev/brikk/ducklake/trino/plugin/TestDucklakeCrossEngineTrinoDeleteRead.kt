@@ -88,6 +88,32 @@ class TestDucklakeCrossEngineTrinoDeleteRead : AbstractDucklakeCrossEngineTest()
         }
     }
 
+    /**
+     * DuckDB's delete-file reader requires `pos` to be strictly increasing. The connector used
+     * to preserve insertion order while building the cumulative replacement file: prior position
+     * 4 followed by a new position 1 produced `[4, 1]`, and DuckDB refused the entire table with
+     * "row ids must be sorted and strictly increasing". The two statements below pin that exact
+     * cross-snapshot order (higher position first, then lower).
+     */
+    @Test
+    fun duckdbReadsAfterLaterDeleteAddsALowerPosition() {
+        val table = "test_schema.descending_delete_positions"
+        try {
+            computeActual("CREATE TABLE $table (id INTEGER)")
+            computeActual("INSERT INTO $table VALUES (1), (2), (3), (4), (5), (6)")
+
+            computeActual("DELETE FROM $table WHERE id = 5") // file-local pos 4
+            computeActual("DELETE FROM $table WHERE id = 2") // file-local pos 1
+
+            assertThat(duckdbQueryLongs("SELECT id FROM ducklake_db.$table ORDER BY id"))
+                    .`as`("cumulative delete positions are sorted for DuckDB's strict reader")
+                    .containsExactly(1L, 3L, 4L, 6L)
+        }
+        finally {
+            tryDropTable(table)
+        }
+    }
+
     /** Runs [sql] on a fresh attached DuckDB connection, returning the single BIGINT column. */
     private fun duckdbQueryLongs(sql: String): List<Long> {
         val ids = mutableListOf<Long>()

@@ -230,6 +230,42 @@ class TestDucklakeRewriteDataFiles : AbstractTestQueryFramework() {
         }
     }
 
+    /**
+     * A partial/back-dated rewrite cannot physically drop deleted rows: the output is visible at
+     * snapshots before the deletion, where those rows were still live. Upstream merge_adjacent
+     * therefore skips sources carrying a delete file (or an inlined file deletion). Clean sources
+     * in the same table may still be compacted.
+     */
+    @Test
+    fun partialRewriteLeavesDeleteBearingSourceAvailableForTimeTravel() {
+        val table = "test_schema.rewrite_partial_deletes"
+        try {
+            computeActual("CREATE TABLE $table AS SELECT * FROM (VALUES 1, 2) AS t(id)")
+            computeActual("INSERT INTO $table VALUES (3)")
+            computeActual("INSERT INTO $table VALUES (4)")
+            val beforeDelete = latestSnapshot(table)
+            computeActual("DELETE FROM $table WHERE id = 2")
+            assertThat(fileCount(table)).isEqualTo(3L)
+
+            computeActual("CALL system.rewrite_data_files(schema_name => 'test_schema', " +
+                    "table_name => 'rewrite_partial_deletes', reclaim_sources_immediately => true)")
+
+            assertThat(fileCount(table))
+                    .`as`("delete-bearing source stays; two clean sources compact to one")
+                    .isEqualTo(2L)
+            assertThat(computeActual("SELECT id FROM $table ORDER BY id").materializedRows
+                    .map { it.getField(0) as Int })
+                    .containsExactly(1, 3, 4)
+            assertThat(computeActual("SELECT id FROM $table FOR VERSION AS OF $beforeDelete ORDER BY id")
+                    .materializedRows.map { it.getField(0) as Int })
+                    .`as`("the row remains visible before its deletion")
+                    .containsExactly(1, 2, 3, 4)
+        }
+        finally {
+            tryDrop(table)
+        }
+    }
+
     @Test
     fun partitionedTableCompactsPerPartition() {
         val table = "test_schema.rewrite_partitioned"

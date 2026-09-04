@@ -135,8 +135,16 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
         val (schema, table) = resolveTable(schemaArg, tableArg, snapshotId)
         val tableId = table.tableId
 
-        val candidates: List<DucklakeDataFile> =
-                selectCandidates(catalog.getDataFiles(tableId, snapshotId), threshold, reclaimSourcesImmediately)
+        // Upstream merge_adjacent refuses partial/back-dated rewrites of sources carrying any
+        // deletion state. Physically dropping tombstoned rows and back-dating that result makes
+        // those rows disappear from snapshots where they were still live. Ordinary (non-partial)
+        // rewrite is safe because sources remain available to older snapshots.
+        val filesWithInlinedDeletes = filesWithInlinedDeletes(tableId, snapshotId, reclaimSourcesImmediately)
+        val candidates: List<DucklakeDataFile> = selectCandidates(
+                catalog.getDataFiles(tableId, snapshotId),
+                threshold,
+                reclaimSourcesImmediately,
+                filesWithInlinedDeletes)
         if (candidates.size < 2) {
             log.info("rewrite_data_files: %s.%s has %d compactable file(s) below %d bytes — nothing to compact",
                     schemaArg, tableArg, candidates.size, threshold)
@@ -187,7 +195,16 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
         commitRewrite(tableId, sourceIds, nonEmpty, snapshotId, reclaimSourcesImmediately, schemaArg, tableArg)
     }
 
-    /** Parquet data files below [threshold]; partial mode also requires NON-partial sources. */
+    /** Parquet data files below [threshold]; partial mode also requires clean, non-partial sources. */
+    private fun filesWithInlinedDeletes(tableId: Long, snapshotId: Long, partial: Boolean): Set<Long> =
+        if (partial) {
+            catalog.getInlinedFileDeletesBetween(tableId, 0L, snapshotId)
+                    .mapTo(mutableSetOf()) { it.dataFileId }
+        }
+        else {
+            emptySet()
+        }
+
     /**
      * Caps the total SOURCE FILES consumed this invocation at [maxFiles] (0 or
      * negative = unlimited). Groups are taken in deterministic order (smallest
@@ -215,11 +232,15 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
         return capped
     }
 
-    private fun selectCandidates(dataFiles: List<DucklakeDataFile>, threshold: Long, partial: Boolean): List<DucklakeDataFile> =
+    private fun selectCandidates(
+            dataFiles: List<DucklakeDataFile>,
+            threshold: Long,
+            partial: Boolean,
+            filesWithInlinedDeletes: Set<Long>): List<DucklakeDataFile> =
         dataFiles.filter { f ->
             FORMAT_PARQUET.equals(f.fileFormat, ignoreCase = true) &&
                 f.fileSizeBytes < threshold &&
-                (!partial || f.partialMax == null)
+                (!partial || (f.partialMax == null && f.deleteFilePath == null && f.dataFileId !in filesWithInlinedDeletes))
         }
 
     /** Partition group of a candidate file: its `partition_id` + stored partition values (keyed by key index). */

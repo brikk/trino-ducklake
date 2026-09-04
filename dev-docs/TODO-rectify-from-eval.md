@@ -813,7 +813,7 @@ of work. Order = suggested order.
   table dirs are `"$tableName/"`, `DROP TABLE t; CREATE TABLE t` reuses the directory, so even the
   **table-scoped** call deletes the old table's files. No test drops a table first.
 
-- [ ] **P-H2 — `rewrite_data_files(reclaim_sources_immediately => true)` merges sources carrying
+- [x] **P-H2 — `rewrite_data_files(reclaim_sources_immediately => true)` merges sources carrying
   deletes, then deletes the delete files → time travel silently loses rows.** `selectCandidates`
   (`DucklakeRewriteDataFilesProcedure.kt:218-223`) filters only format/size/`partialMax == null`;
   reads apply deletes (`:337-345`); partial commit back-dates the merged file to `min(source begin)`
@@ -823,6 +823,10 @@ of work. Order = suggested order.
   inserted s1, deleted s3, merged s5 → `FOR VERSION AS OF s2` omits it; irreversible after cleanup.
   Fix: exclude delete-bearing sources from partial rewrites (upstream), or write a snapshot-tagged
   delete file for the merged output.
+  DONE 2026-09-04: partial candidates now exclude existing `delete_file_path` and any data-file id
+  returned by `getInlinedFileDeletesBetween`; ordinary rewrite still applies deletes safely because
+  source files remain available to older snapshots. Regression compacts clean peers while keeping
+  the delete-bearing source and verifies the deleted row remains visible before its delete snapshot.
 
 - [ ] **P-H3 — `add_files` on a partitioned table accepts files with missing/incomplete partition
   values → enforced partition predicates leak rows** (interacts with R-C1). `DucklakeAddFiles

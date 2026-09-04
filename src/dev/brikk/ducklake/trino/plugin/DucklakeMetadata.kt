@@ -1818,7 +1818,11 @@ class DucklakeMetadata(
         private fun classifyTransformEnforcement(field: DucklakePartitionField, column: DucklakeColumnHandle): ConstraintEnforcement
         {
             if (field.transform.isIdentity()) {
-                return ConstraintEnforcement.FULLY_ENFORCED
+                // Identity values allow exact FILE pruning only when every split carries a
+                // parseable value for the active spec. Files written before partitioning, under a
+                // retired spec, imported without partition values, and inlined rows do not. Keep
+                // the predicate as a residual so those rows are still filtered by Trino.
+                return ConstraintEnforcement.PARTIALLY_ENFORCED
             }
             if (field.transform.isTemporal()) {
                 // Temporal transforms support safe partition pruning but do not fully enforce
@@ -1968,5 +1972,6 @@ class DucklakeMetadata(
                     is DucklakeCatalogCorruptionException -> TrinoException(GENERIC_INTERNAL_ERROR, e.message, e)
                     else -> TrinoException(GENERIC_INTERNAL_ERROR, e.message, e)
                 }
+
     }
 }

@@ -124,13 +124,16 @@ class TestDucklakePartitionPruning {
         assertThat(result).isPresent
         val newHandle = result.get().handle as DucklakeTableHandle
 
-        // Region predicate should be enforced (partition column with identity transform)
+        // Identity partition values are used for exact file pruning, but the predicate remains a
+        // residual for files without a usable value (pre-partition / retired-spec / inlined).
         assertThat(newHandle.enforcedPredicate.isAll).isFalse()
         assertThat(newHandle.enforcedPredicate.domains.orElseThrow()).containsKey(regionColumn)
+        assertThat(newHandle.unenforcedPredicate.domains.orElseThrow()).containsKey(regionColumn)
 
-        // Remaining filter should NOT include region (it's enforced)
+        // Trino must still evaluate region row-by-row when file pruning cannot prove it.
         val remaining: TupleDomain<ColumnHandle> = result.get().remainingFilter
-        assertThat(remaining.isAll).isTrue()
+        assertThat(remaining.isAll).isFalse()
+        assertThat(remaining.domains.orElseThrow()).containsKey(regionColumn)
     }
 
     @Test

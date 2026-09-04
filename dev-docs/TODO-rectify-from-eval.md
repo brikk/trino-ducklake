@@ -45,7 +45,9 @@ commits `abb26ce..5ba4864`, resolved nearly every `E-*` item above and changed s
 are the connector-side adoptions it hands over, collected here so the 0.5.0 pin bump is one piece
 of work. Order = suggested order.
 
-- [ ] **TR-1 — Map the typed catalog exceptions** (`db9c1f6`, `9f418a3`, `6c104b9`).
+- [x] **TR-1 — Map the typed catalog exceptions** (`db9c1f6`, `9f418a3`, `6c104b9`).
+  DONE 2026-09-04 `0034446`: every catalog exception class maps to a stable Trino code; mapping
+  is unit-tested and unexpected non-catalog runtime failures still propagate unchanged.
   `translateCatalogExceptions` must map `DucklakeEntityNotFoundException` → `NOT_FOUND`/
   `TABLE_NOT_FOUND`/`SCHEMA_NOT_FOUND`, `DucklakeEntityAlreadyExistsException` → `ALREADY_EXISTS`,
   `DucklakeSchemaNotEmptyException` → `SCHEMA_NOT_EMPTY`, `DucklakeInvalidOperationException` →
@@ -53,7 +55,9 @@ of work. Order = suggested order.
   `DucklakeUnsupportedCatalogVersionException` → `NOT_SUPPORTED`, `DucklakeCatalogCorruptionException`
   → `GENERIC_INTERNAL_ERROR`. Conflicts now arrive unwrapped (no `rootCause()` digging).
 
-- [ ] **TR-2 — Encryption gate on the READ side** (`6c104b9`; closes R-M10/W-H5 fully).
+- [x] **TR-2 — Encryption gate on the READ side** (`6c104b9`; closes R-M10/W-H5 fully).
+  DONE 2026-09-04 `0034446`: normal table handles fail with `NOT_SUPPORTED` before Parquet or
+  inlined reads; metadata tables and metadata-only DDL remain available for diagnosis.
   Catalog refuses file writes into an encrypted lake; the connector must also refuse at
   `getTableHandle` (and for inlined splits) using `catalog.isEncrypted()`, with a named
   `NOT_SUPPORTED` error instead of Trino's "not a parquet file".
@@ -76,12 +80,16 @@ of work. Order = suggested order.
   `DucklakeStatsExtractor.kt:70` `containsNan = false` → `null` unless values were inspected;
   `value_count`/`null_count` nullable on `DucklakeFileColumnStats` (write together or not at all).
 
-- [ ] **TR-6 — Delete-file snapshot filter unconditional** (`f1c63ff`; closes R-L6).
+- [x] **TR-6 — Delete-file snapshot filter unconditional** (`f1c63ff`; closes R-L6).
+  DONE 2026-09-04 `948106e`: read snapshot carried for every Parquet/Puffin delete file; readers
+  inspect the file and fall back correctly for legacy global-row-id and normal two-column files.
   `DucklakeSplitManager.needsPartialDeleteSnapshotFilter` must return true for every
   PARQUET/PUFFIN delete file (drop the `deleteFilePartialMax` gate); the reader already ignores
   it for 2-column files.
 
-- [ ] **TR-7 — Change feed: detect 3-column delete files by schema** (`36bdb24`; R-M7 sibling).
+- [x] **TR-7 — Change feed: detect 3-column delete files by schema** (`36bdb24`; R-M7 sibling).
+  DONE 2026-09-04 `9147149`: Parquet schema is authoritative; regression sets `partial_max = NULL`
+  on a real multi-snapshot delete file and verifies per-snapshot change-feed attribution.
   `DucklakePageSourceProvider.isConsolidatedDelete` must read the file schema (or try
   `readPositionsWithSnapshots` and fall back) instead of `currentDeletePartialMax`; flush-written
   files have `partial_max = NULL` and multi-snapshot embedded ids.
@@ -309,7 +317,7 @@ of work. Order = suggested order.
 
 ### Critical
 
-- [ ] **R-C1 — Identity-partition predicates are `FULLY_ENFORCED` but not enforced for files the
+- [x] **R-C1 — Identity-partition predicates are `FULLY_ENFORCED` but not enforced for files the
   pruner can't decide on → over-return.** `DucklakeMetadata.kt:1804-1808` classifies identity as
   `FULLY_ENFORCED`; `:669-671` drops it from `remainingFilter`. `DucklakeSplitManager.
   pruneByPartitionValues` then *keeps* a file whenever it can't decide: retired/foreign
@@ -324,6 +332,9 @@ of work. Order = suggested order.
   `SELECT * FROM t WHERE region='US'` returns every row of the pre-partition file. Untested (all
   tests partition before inserting). Fix: classify identity as `PARTIALLY_ENFORCED` (engine
   re-filters), or fail loud when a split can't be proven to satisfy the enforced domain.
+  DONE 2026-09-04 `ff25bee`: identity is partially enforced; a cross-engine regression writes an
+  unpartitioned file, evolves to identity partitioning, writes another file, and verifies both
+  predicates return only matching rows.
 
 ### High
 
@@ -469,7 +480,7 @@ of work. Order = suggested order.
 
 ### Critical
 
-- [ ] **W-C1 — Parquet delete files written with UNSORTED positions → DuckDB refuses to read the
+- [x] **W-C1 — Parquet delete files written with UNSORTED positions → DuckDB refuses to read the
   table.** `DucklakeMergeSink.kt:290-301` builds `unionPositions: LinkedHashSet<Long>` = prior
   positions (file order) then new positions in *arrival* order; `:382-385` writes in that order.
   Upstream writer uses an ordered `set<PositionType>` (`ducklake_delete.hpp:68`); reader hard-fails
@@ -479,6 +490,8 @@ of work. Order = suggested order.
   in join order, makes the table unreadable cross-engine until superseded.
   `TestDucklakeCrossEngineTrinoDeleteRead.kt:45-53` only deletes ascending. Puffin path unaffected.
   Fix: sort before writing (`TreeSet`/sorted array). Add a descending-order cross-engine test.
+  DONE 2026-09-04 `0841dc7`: cumulative positions use `TreeSet`; DuckDB oracle deletes file-local
+  position 4 then position 1 and reads the survivors successfully.
 
 - [ ] **W-C2 — One data file can receive multiple delete files in one commit → DuckDB reads
   surviving rows twice.** Each `DucklakeMergeSink` has its own `deletesByDataFile` (`:85`) and emits
@@ -493,6 +506,10 @@ of work. Order = suggested order.
   `getUpdateLayout` partitioning by data file (Trino's standard approach) **and/or** merge fragments
   by `dataFileId` in `finishMerge` (re-union positions → one file). Catalog should also assert the
   invariant at commit.
+  RECONFIRMED 2026-09-04: a temporary pre-commit guard caught duplicate fragments in the existing
+  `TestDucklakeMerge.testMergeDeleteOnly`, so this is a normal distributed MERGE path, not merely
+  theoretical. Guard-only was removed because it regressed supported MERGE. Real fix needs
+  `getUpdateLayout` + a `ConnectorNodePartitioningProvider` keyed by source `data_file_id`.
 
 ### High
 
@@ -833,11 +850,14 @@ of work. Order = suggested order.
   every delete failed. Upstream `RemoveFiles` throws (`ducklake_cleanup_files.cpp:137-145`). Treat
   not-found as success (remove row); propagate other failures.
 
-- [ ] **P-M3 — `.db` in `MANAGED_FILE_EXTENSIONS` can match a DuckDB metadata catalog under the
+- [x] **P-M3 — `.db` in `MANAGED_FILE_EXTENSIONS` can match a DuckDB metadata catalog under the
   data path.** `DucklakeRemoveOrphanFilesProcedure.kt:357` `listOf(".parquet", ".puffin", ".db",
   ".vortex")`. Upstream tests `metadata_in_data_path.test` layout; a `ducklake-*.db` catalog there
   is unreferenced, prefixed, old → sweep deletes the **entire catalog**. `.db/.vortex/.lance` are no
   longer written. Drop them (keep `.parquet`, `.puffin`).
+  DONE 2026-09-04 `f121266`: `.db` is never eligible; regression preserves an aged
+  `ducklake-metadata.db` while deleting the Parquet control. Legacy `.vortex`/`.lance` residue
+  remains reclaimable.
 
 - [ ] **P-M4 — Known-set vs listing compared as raw strings; `add_files` stores the user path
   verbatim.** `isDeletableOrphan :287-288` no scheme/`//`/`.` normalisation; `add_files` registers

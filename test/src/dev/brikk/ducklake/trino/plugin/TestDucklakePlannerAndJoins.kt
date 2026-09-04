@@ -98,8 +98,9 @@ open class TestDucklakePlannerAndJoins : AbstractDucklakeIntegrationTest() {
         val result = computeActual(
             "EXPLAIN ANALYZE SELECT * FROM partitioned_table WHERE region = 'US'")
         val plan = result.materializedRows[0].getField(0).toString()
-        // The plan should show the scan happened
-        assertThat(plan).contains("TableScan")
+        // Identity partition pruning narrows files, but the residual remains for files without a
+        // usable partition value (R-C1), so Trino reports the combined node as ScanFilter.
+        assertThat(plan).contains("ScanFilter").contains("region = varchar 'US'")
     }
 
     // ==================== Joins (exercises dynamic filter path) ====================

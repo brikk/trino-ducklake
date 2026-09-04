@@ -19,9 +19,17 @@ import io.airlift.json.JsonCodec
 import io.airlift.log.Logger
 import io.airlift.slice.Slice
 import dev.brikk.ducklake.catalog.DucklakeCatalog
+import dev.brikk.ducklake.catalog.DucklakeCatalogCorruptionException
 import dev.brikk.ducklake.catalog.DucklakeColumn
 import dev.brikk.ducklake.catalog.DucklakeColumnStats
 import dev.brikk.ducklake.catalog.DucklakeDeleteFragment
+import dev.brikk.ducklake.catalog.DucklakeEncryptedCatalogUnsupportedException
+import dev.brikk.ducklake.catalog.DucklakeEntityAlreadyExistsException
+import dev.brikk.ducklake.catalog.DucklakeEntityNotFoundException
+import dev.brikk.ducklake.catalog.DucklakeException
+import dev.brikk.ducklake.catalog.DucklakeInvalidOperationException
+import dev.brikk.ducklake.catalog.DucklakeSchemaNotEmptyException
+import dev.brikk.ducklake.catalog.DucklakeUnsupportedCatalogVersionException
 import dev.brikk.ducklake.catalog.DucklakeWriteFragment
 import dev.brikk.ducklake.catalog.TransactionConflictException
 import dev.brikk.ducklake.catalog.DucklakeDataFile
@@ -97,8 +105,15 @@ import java.util.OptionalLong
 import com.google.common.collect.ImmutableList.toImmutableList
 import com.google.common.collect.ImmutableMap.toImmutableMap
 import io.trino.spi.StandardErrorCode.ALREADY_EXISTS
+import io.trino.spi.StandardErrorCode.COLUMN_NOT_FOUND
+import io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR
+import io.trino.spi.StandardErrorCode.INVALID_ARGUMENTS
 import io.trino.spi.StandardErrorCode.INVALID_TABLE_PROPERTY
+import io.trino.spi.StandardErrorCode.NOT_FOUND
 import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
+import io.trino.spi.StandardErrorCode.SCHEMA_NOT_EMPTY
+import io.trino.spi.StandardErrorCode.SCHEMA_NOT_FOUND
+import io.trino.spi.StandardErrorCode.TABLE_NOT_FOUND
 import io.trino.spi.StandardErrorCode.TRANSACTION_CONFLICT
 import io.trino.spi.type.BigintType.BIGINT
 import io.trino.spi.type.DateTimeEncoding.unpackMillisUtc
@@ -193,6 +208,17 @@ class DucklakeMetadata(
 
         val table: DucklakeTable = catalog.getTable(baseTableName.schemaName, baseTableName.tableName, snapshotId)
             ?: return null
+
+        // The catalog library refuses writes into encrypted lakes because it cannot produce the
+        // required per-file encryption keys. Refuse normal table reads just as early: otherwise
+        // encrypted Parquet reaches Trino's reader and surfaces as an opaque "not a parquet file"
+        // error (or, worse, an inlined split returns only part of the table). Metadata tables remain
+        // available so an operator can diagnose the catalog.
+        if (metadataTable == null && catalog.isEncrypted()) {
+            throw TrinoException(
+                    NOT_SUPPORTED,
+                    "DuckLake catalog is encrypted; this connector cannot read encrypted data files")
+        }
 
         // Fail-loud guard (§7): a table whose declared data_file_format setting is not parquet
         // references the removed DuckDB/vortex/lance formats. Surface a named error at load time
@@ -1910,18 +1936,37 @@ class DucklakeMetadata(
                         .setNullable(nullable)
                         .build()
 
-        /**
-         * Translate catalog-layer TransactionConflictException to Trino's
-         * TrinoException(TRANSACTION_CONFLICT) so the engine reports it correctly.
-         */
+        /** Translate typed catalog failures to Trino's stable user-facing error classes. */
         private fun translateCatalogExceptions(action: Runnable)
         {
             try {
                 action.run()
             }
-            catch (e: TransactionConflictException) {
-                throw TrinoException(TRANSACTION_CONFLICT, e.message, e)
+            catch (e: DucklakeException) {
+                throw translateCatalogException(e)
             }
         }
+
+        /** Pure mapping kept internal so every catalog exception class is pinned by a unit test. */
+        internal fun translateCatalogException(e: DucklakeException): TrinoException =
+                when (e) {
+                    is TransactionConflictException -> TrinoException(TRANSACTION_CONFLICT, e.message, e)
+                    is DucklakeSchemaNotEmptyException -> TrinoException(SCHEMA_NOT_EMPTY, e.message, e)
+                    is DucklakeEntityNotFoundException -> TrinoException(
+                            when (e.entityKind.lowercase(Locale.ROOT)) {
+                                "schema" -> SCHEMA_NOT_FOUND
+                                "table", "view" -> TABLE_NOT_FOUND
+                                "column", "field", "partition column" -> COLUMN_NOT_FOUND
+                                else -> NOT_FOUND
+                            },
+                            e.message,
+                            e)
+                    is DucklakeEntityAlreadyExistsException -> TrinoException(ALREADY_EXISTS, e.message, e)
+                    is DucklakeInvalidOperationException -> TrinoException(INVALID_ARGUMENTS, e.message, e)
+                    is DucklakeEncryptedCatalogUnsupportedException,
+                    is DucklakeUnsupportedCatalogVersionException -> TrinoException(NOT_SUPPORTED, e.message, e)
+                    is DucklakeCatalogCorruptionException -> TrinoException(GENERIC_INTERNAL_ERROR, e.message, e)
+                    else -> TrinoException(GENERIC_INTERNAL_ERROR, e.message, e)
+                }
     }
 }

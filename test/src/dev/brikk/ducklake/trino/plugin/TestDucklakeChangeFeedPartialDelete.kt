@@ -32,8 +32,9 @@ import java.sql.DriverManager
  * the insert-side partial_max fix. DuckLake's delete consolidation (flush_inlined_data) folds
  * deletions recorded at several snapshots into ONE 3-column delete file (`file_path, pos,
  * _ducklake_internal_snapshot_id`) whose `begin_snapshot` = MIN(deletion snapshots) and
- * `partial_max` = MAX. The change feed must report each deletion at its OWN snapshot and window
- * accordingly — not attribute the whole batch to `begin_snapshot`.
+ * `partial_max` may be MAX or SQL NULL. The change feed must inspect the physical schema, report
+ * each deletion at its OWN snapshot, and window accordingly — not attribute the whole batch to
+ * `begin_snapshot` or infer the shape from `partial_max`.
  *
  * Recipe (probe-verified, same as TestDucklakePartialDeleteFilter): two deletes at adjacent
  * snapshots, consolidated by flush_inlined_data into one partial delete file.
@@ -76,6 +77,10 @@ class TestDucklakeChangeFeedPartialDelete : AbstractTestQueryFramework() {
                     delSnapA = rs.getLong(1)
                     delSnapB = rs.getLong(2)
                 }
+                // Upstream flush-written delete files can carry embedded snapshots while leaving
+                // partial_max NULL. Before TR-7 the change feed then treated every position as if
+                // it were deleted at begin_snapshot.
+                st.executeUpdate("UPDATE ducklake_delete_file SET partial_max = NULL WHERE partial_max IS NOT NULL")
             }
         }
         check(delSnapB > delSnapA) { "expected partial_max ($delSnapB) > begin ($delSnapA)" }

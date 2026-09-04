@@ -420,7 +420,26 @@ object DucklakeDeleteFileReader {
             deleteFilePath: String,
             footerSizeHint: Long,
             parquetReaderOptions: ParquetReaderOptions,
-            stats: FileFormatDataSourceStats): Map<Long, Long> {
+            stats: FileFormatDataSourceStats): Map<Long, Long> =
+            readPositionsWithSnapshotsIfPresent(
+                    fileSystem, deleteFilePath, footerSizeHint, parquetReaderOptions, stats)
+                ?: throw TrinoException(
+                        NOT_SUPPORTED,
+                        "Delete file has no $INTERNAL_SNAPSHOT_ID_COLUMN column: $deleteFilePath")
+
+    /**
+     * Reads `pos -> deletion snapshot` when the physical Parquet file carries
+     * `_ducklake_internal_snapshot_id`; returns null for an ordinary 1/2-column delete file.
+     * Catalog `partial_max` is deliberately not consulted — upstream flush files can leave it NULL.
+     */
+    @Throws(IOException::class)
+    @Suppress("ThrowsCount") // IO, Trino/corruption, and runtime reader failures keep distinct causes.
+    fun readPositionsWithSnapshotsIfPresent(
+            fileSystem: TrinoFileSystem,
+            deleteFilePath: String,
+            footerSizeHint: Long,
+            parquetReaderOptions: ParquetReaderOptions,
+            stats: FileFormatDataSourceStats): Map<Long, Long>? {
         val inputFile = fileSystem.newInputFile(toLocation(deleteFilePath))
         val memoryContext = newSimpleAggregatedMemoryContext()
         var dataSource: ParquetDataSource? = null
@@ -431,8 +450,12 @@ object DucklakeDeleteFileReader {
             val parquetMetadata = MetadataReader.readFooter(dataSource, parquetReaderOptions, Optional.empty(), Optional.empty())
             val schema: MessageType = parquetMetadata.fileMetaData.schema
             val messageColumnIO = getColumnIO(schema, schema)
+            val snapColumn = namedColumn(messageColumnIO, INTERNAL_SNAPSHOT_ID_COLUMN)
+            if (snapColumn == null) {
+                dataSource.close()
+                return null
+            }
             val posColumn = requiredNamedColumn(messageColumnIO, SPEC_POSITION_COLUMN, deleteFilePath)
-            val snapColumn = requiredNamedColumn(messageColumnIO, INTERNAL_SNAPSHOT_ID_COLUMN, deleteFilePath)
             val parquetReader = createParquetReaderForColumns(
                     dataSource, inputFile.length(), parquetMetadata,
                     ImmutableList.of(posColumn, snapColumn), memoryContext, parquetReaderOptions)

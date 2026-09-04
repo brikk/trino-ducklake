@@ -769,12 +769,6 @@ class DucklakePageSourceProvider @Inject constructor(
         return resolved
     }
 
-    /** Whether [deletion]'s current delete file is a CONSOLIDATED (multi-snapshot) partial file. */
-    private fun isConsolidatedDelete(deletion: DucklakeChangeFeedDeletion): Boolean {
-        val max: Long = deletion.currentDeletePartialMax ?: return false
-        return !deletion.fullFileDelete && max > deletion.snapshotId
-    }
-
     /**
      * Newly-deleted file positions grouped by the snapshot to REPORT them at.
      *
@@ -790,21 +784,31 @@ class DucklakePageSourceProvider @Inject constructor(
             tableDataPath: String,
             table: ChangeFeedTableHandle,
             deletion: DucklakeChangeFeedDeletion): Map<Long, Set<Long>> {
-        if (!isConsolidatedDelete(deletion)) {
-            return mapOf(deletion.snapshotId to newlyDeletedPositions(fileSystem, tableDataPath, deletion))
-        }
-        val currentPath: String = pathResolver.resolveFilePath(
-                deletion.currentDeletePath!!, deletion.currentDeletePathIsRelative ?: false, tableDataPath)
-        val window: LongRange = table.startSnapshot..table.endSnapshot
-        val posToSnapshot: Map<Long, Long> = DucklakeDeleteFileReader.readPositionsWithSnapshots(
-                fileSystem, currentPath, deletion.currentDeleteFooterSize ?: 0L, parquetReaderOptions, fileFormatDataSourceStats)
-        val bySnapshot: MutableMap<Long, MutableSet<Long>> = mutableMapOf()
-        for ((position, snapshot) in posToSnapshot) {
-            if (snapshot in window) {
-                bySnapshot.getOrPut(snapshot) { mutableSetOf() }.add(position)
+        val currentDeletePath = deletion.currentDeletePath
+        if (!deletion.fullFileDelete && currentDeletePath != null &&
+                deletion.currentDeleteFormat.equals("parquet", ignoreCase = true)) {
+            val currentPath: String = pathResolver.resolveFilePath(
+                    currentDeletePath, deletion.currentDeletePathIsRelative ?: false, tableDataPath)
+            // Multi-snapshot shape is a property of the physical file, not catalog partial_max.
+            // Upstream flush writes the marker column while leaving partial_max NULL.
+            val posToSnapshot = DucklakeDeleteFileReader.readPositionsWithSnapshotsIfPresent(
+                    fileSystem,
+                    currentPath,
+                    deletion.currentDeleteFooterSize ?: 0L,
+                    parquetReaderOptions,
+                    fileFormatDataSourceStats)
+            if (posToSnapshot != null) {
+                val window: LongRange = table.startSnapshot..table.endSnapshot
+                val bySnapshot: MutableMap<Long, MutableSet<Long>> = mutableMapOf()
+                for ((position, snapshot) in posToSnapshot) {
+                    if (snapshot in window) {
+                        bySnapshot.getOrPut(snapshot) { mutableSetOf() }.add(position)
+                    }
+                }
+                return bySnapshot
             }
         }
-        return bySnapshot
+        return mapOf(deletion.snapshotId to newlyDeletedPositions(fileSystem, tableDataPath, deletion))
     }
 
     /** rowids that were BOTH deleted and inserted in the same snapshot (update pairing). Inserted

@@ -354,11 +354,11 @@ object DucklakeDeleteFileReader {
     }
 
     /**
-     * Reads a consolidated ("partial") PARQUET delete file — columns `pos` (file-local position)
-     * and `_ducklake_internal_snapshot_id` (the snapshot that recorded each deletion) — and returns
-     * only the positions whose deletion snapshot is <= [snapshotFilterMax], i.e. deletions that had
-     * already taken effect at the read snapshot. `file_path` is ignored (same as [readPositions] —
-     * each catalog delete-file row is scoped to its data file). Always file-local (`global=false`).
+     * Reads a PARQUET delete file and applies its embedded deletion snapshots when present.
+     * Upstream decides from the physical schema, not catalog `partial_max`: a 3-column file keeps
+     * positions whose `_ducklake_internal_snapshot_id <= snapshotFilterMax`; a legacy 2-column
+     * `(file_path, pos)` file has no marker and returns the full union. `file_path` is ignored (the
+     * catalog row already scopes the file to one data file). Always file-local (`global=false`).
      */
     @Throws(IOException::class)
     fun readPositionsWithSnapshotFilter(
@@ -378,8 +378,20 @@ object DucklakeDeleteFileReader {
             val parquetMetadata = MetadataReader.readFooter(dataSource, parquetReaderOptions, Optional.empty(), Optional.empty())
             val schema: MessageType = parquetMetadata.fileMetaData.schema
             val messageColumnIO = getColumnIO(schema, schema)
+            val snapColumn = namedColumn(messageColumnIO, INTERNAL_SNAPSHOT_ID_COLUMN)
+            if (snapColumn == null) {
+                // Legacy Trino files can be one-column global `row_id`; spec files are local
+                // `pos` (with an ignored `file_path`). Reuse the ordinary detector for both.
+                val deleteFileColumn = getDeleteFileColumn(schema, messageColumnIO)
+                val parquetReader = createParquetReader(
+                        dataSource, inputFile.length(), parquetMetadata,
+                        Column(deleteFileColumn.columnName, deleteFileColumn.field), memoryContext, parquetReaderOptions)
+                val global = deleteFileColumn.columnName.equals(TRINO_ROW_ID_COLUMN, ignoreCase = true)
+                return DeletePositions(
+                        readNonNullValues(ParquetPageSource(parquetReader), deleteFileColumn.columnType),
+                        global)
+            }
             val posColumn = requiredNamedColumn(messageColumnIO, SPEC_POSITION_COLUMN, deleteFilePath)
-            val snapColumn = requiredNamedColumn(messageColumnIO, INTERNAL_SNAPSHOT_ID_COLUMN, deleteFilePath)
             val parquetReader = createParquetReaderForColumns(
                     dataSource, inputFile.length(), parquetMetadata,
                     ImmutableList.of(posColumn, snapColumn), memoryContext, parquetReaderOptions)

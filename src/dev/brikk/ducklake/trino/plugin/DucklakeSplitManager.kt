@@ -553,15 +553,13 @@ class DucklakeSplitManager @Inject constructor(
     }
 
     /**
-     * True when a data file's joined DELETE file is a cross-snapshot consolidated ("partial") file
-     * holding deletions NEWER than [snapshotId] in a format we snapshot-filter on read (parquet or
-     * puffin) — i.e. the page source must apply only the deletions recorded at/before [snapshotId].
+     * True when the joined delete-file format may carry embedded deletion snapshots. Upstream
+     * applies `_ducklake_internal_snapshot_id <= S` whenever that column is present and never
+     * gates it on catalog `partial_max`; flush-written files can carry several snapshots while
+     * leaving `partial_max` NULL. The readers fall back to the full union when the Parquet column
+     * (or Puffin per-blob property) is absent, so supplying [snapshotId] is safe for legacy files.
      */
-    private fun needsPartialDeleteSnapshotFilter(df: DucklakeDataFile, snapshotId: Long): Boolean {
-        val deletePartialMax = df.deleteFilePartialMax ?: return false
-        if (deletePartialMax <= snapshotId) {
-            return false
-        }
+    private fun needsPartialDeleteSnapshotFilter(df: DucklakeDataFile): Boolean {
         val deleteFormat = df.deleteFileFormat?.lowercase(Locale.ROOT)
         return deleteFormat == "parquet" || deleteFormat == "puffin"
     }
@@ -596,12 +594,10 @@ class DucklakeSplitManager @Inject constructor(
                     tableDataPath)
             val hint: Long = df.deleteFileFooterSize ?: 0L
             deleteFileFooterSizes.merge(resolvedDeletePath, hint) { existing, incoming -> if (existing > 0) existing else incoming }
-            // Consolidated ("partial") delete file holding deletions newer than this read → filter
-            // its deletions to those recorded at/before snapshotId. PARQUET filters by the
-            // file's _ducklake_internal_snapshot_id column; PUFFIN by each blob's embedded
-            // ducklake-snapshot-id (DucklakePuffinDeleteReader). Both consumed via this map by the
-            // page source.
-            if (needsPartialDeleteSnapshotFilter(df, snapshotId)) {
+            // Always offer the read snapshot for formats that may embed per-deletion snapshots.
+            // The reader applies it only when the marker exists; this cannot be inferred from
+            // partial_max (upstream flush files can leave partial_max NULL).
+            if (needsPartialDeleteSnapshotFilter(df)) {
                 deleteFileSnapshotFilters[resolvedDeletePath] = snapshotId
             }
         }

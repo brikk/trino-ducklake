@@ -31,9 +31,10 @@ import java.sql.DriverManager
  * Cross-engine correctness of the partial DELETE-file read filter. DuckLake consolidates deletions
  * recorded across several snapshots into ONE parquet delete file (`file_path, pos,
  * _ducklake_internal_snapshot_id`) with `begin_snapshot` = first deletion's snapshot and
- * `partial_max` = last deletion's snapshot. A time-travel read at snapshot S must apply only the
- * deletions whose `_ducklake_internal_snapshot_id <= S` (the connector filters them via
- * [DucklakeSplit.deleteFileSnapshotFilters]).
+ * `partial_max` may be either the last deletion's snapshot OR SQL NULL (upstream flush-written
+ * files use the latter). A time-travel read at snapshot S must inspect the physical schema and
+ * apply only deletions whose `_ducklake_internal_snapshot_id <= S`; catalog `partial_max` is not
+ * the gate (the connector carries S via [DucklakeSplit.deleteFileSnapshotFilters]).
  *
  * Setup drives DuckDB directly to produce the consolidated delete file (probe-verified shape:
  * two deletes at adjacent snapshots, consolidated by `flush_inlined_data`), then Trino reads.
@@ -76,6 +77,10 @@ class TestDucklakePartialDeleteFilter : AbstractTestQueryFramework() {
                     firstDeleteSnapshot = rs.getLong(1)
                     partialMax = rs.getLong(2)
                 }
+                // Reproduce upstream's flush-written shape: embedded snapshots are authoritative,
+                // while the catalog's partial_max is NULL. Before TR-6 the connector therefore
+                // treated this as a 2-column file and applied the future deletion during time travel.
+                st.executeUpdate("UPDATE ducklake_delete_file SET partial_max = NULL WHERE partial_max IS NOT NULL")
             }
         }
         check(partialMax > firstDeleteSnapshot) { "expected partial_max ($partialMax) > begin ($firstDeleteSnapshot)" }

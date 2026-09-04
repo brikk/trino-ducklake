@@ -43,11 +43,11 @@ import java.util.Comparator
 class TestDucklakeRewriteDataFiles : AbstractTestQueryFramework() {
 
     private lateinit var dataDir: Path
+    private val dbName = "ducklake_rewrite_data_files_e2e"
 
     @Throws(Exception::class)
     override fun createQueryRunner(): QueryRunner {
         val pg = DucklakeTestCatalogEnvironment.getServer()
-        val dbName = "ducklake_rewrite_data_files_e2e"
         dataDir = Files.createTempDirectory("ducklake-rewrite-")
         pg.createDatabase(dbName)
         DriverManager.getConnection("jdbc:duckdb:").use { conn ->
@@ -263,6 +263,69 @@ class TestDucklakeRewriteDataFiles : AbstractTestQueryFramework() {
         }
         finally {
             tryDrop(table)
+        }
+    }
+
+    /**
+     * File basenames are not unique: hive/add_files layouts routinely contain paths such as
+     * `a/data.parquet` and `b/data.parquet`. Candidate matching used `associateBy(basename)`, so one
+     * file replaced the other in the map; both files' rows were rewritten but only one source id
+     * retired, leaving duplicate rows. This fixture gives two real files the same basename in
+     * different subdirectories and pins path-exact matching.
+     */
+    @Test
+    fun rewriteMatchesCandidateFilesByResolvedPathNotBasename() {
+        val table = "test_schema.rewrite_same_basename"
+        try {
+            computeActual("CREATE TABLE $table (id INTEGER)")
+            computeActual("INSERT INTO $table VALUES (1)")
+            computeActual("INSERT INTO $table VALUES (2)")
+            assertThat(fileCount(table)).isEqualTo(2L)
+            giveActiveFilesTheSameBasename(table.substringAfter('.'))
+
+            computeActual(call(table))
+
+            assertThat(fileCount(table)).`as`("both source ids retired").isEqualTo(1L)
+            assertThat(computeActual("SELECT id FROM $table ORDER BY id").materializedRows
+                    .map { it.getField(0) as Int })
+                    .`as`("neither duplicate-basename source remains active")
+                    .containsExactly(1, 2)
+        }
+        finally {
+            tryDrop(table)
+        }
+    }
+
+    private fun giveActiveFilesTheSameBasename(tableName: String) {
+        val server = DucklakeTestCatalogEnvironment.getServer()
+        DriverManager.getConnection(server.getJdbcUrl(dbName), server.getUser(), server.getPassword()).use { connection ->
+            val files = mutableListOf<Pair<Long, String>>()
+            connection.prepareStatement(
+                    "SELECT f.data_file_id, f.path FROM ducklake_data_file f " +
+                            "JOIN ducklake_table t ON t.table_id = f.table_id " +
+                            "WHERE t.table_name = ? AND t.end_snapshot IS NULL AND f.end_snapshot IS NULL " +
+                            "ORDER BY f.data_file_id").use { statement ->
+                statement.setString(1, tableName)
+                statement.executeQuery().use { rows ->
+                    while (rows.next()) {
+                        files += rows.getLong(1) to rows.getString(2)
+                    }
+                }
+            }
+            check(files.size == 2) { "expected two active files, got $files" }
+            val tableDir = dataDir.resolve("test_schema").resolve(tableName)
+            for ((index, file) in files.withIndex()) {
+                val relative = "branch-$index/shared.parquet"
+                val destination = tableDir.resolve(relative)
+                Files.createDirectories(destination.parent)
+                Files.move(tableDir.resolve(file.second), destination)
+                connection.prepareStatement(
+                        "UPDATE ducklake_data_file SET path = ? WHERE data_file_id = ?").use { statement ->
+                    statement.setString(1, relative)
+                    statement.setLong(2, file.first)
+                    check(statement.executeUpdate() == 1)
+                }
+            }
         }
     }
 

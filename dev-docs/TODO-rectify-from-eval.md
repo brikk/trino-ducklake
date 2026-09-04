@@ -846,13 +846,16 @@ of work. Order = suggested order.
   too. No decimal/timestamp test in `TestDucklakeAddFiles`. Fix with W-H1/W-H3 (one stat
   stringifier keyed by parquet physical+logical type).
 
-- [ ] **P-H5 — `rewrite_data_files` identifies files by basename only → same-basename files
+- [x] **P-H5 — `rewrite_data_files` identifies files by basename only → same-basename files
   collide.** `candidatesByBasename = candidates.associateBy { basename(it.path) }`
   (`DucklakeRewriteDataFilesProcedure.kt:145`, also `:163,179,274`). Hive layouts
   (`region=US/data.parquet`, `region=EU/data.parquet`) or duplicate basenames: `associateBy` keeps
   one → one merged file with both partitions' rows labelled with one partition, only one source
   end-snapshotted → **duplicate rows at latest** + mis-partitioned file. Match on resolved path or
   carry `dataFileId` in the split.
+  DONE 2026-09-04: candidates are keyed by the same resolved path carried by the split. Regression
+  moves two active files to `branch-0/shared.parquet` and `branch-1/shared.parquet`, rewrites them,
+  and verifies both source ids retire and rows are not duplicated.
 
 ### Medium
 

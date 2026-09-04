@@ -134,6 +134,7 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
         val snapshotId = catalog.currentSnapshotId
         val (schema, table) = resolveTable(schemaArg, tableArg, snapshotId)
         val tableId = table.tableId
+        val tableDataPath: String = pathResolver.resolveTableDataPath(schema, table)
 
         // Upstream merge_adjacent refuses partial/back-dated rewrites of sources carrying any
         // deletion state. Physically dropping tombstoned rows and back-dating that result makes
@@ -150,7 +151,13 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
                     schemaArg, tableArg, candidates.size, threshold)
             return
         }
-        val candidatesByBasename: Map<String, DucklakeDataFile> = candidates.associateBy { basename(it.path) }
+        // A basename is not an identity: add_files/hive layouts can register
+        // `region=US/data.parquet` and `region=EU/data.parquet`. Key by the same resolved path the
+        // split carries, or one candidate overwrites the other and the rewrite retires only one
+        // source while writing both files' rows.
+        val candidatesByPath: Map<String, DucklakeDataFile> = candidates.associateBy { file ->
+            pathResolver.resolveFilePath(file.path, file.pathIsRelative, tableDataPath)
+        }
 
         val topLevelColumns: List<DucklakeColumn> = catalog.getTableColumns(tableId, snapshotId)
                 .filter { it.parentColumn == null }
@@ -164,11 +171,11 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
                 else catalog.getFilePartitionValues(tableId, snapshotId)
 
         val tableHandle = DucklakeTableHandle(schemaArg, tableArg, tableId, snapshotId)
-        val matchedSplits: List<DucklakeSplit> = collectCandidateSplits(session, tableHandle, candidatesByBasename.keys)
+        val matchedSplits: List<DucklakeSplit> = collectCandidateSplits(session, tableHandle, candidatesByPath.keys)
         // Group splits by partition; only compact groups with >= 2 files (a lone file per partition
         // is nothing to merge). Cross-partition files are never merged.
         val uncappedGroups: Map<PartitionGroup, List<DucklakeSplit>> = matchedSplits
-                .groupBy { partitionGroupOf(candidatesByBasename[basename(it.dataFilePath)], partitionValuesByFile) }
+                .groupBy { partitionGroupOf(candidatesByPath[it.dataFilePath], partitionValuesByFile) }
                 .filterValues { it.size >= 2 }
         val groups: Map<PartitionGroup, List<DucklakeSplit>> = capSourceFiles(uncappedGroups, maxCompactedFiles)
         if (groups.isEmpty()) {
@@ -178,13 +185,12 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
         }
 
         val fileSystem: TrinoFileSystem = fileSystemFactory.create(session)
-        val tableDataPath: String = pathResolver.resolveTableDataPath(schema, table)
         val outputs = mutableListOf<MergedOutput>()
         val sourceIds = mutableSetOf<Long>()
         for ((group, splits) in groups) {
             outputs += GroupWriter(fileSystem, tableDataPath, tableHandle, columnHandles, allCatalogColumns,
                     columnTypes, reclaimSourcesImmediately, targetSize, group).write(session, splits)
-            sourceIds += splits.mapNotNull { candidatesByBasename[basename(it.dataFilePath)]?.dataFileId }
+            sourceIds += splits.mapNotNull { candidatesByPath[it.dataFilePath]?.dataFileId }
         }
 
         val nonEmpty = outputs.filter { it.fragment.recordCount > 0L }
@@ -284,7 +290,7 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
     private fun collectCandidateSplits(
             session: ConnectorSession,
             tableHandle: DucklakeTableHandle,
-            candidateBasenames: Set<String>): List<DucklakeSplit> {
+            candidatePaths: Set<String>): List<DucklakeSplit> {
         val matched: MutableList<DucklakeSplit> = mutableListOf()
         val source: ConnectorSplitSource = splitManager.getSplits(
                 null, session, tableHandle, mutableSetOf(), Constraint.alwaysTrue())
@@ -292,7 +298,7 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
             while (!source.isFinished) {
                 val batch: List<ConnectorSplit> = source.getNextBatch(SPLIT_BATCH_SIZE, DynamicFilterSnapshot.EMPTY).get()
                 for (split: ConnectorSplit in batch) {
-                    if (split is DucklakeSplit && basename(split.dataFilePath) in candidateBasenames) {
+                    if (split is DucklakeSplit && split.dataFilePath in candidatePaths) {
                         matched.add(split)
                     }
                 }
@@ -456,8 +462,6 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
             ?: throw TrinoException(NOT_SUPPORTED, "Table not found: $schemaName.$tableName")
         return schema to table
     }
-
-    private fun basename(path: String): String = path.replace('\\', '/').substringAfterLast('/')
 
     companion object {
         private val log: Logger = Logger.get(DucklakeRewriteDataFilesProcedure::class.java)

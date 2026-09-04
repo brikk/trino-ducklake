@@ -14,6 +14,7 @@ Labels are stable so items can be addressed one at a time:
 | `R-*` | connector read path | this repo |
 | `W-*` | connector write path | this repo |
 | `T-*` | type mapping + DDL | this repo (some catalog) |
+| `TR-*` | trino-side adoptions of ducklake-catalog 0.5.0 API changes | this repo |
 | `P-*` | maintenance procedures | this repo (some catalog) |
 
 Severity suffix: `C` critical (data loss / silent wrong rows / catalog unloadable by DuckDB),
@@ -23,7 +24,7 @@ reviews found the same issue it is listed once with the other labels in parenthe
 **2026-09-04 update:** the ducklake-catalog repo resolved most `E-*` items in `abb26ce..5ba4864`
 (its own review doc uses labels `W/R/C/Q/S/X`). Items below are annotated with the resolving commit;
 the connector-side adoptions those commits require are collected in **`## Connector follow-ups
-(X-*)`** right below. Catalog items still open: E-L5 (DB clock half), E-L8, E-L11, E-M5, E-N3
+(TR-*)`** right below (TR = trino; `T-*` stays Types & DDL). Catalog items still open: E-L5 (DB clock half), E-L8, E-L11, E-M5, E-N3
 (wording), E-N8, P-H1/P-M1 (`listReferencedFilePaths` across all tables — data loss), T-H5, T-L2,
 T-L5, T-M4.
 
@@ -44,7 +45,7 @@ commits `abb26ce..5ba4864`, resolved nearly every `E-*` item above and changed s
 are the connector-side adoptions it hands over, collected here so the 0.5.0 pin bump is one piece
 of work. Order = suggested order.
 
-- [ ] **X-1 — Map the typed catalog exceptions** (`db9c1f6`, `9f418a3`, `6c104b9`).
+- [ ] **TR-1 — Map the typed catalog exceptions** (`db9c1f6`, `9f418a3`, `6c104b9`).
   `translateCatalogExceptions` must map `DucklakeEntityNotFoundException` → `NOT_FOUND`/
   `TABLE_NOT_FOUND`/`SCHEMA_NOT_FOUND`, `DucklakeEntityAlreadyExistsException` → `ALREADY_EXISTS`,
   `DucklakeSchemaNotEmptyException` → `SCHEMA_NOT_EMPTY`, `DucklakeInvalidOperationException` →
@@ -52,65 +53,65 @@ of work. Order = suggested order.
   `DucklakeUnsupportedCatalogVersionException` → `NOT_SUPPORTED`, `DucklakeCatalogCorruptionException`
   → `GENERIC_INTERNAL_ERROR`. Conflicts now arrive unwrapped (no `rootCause()` digging).
 
-- [ ] **X-2 — Encryption gate on the READ side** (`6c104b9`; closes R-M10/W-H5 fully).
+- [ ] **TR-2 — Encryption gate on the READ side** (`6c104b9`; closes R-M10/W-H5 fully).
   Catalog refuses file writes into an encrypted lake; the connector must also refuse at
   `getTableHandle` (and for inlined splits) using `catalog.isEncrypted()`, with a named
   `NOT_SUPPORTED` error instead of Trino's "not a parquet file".
 
-- [ ] **X-3 — Row counts: `record_count` is gross** (`db23b77`; closes R-L2 too).
+- [ ] **TR-3 — Row counts: `record_count` is gross** (`db23b77`; closes R-L2 too).
   `DucklakeMetadata.getTableStatistics` must use `catalog.getLiveRowCount(tableId, snapshotId)`
   instead of `getTableStats().recordCount`; `finishStatisticsCollection` should call
   `analyzeTable(tableId)` (the `(tableId, rowCount)` overload is deprecated). Handle nullable
   `totalValueCount`/`totalNullCount` in the null-fraction estimate (`DucklakeMetadata.kt:472-483`).
 
-- [ ] **X-4 — Flush via `flushInlinedDataWithSnapshots`** (`1121e3e`; closes P-C1 + P-M5).
+- [ ] **TR-4 — Flush via `flushInlinedDataWithSnapshots`** (`1121e3e`; closes P-C1 + P-M5).
   `DucklakeFlushInlinedDataProcedure` must write `_ducklake_internal_snapshot_id` (field id
   2147483539) per row, include deleted inlined rows plus a snapshot-tagged delete file, and call
   `flushInlinedDataWithSnapshots(tableId, List<FlushedInlinedFile>, preservedRowIdStart)`. Until
   then the legacy path still has the P-C1 race.
 
-- [ ] **X-5 — Per-file stats: pass unknown as `null`** (`31d65ef`; closes R-M2/W-M1 write half).
+- [ ] **TR-5 — Per-file stats: pass unknown as `null`** (`31d65ef`; closes R-M2/W-M1 write half).
   `DucklakeStatsExtractor.kt:70` `containsNan = false` → `null` unless values were inspected;
   `value_count`/`null_count` nullable on `DucklakeFileColumnStats` (write together or not at all).
 
-- [ ] **X-6 — Delete-file snapshot filter unconditional** (`f1c63ff`; closes R-L6).
+- [ ] **TR-6 — Delete-file snapshot filter unconditional** (`f1c63ff`; closes R-L6).
   `DucklakeSplitManager.needsPartialDeleteSnapshotFilter` must return true for every
   PARQUET/PUFFIN delete file (drop the `deleteFilePartialMax` gate); the reader already ignores
   it for 2-column files.
 
-- [ ] **X-7 — Change feed: detect 3-column delete files by schema** (`36bdb24`; R-M7 sibling).
+- [ ] **TR-7 — Change feed: detect 3-column delete files by schema** (`36bdb24`; R-M7 sibling).
   `DucklakePageSourceProvider.isConsolidatedDelete` must read the file schema (or try
   `readPositionsWithSnapshots` and fall back) instead of `currentDeletePartialMax`; flush-written
   files have `partial_max = NULL` and multi-snapshot embedded ids.
 
-- [ ] **X-8 — Pass the read snapshot to `commitDelete`/`commitMerge`** (`0f0e4e8`).
+- [ ] **TR-8 — Pass the read snapshot to `commitDelete`/`commitMerge`** (`0f0e4e8`).
   `DucklakeMetadata.kt` ~`:1415/1418` must call the `(tableId, fragments, readSnapshotId)`
   overloads with `tableHandle.snapshotId`; the old signatures are `@Deprecated` and degrade the
   stale-delete guard to the attempt's base snapshot.
 
-- [ ] **X-9 — Write snapshot-tagged (3-column) delete files** (`1121e3e`, W-D6 upstream v1.5 shape).
+- [ ] **TR-9 — Write snapshot-tagged (3-column) delete files** (`1121e3e`, W-D6 upstream v1.5 shape).
   `DucklakeMergeSink` should carry prior positions with the superseded file's embedded ids (or its
   `begin_snapshot`), tag new ones with `readSnapshot + 1`, and populate
   `DucklakeDeleteFragment.embeddedSnapshotMin/Max`; the catalog then DELETEs the superseded row
   and back-dates the new one like DuckDB. Combine with **W-C1** (sort positions) and **W-C2**
   (one delete file per data file per commit).
 
-- [ ] **X-10 — Wrap planning in `readSession`** (`b28fefb`).
+- [ ] **TR-10 — Wrap planning in `readSession`** (`b28fefb`).
   `getTableHandle` → `getSplits` reads should run inside `catalog.readSession { ... }` so a
   concurrent destructive op (expire, partial rewrite, consolidated delete) can't make two reads
   disagree on the file set.
 
-- [ ] **X-11 — Use the decoded inlined-value API** (`884bdaf`; closes R-L10, T-M8 read half).
+- [ ] **TR-11 — Use the decoded inlined-value API** (`884bdaf`; closes R-L10, T-M8 read half).
   Switch to `readInlinedDataDecoded` / `getInlinedChangesBetweenDecoded` and retire
   `DucklakeInlinedValueConverter`'s raw-form parsing (BYTEA/text/`CAST(... AS VARCHAR)` handling
   now lives in `InlinedValues.decode`).
 
-- [ ] **X-12 — Column type strings are validated at the catalog boundary** (`f925232`).
+- [ ] **TR-12 — Column type strings are validated at the catalog boundary** (`f925232`).
   `DucklakeTypeNames.canonical/validate` now rejects non-spec names (e.g. `integer`); confirm
   `DucklakeTypeConverter.toDucklakeType` output is accepted for every Trino type we allow and that
-  the connector maps `DucklakeInvalidOperationException` (X-1) to a clear DDL error.
+  the connector maps `DucklakeInvalidOperationException` (TR-1) to a clear DDL error.
 
-- [ ] **X-13 — Bump the pin to the released `0.5.0`** (drop `-SNAPSHOT`) once published; the
+- [ ] **TR-13 — Bump the pin to the released `0.5.0`** (drop `-SNAPSHOT`) once published; the
   scoped `mavenLocal()` in `buildlogic.kotlin.brikk` stays for the dev loop.
 
 ---
@@ -162,7 +163,7 @@ of work. Order = suggested order.
 ### High
 
 - [x] **E-H1 — `dropSchema` ignores views/macros.**
-  DONE in ducklake-catalog `9f418a3` (tables/views/macros checked; typed `DucklakeSchemaNotEmptyException`). **Connector follow-up → X-1.**
+  DONE in ducklake-catalog `9f418a3` (tables/views/macros checked; typed `DucklakeSchemaNotEmptyException`). **Connector follow-up → TR-1.**
   `JdbcDucklakeCatalog.kt:2383-2402`, `DucklakeWriteTransaction.kt:128-140` (`hasTablesInSchema`
   checks `ducklake_table` only). Upstream `ducklake_catalog.cpp:568-572,588-592` throws on a
   view/macro whose schema is gone → catalog unloadable. Fix: refuse (or cascade) when active
@@ -194,7 +195,7 @@ of work. Order = suggested order.
   217-224`. Add both directions including the `*_inlined` variants.
 
 - [x] **E-M2 — Encryption ignored entirely** (also R-M10, W-H5).
-  DONE in ducklake-catalog `6c104b9` — catalog side: `isEncrypted()`/`getSpecVersion()`; every file-writing op refuses on an encrypted lake (`DucklakeEncryptedCatalogUnsupportedException`). **Connector follow-up → X-2** (refuse READS too, map the exception).
+  DONE in ducklake-catalog `6c104b9` — catalog side: `isEncrypted()`/`getSpecVersion()`; every file-writing op refuses on an encrypted lake (`DucklakeEncryptedCatalogUnsupportedException`). **Connector follow-up → TR-2** (refuse READS too, map the exception).
   `getDataFiles` (`:381-402`) never selects `encryption_key`; fragments never set it;
   `ducklake_metadata.encrypted` never read. Upstream `ducklake_initializer.cpp:204-212`,
   `ReadDataFile :1044-1050`, writer `ducklake_insert.cpp:343,483-489,712-716`. Reading an encrypted
@@ -204,7 +205,7 @@ of work. Order = suggested order.
   and refuse with `NOT_SUPPORTED`. Full fix: per-file key generation + Parquet modular encryption.
 
 - [x] **E-M3 — No `ducklake_metadata.version` gate.**
-  DONE in ducklake-catalog `6c104b9` (`getSpecVersion()`; writes refused unless version ∈ {0.4, 1.0}). Connector: map `DucklakeUnsupportedCatalogVersionException` (X-1).
+  DONE in ducklake-catalog `6c104b9` (`getSpecVersion()`; writes refused unless version ∈ {0.4, 1.0}). Connector: map `DucklakeUnsupportedCatalogVersionException` (TR-1).
   Upstream `ducklake_initializer.cpp:151-189` refuses non-1.0. Read version at open, refuse anything
   but `1.0` with a clear message.
 
@@ -261,7 +262,7 @@ of work. Order = suggested order.
   `snapshot_time DESC` (`:4116-4126`); `snapshot_time` from app clock (`:2156`) vs DB `NOW()`.
   Prefer the DB clock.
 - [x] **E-L6** — `record_count` decremented on delete (`:3949-3955`); upstream never does.
-  DONE in ducklake-catalog `db23b77` (`record_count` is gross; `getLiveRowCount` added). **Connector follow-up → X-3.**
+  DONE in ducklake-catalog `db23b77` (`record_count` is gross; `getLiveRowCount` added). **Connector follow-up → TR-3.**
 - [x] **E-L7** — `ducklake_table_column_stats.contains_nan` NULL instead of `false` (`:3586`,
   DONE in ducklake-catalog `21ca360` + `31d65ef` (explicit `false` for floats; tri-state MergeStats semantics).
   `:1320`) vs upstream explicit boolean (`:4441-4446`).
@@ -292,7 +293,7 @@ of work. Order = suggested order.
 - [x] **E-N5** — `hasPartialDeleteFilesRequiringSnapshotFilter` (`:594-610`) effectively dead.
   DONE in ducklake-catalog `f1c63ff` (predicate no longer gated on `partial_max`; contract rewritten as advisory).
 - [x] **E-N6** — `attemptWriteTransaction :2125` `throw e as RuntimeException` → possible CCE.
-  DONE in ducklake-catalog `db9c1f6` (typed `Ducklake*Exception`s propagate unwrapped; only unexpected failures wrapped in `DucklakeException`). **Connector follow-up → X-1.**
+  DONE in ducklake-catalog `db9c1f6` (typed `Ducklake*Exception`s propagate unwrapped; only unexpected failures wrapped in `DucklakeException`). **Connector follow-up → TR-1.**
 - [x] **E-N7** — `default_value_dialect` left NULL vs upstream `'duckdb'` (`:2397`).
   DONE in ducklake-catalog `21ca360`.
 - [ ] **E-N8** — `getInlinedDataInfos :1504-1508` schema_version filter redundant.
@@ -362,7 +363,7 @@ of work. Order = suggested order.
 ### Medium
 
 - [ ] **R-M2 — `contains_nan` hard-coded `false` on write; NaN row groups dropped from min/max**
-  Catalog `31d65ef` now accepts `containsNan = null` (unknown) and NULL counts with upstream MergeStats semantics — the connector should pass `null` unless it inspected values (→ **X-5**).
+  Catalog `31d65ef` now accepts `containsNan = null` (unknown) and NULL counts with upstream MergeStats semantics — the connector should pass `null` unless it inspected values (→ **TR-5**).
   (also W-M1). `DucklakeStatsExtractor.kt:70-73,150-163`. Upstream tracks `has_nan`
   (`ducklake_insert.cpp:100-102`) and pruning consults it (`GenerateConstantFilterDouble`). A
   multi-row-group Trino file with NaN in some groups stores a finite max + `contains_nan=false` →
@@ -394,7 +395,7 @@ of work. Order = suggested order.
   reject the promotion.
 
 - [ ] **R-M7 — Change feed on a consolidated *puffin* delete file throws.**
-  Related catalog change `36bdb24` (change feed offers every candidate delete file). Connector must detect 3-column files by schema, not `partial_max` → **X-7**; puffin path still unhandled.
+  Related catalog change `36bdb24` (change feed offers every candidate delete file). Connector must detect 3-column files by schema, not `partial_max` → **TR-7**; puffin path still unhandled.
   `newlyDeletedPositionsBySnapshot` (`:788-808`) routes any `partial_max > snapshot` delete to
   `DucklakeDeleteFileReader.readPositionsWithSnapshots` (parquet-only); `DucklakePuffinDeleteReader`
   can read per-blob snapshots but is never called there.
@@ -431,7 +432,7 @@ of work. Order = suggested order.
   (upstream throws, `ducklake_delete_filter.cpp:213-215`); `collectRowIdsInOrder :210-212` silently
   falls back to positional ids on a NULL lineage value.
 - [ ] **R-L6** — Delete-file snapshot filter applied only when `partial_max > S`
-  CATALOG HALF DONE `f1c63ff`; connector half → **X-6**.
+  CATALOG HALF DONE `f1c63ff`; connector half → **TR-6**.
   (`needsPartialDeleteSnapshotFilter :560-567`); upstream applies `<= S` to *any* 3-column file
   (`ducklake_delete_filter.cpp:69-75`).
 - [ ] **R-L7** — Puffin dispatch by `.puffin` extension in scan (`isPuffinPath :1487-1494`) vs
@@ -746,7 +747,7 @@ of work. Order = suggested order.
 ### Critical
 
 - [ ] **P-C1 — `flush_inlined_data` end-snapshots rows inserted after its read but never writes
-  PARTIAL in ducklake-catalog `1121e3e`: `flushInlinedDataWithSnapshots` deletes only `begin_snapshot <= upToSnapshot` (upstream shape, no race). The legacy 2-arg `flushInlinedData` the connector calls still end-snapshots **every** live row (`JdbcDucklakeCatalog.kt:3380-3392`) — the race is open until **X-4** lands.
+  PARTIAL in ducklake-catalog `1121e3e`: `flushInlinedDataWithSnapshots` deletes only `begin_snapshot <= upToSnapshot` (upstream shape, no race). The legacy 2-arg `flushInlinedData` the connector calls still end-snapshots **every** live row (`JdbcDucklakeCatalog.kt:3380-3392`) — the race is open until **TR-4** lands.
   them → permanent row loss.** `DucklakeFlushInlinedDataProcedure.kt:97` reads at
   `currentSnapshotId`, writes Parquet, then `catalog.flushInlinedData` (`:197`) end-snapshots
   **every** live row: `JdbcDucklakeCatalog.kt:2722-2724` `.set(endSnapshot, new).where(endSnapshot.
@@ -839,7 +840,7 @@ of work. Order = suggested order.
   deleted after 7d.
 
 - [ ] **P-M5 — Inlined rows never physically removed → unbounded metadata growth.** Flush
-  PARTIAL in ducklake-catalog `1121e3e`: the new `flushInlinedDataWithSnapshots` physically deletes flushed rows (upstream shape). The legacy 2-arg `flushInlinedData` the connector still calls keeps end-snapshotting → growth continues until **X-4** lands.
+  PARTIAL in ducklake-catalog `1121e3e`: the new `flushInlinedDataWithSnapshots` physically deletes flushed rows (upstream shape). The legacy 2-arg `flushInlinedData` the connector still calls keeps end-snapshotting → growth continues until **TR-4** lands.
   end-snapshots (`JdbcDucklakeCatalog.kt:2696,2710-2731`); `expireSnapshots` GCs none (only whole
   dead tables `:743-746`). Upstream deletes flushed rows (`:5105-5124`). Correctness OK; every latest
   read scans a growing table. Add GC of end-snapshotted inlined rows in `expireSnapshots`.

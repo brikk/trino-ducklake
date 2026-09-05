@@ -31,7 +31,9 @@ NOT runtime issues — prove which you're looking at before working around it.
 ## Testing discipline
 - Per-corpus-dir runs (~1 min) are the verification loop; NEVER the full corpus
   unless explicitly asked.
-- Commit at meaningful intervals; do NOT push until asked.
+- When a fix is complete and fully verified, commit it before reporting completion
+  to the user, and include its commit SHA in the report. Do NOT push unless the
+  user explicitly asks.
 - Keep `dev-docs/CRUTCHES-AND-SHORTCUTS.md` current — every non-production-clean
   path goes there.
 

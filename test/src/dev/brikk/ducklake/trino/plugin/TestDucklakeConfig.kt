@@ -15,12 +15,38 @@ package dev.brikk.ducklake.trino.plugin
 
 import dev.brikk.ducklake.trino.plugin.DucklakeTemporalPartitionEncoding.CALENDAR
 import dev.brikk.ducklake.trino.plugin.DucklakeTemporalPartitionEncoding.EPOCH
+import io.airlift.configuration.ConfigBinder.configBinder
+import io.airlift.configuration.ConfigurationFactory
+import io.airlift.configuration.ConfigurationInspector
 import io.airlift.units.Duration
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Test
 
 class TestDucklakeConfig {
+    @Test
+    fun testCatalogPasswordIsRedactedInConfigurationInspection() {
+        val password = "synthetic-catalog-password"
+        ConfigurationFactory(mapOf(
+                "ducklake.catalog.database-url" to "jdbc:postgresql://example.invalid/ducklake",
+                "ducklake.catalog.database-password" to password)).use { factory ->
+            assertThat(factory.registerConfigurationClasses { binder ->
+                configBinder(binder).bindConfig(DucklakeConfig::class.java)
+            }).isEmpty()
+            assertThat(factory.validateRegisteredConfigurationProvider()).isEmpty()
+
+            val config = factory.build(DucklakeConfig::class.java)
+            assertThat(config.getCatalogDatabasePassword()).isEqualTo(password)
+            assertThat(config.toCatalogConfig().catalogDatabasePassword).isEqualTo(password)
+
+            val attribute = ConfigurationInspector().inspect(factory)
+                    .flatMap { it.attributes }
+                    .single { it.propertyName == "ducklake.catalog.database-password" }
+            assertThat(attribute.currentValue).isEqualTo("[REDACTED]")
+            assertThat(attribute.defaultValue).isEqualTo("[REDACTED]")
+        }
+    }
+
     @Test
     fun testTemporalPartitionEncodingDefaults() {
         val config = DucklakeConfig()

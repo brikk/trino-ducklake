@@ -16,6 +16,7 @@ package dev.brikk.ducklake.trino.plugin
 import dev.brikk.ducklake.catalog.DucklakeCatalogConfig
 import io.airlift.configuration.Config
 import io.airlift.configuration.ConfigDescription
+import io.airlift.configuration.ConfigSecuritySensitive
 import io.airlift.units.Duration
 import io.airlift.units.MinDuration
 import jakarta.validation.constraints.AssertTrue
@@ -71,6 +72,7 @@ class DucklakeConfig {
     }
 
     @Config("ducklake.catalog.database-password")
+    @ConfigSecuritySensitive
     @ConfigDescription("Password for the catalog database (required for PostgreSQL and MySQL)")
     fun setCatalogDatabasePassword(catalogDatabasePassword: String?): DucklakeConfig {
         this.catalogDatabasePassword = catalogDatabasePassword

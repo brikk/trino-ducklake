@@ -29,6 +29,9 @@ classpath issues (e.g. the fat `~/.m2` fe-thrift shadowing parquet-format) are
 NOT runtime issues — prove which you're looking at before working around it.
 
 ## Testing discipline
+- Bound bulk maintenance reads with SQL-limited pages/batches and enforce reasonable
+  per-call work budgets before destructive side effects. Do not materialize an
+  unbounded catalog in coordinator memory.
 - Per-corpus-dir runs (~1 min) are the verification loop; NEVER the full corpus
   unless explicitly asked.
 - When a fix is complete and fully verified, commit it before reporting completion

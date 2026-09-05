@@ -135,6 +135,7 @@ class TestDucklakeS3ParquetEndToEnd : AbstractTestQueryFramework() {
                 "ducklake.catalog.database-password" to pg.getPassword(),
                 "ducklake.data-path" to "s3://$BUCKET/data/",
                 "ducklake.remove-orphan-files.min-retention" to "0s",
+                "ducklake.maintenance.min-retention" to "0s",
                 "fs.native-s3.enabled" to "true",
                 "s3.endpoint" to endpoint,
                 "s3.region" to "us-east-1",
@@ -197,6 +198,76 @@ class TestDucklakeS3ParquetEndToEnd : AbstractTestQueryFramework() {
             }
             finally {
                 tryDrop(table)
+            }
+        }
+    }
+
+    @Test
+    fun cleanupProtectsSharedNativeS3SchemeAlias() {
+        val source = "test_schema.cleanup_shared_s3_a"
+        val target = "test_schema.cleanup_shared_s3_b"
+        val keeper = "test_schema.cleanup_shared_s3_keeper"
+        try {
+            computeActual("CREATE TABLE $source (id INTEGER)")
+            computeActual("INSERT INTO $source VALUES 42")
+            val path = computeScalar("SELECT \"\$path\" FROM $source") as String
+            assertThat(path).startsWith("s3://$BUCKET/")
+            val key = path.removePrefix("s3://$BUCKET/")
+            val alias = "s3a://$BUCKET/$key"
+            assertThat(s3Objects()).contains(key)
+            computeActual("CREATE TABLE $target (id INTEGER)")
+            computeActual("CALL system.add_files(schema_name => 'test_schema', table_name => 'cleanup_shared_s3_b', " +
+                    "files => ARRAY['$alias'])")
+            assertThat(computeScalar("SELECT \"\$path\" FROM $target")).isEqualTo(alias)
+            assertThat(computeScalar("SELECT id FROM $target")).isEqualTo(42)
+            computeActual("CREATE TABLE $keeper AS SELECT 7 AS id")
+
+            computeActual("DROP TABLE $source")
+            // Expire A's entire lifetime, so retained A history cannot make protection pass vacuously.
+            assertThat(scheduledS3PathCount(path, expireOldSnapshots = true)).isEqualTo(1L)
+            computeActual("CALL system.cleanup_old_files(retention_threshold => '0s')")
+            assertThat(computeScalar("SELECT id FROM $target")).isEqualTo(42)
+            assertThat(s3Objects()).contains(key)
+            assertThat(scheduledS3PathCount(path)).isZero()
+            assertThat(scheduledS3PathCount(alias)).isZero()
+
+            computeActual("DROP TABLE $target")
+            computeActual("INSERT INTO $keeper VALUES 8")
+            assertThat(scheduledS3PathCount(alias, expireOldSnapshots = true)).isEqualTo(1L)
+            assertThat(s3Objects()).contains(key)
+            computeActual("CALL system.cleanup_old_files(retention_threshold => '0s')")
+            assertThat(s3Objects()).doesNotContain(key)
+            assertThat(scheduledS3PathCount(alias)).isZero()
+            assertThat(computeActual("SELECT id FROM $keeper ORDER BY id").materializedRows.map { it.getField(0) })
+                    .containsExactly(7, 8)
+        }
+        finally {
+            tryDrop(source)
+            tryDrop(target)
+            tryDrop(keeper)
+        }
+    }
+
+    private fun scheduledS3PathCount(path: String, expireOldSnapshots: Boolean = false): Long {
+        val pg = checkNotNull(pgServer)
+        DriverManager.getConnection(pg.getJdbcUrl(checkNotNull(databaseName)), pg.getUser(), pg.getPassword()).use { conn ->
+            if (expireOldSnapshots) {
+                val ids = conn.createStatement().use { stmt ->
+                    stmt.executeQuery("SELECT snapshot_id FROM ducklake_snapshot " +
+                            "WHERE snapshot_id < (SELECT max(snapshot_id) FROM ducklake_snapshot) ORDER BY snapshot_id").use { rs ->
+                        buildList { while (rs.next()) add(rs.getLong(1)) }
+                    }
+                }
+                assertThat(ids).`as`("nonlatest snapshots covering the dropped owner's lifetime").isNotEmpty
+                computeActual("CALL system.expire_snapshots(snapshot_ids => ARRAY[${ids.joinToString(",")}])")
+            }
+            conn.prepareStatement("SELECT count(*) FROM ducklake_files_scheduled_for_deletion " +
+                    "WHERE path = ? AND path_is_relative = false").use { stmt ->
+                stmt.setString(1, path)
+                stmt.executeQuery().use { rs ->
+                    check(rs.next())
+                    return rs.getLong(1)
+                }
             }
         }
     }

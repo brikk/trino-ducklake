@@ -32,7 +32,7 @@ class DucklakeFilePathIdentity @Inject constructor(private val config: FileSyste
             Location.of(path)
         }
         catch (e: IllegalArgumentException) {
-            throw TrinoException(NOT_SUPPORTED, "remove_orphan_files cannot safely compare an invalid location", e)
+            throw TrinoException(NOT_SUPPORTED, "DuckLake maintenance cannot safely compare an invalid location", e)
         }
         val scheme = location.scheme().orElse("")
         validateAuthority(location, scheme)
@@ -91,5 +91,5 @@ class DucklakeFilePathIdentity @Inject constructor(private val config: FileSyste
     }
 
     private fun unsupported(reason: String): Nothing =
-            throw TrinoException(NOT_SUPPORTED, "remove_orphan_files cannot safely compare $reason; no files were deleted")
+            throw TrinoException(NOT_SUPPORTED, "DuckLake maintenance cannot safely compare $reason; no files were deleted")
 }

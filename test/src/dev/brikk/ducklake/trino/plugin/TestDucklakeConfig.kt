@@ -13,6 +13,7 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
+import com.google.inject.ConfigurationException
 import dev.brikk.ducklake.trino.plugin.DucklakeTemporalPartitionEncoding.CALENDAR
 import dev.brikk.ducklake.trino.plugin.DucklakeTemporalPartitionEncoding.EPOCH
 import io.airlift.configuration.ConfigBinder.configBinder
@@ -94,5 +95,65 @@ class TestDucklakeConfig {
         assertThat(DucklakeConfig().getMaintenanceMinRetention()).isEqualTo(Duration.valueOf("7d"))
         assertThat(DucklakeConfig().setMaintenanceMinRetention(Duration.valueOf("2d")).getMaintenanceMinRetention())
                 .isEqualTo(Duration.valueOf("2d"))
+    }
+
+    @Test
+    fun testCleanupLimitsDefaultsFromConfigurationFactory() {
+        ConfigurationFactory(mapOf(
+                "ducklake.catalog.database-url" to "jdbc:postgresql://example.invalid/ducklake")).use { factory ->
+            val config = factory.build(DucklakeConfig::class.java)
+            assertThat(config.getCleanupBatchSize()).isEqualTo(256)
+            assertThat(config.getCleanupMaxReferenceFiles()).isEqualTo(1_000_000L)
+        }
+    }
+
+    @Test
+    fun testCleanupBatchSizeAcceptsBoundaries() {
+        for (value in listOf(1, 1024)) {
+            ConfigurationFactory(mapOf(
+                    "ducklake.catalog.database-url" to "jdbc:postgresql://example.invalid/ducklake",
+                    "ducklake.cleanup.batch-size" to value.toString())).use { factory ->
+                assertThat(factory.build(DucklakeConfig::class.java).getCleanupBatchSize()).isEqualTo(value)
+            }
+        }
+    }
+
+    @Test
+    fun testCleanupBatchSizeRejectsOutOfRangeValues() {
+        for (value in listOf(0, -1, 1025)) {
+            ConfigurationFactory(mapOf(
+                    "ducklake.catalog.database-url" to "jdbc:postgresql://example.invalid/ducklake",
+                    "ducklake.cleanup.batch-size" to value.toString())).use { factory ->
+                assertThatThrownBy { factory.build(DucklakeConfig::class.java) }
+                        .`as`("cleanup batch size %s is invalid", value)
+                        .isInstanceOf(ConfigurationException::class.java)
+                        .hasMessageContaining("ducklake.cleanup.batch-size")
+            }
+        }
+    }
+
+    @Test
+    fun testCleanupMaxReferenceFilesAcceptsBoundaries() {
+        for (value in listOf(1L, 10_000_000L)) {
+            ConfigurationFactory(mapOf(
+                    "ducklake.catalog.database-url" to "jdbc:postgresql://example.invalid/ducklake",
+                    "ducklake.cleanup.max-reference-files" to value.toString())).use { factory ->
+                assertThat(factory.build(DucklakeConfig::class.java).getCleanupMaxReferenceFiles()).isEqualTo(value)
+            }
+        }
+    }
+
+    @Test
+    fun testCleanupMaxReferenceFilesRejectsOutOfRangeValues() {
+        for (value in listOf(0L, -1L, 10_000_001L)) {
+            ConfigurationFactory(mapOf(
+                    "ducklake.catalog.database-url" to "jdbc:postgresql://example.invalid/ducklake",
+                    "ducklake.cleanup.max-reference-files" to value.toString())).use { factory ->
+                assertThatThrownBy { factory.build(DucklakeConfig::class.java) }
+                        .`as`("cleanup reference-file limit %s is invalid", value)
+                        .isInstanceOf(ConfigurationException::class.java)
+                        .hasMessageContaining("ducklake.cleanup.max-reference-files")
+            }
+        }
     }
 }

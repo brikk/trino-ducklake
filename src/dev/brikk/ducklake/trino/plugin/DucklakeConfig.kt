@@ -14,12 +14,15 @@
 package dev.brikk.ducklake.trino.plugin
 
 import dev.brikk.ducklake.catalog.DucklakeCatalogConfig
+import dev.brikk.ducklake.catalog.DucklakeCleanupLimits.MAX_BATCH_SIZE
 import io.airlift.configuration.Config
 import io.airlift.configuration.ConfigDescription
 import io.airlift.configuration.ConfigSecuritySensitive
 import io.airlift.units.Duration
 import io.airlift.units.MinDuration
 import jakarta.validation.constraints.AssertTrue
+import jakarta.validation.constraints.Max
+import jakarta.validation.constraints.Min
 import jakarta.validation.constraints.NotNull
 import java.time.Instant
 import java.time.format.DateTimeParseException
@@ -41,6 +44,8 @@ class DucklakeConfig {
     private var temporalPartitionEncodingReadLeniency: Boolean = true
     private var removeOrphanFilesMinRetention: Duration = Duration.valueOf("7d")
     private var maintenanceMinRetention: Duration = Duration.valueOf("7d")
+    private var cleanupBatchSize: Int = 256
+    private var cleanupMaxReferenceFiles: Long = 1_000_000L
 
     @NotNull
     fun getCatalogDatabaseUrl(): String? {
@@ -217,6 +222,29 @@ class DucklakeConfig {
             "is physically deleted — protects in-flight, possibly cross-engine, readers). Default 7d.")
     fun setMaintenanceMinRetention(maintenanceMinRetention: Duration): DucklakeConfig {
         this.maintenanceMinRetention = maintenanceMinRetention
+        return this
+    }
+
+    @Min(1)
+    @Max(MAX_BATCH_SIZE.toLong())
+    fun getCleanupBatchSize(): Int = cleanupBatchSize
+
+    @Config("ducklake.cleanup.batch-size")
+    @ConfigDescription("Maximum scheduled entries processed per cleanup_old_files call and retained references fetched per page (1..1024).")
+    fun setCleanupBatchSize(cleanupBatchSize: Int): DucklakeConfig {
+        this.cleanupBatchSize = cleanupBatchSize
+        return this
+    }
+
+    @Min(1)
+    @Max(10_000_000)
+    fun getCleanupMaxReferenceFiles(): Long = cleanupMaxReferenceFiles
+
+    @Config("ducklake.cleanup.max-reference-files")
+    @ConfigDescription("Maximum retained data/delete references inspected per cleanup_old_files call; " +
+            "exceeding it fails before deletion or queue cancellation (1..10000000).")
+    fun setCleanupMaxReferenceFiles(cleanupMaxReferenceFiles: Long): DucklakeConfig {
+        this.cleanupMaxReferenceFiles = cleanupMaxReferenceFiles
         return this
     }
 

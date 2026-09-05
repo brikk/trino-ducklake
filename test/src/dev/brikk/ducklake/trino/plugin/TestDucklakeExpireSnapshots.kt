@@ -274,6 +274,91 @@ class TestDucklakeExpireSnapshots : AbstractTestQueryFramework() {
         }
     }
 
+    @Test
+    fun cleanupCancelsSharedFileRequestAndReclaimsAfterLastOwnerDrops() {
+        val source = "test_schema.cleanup_shared_a"
+        val owner = "test_schema.cleanup_shared_b"
+        val keeper = "test_schema.cleanup_shared_keeper"
+        try {
+            computeActual("CREATE TABLE $source AS SELECT 42 AS id")
+            computeActual("CREATE TABLE $owner (id INTEGER)")
+            // Save the physical bare path while A exists; its $files table disappears on DROP.
+            val physical = Path.of(computeScalar("SELECT \"\$path\" FROM $source") as String)
+            assertThat(physical.startsWith(dataDir)).isTrue()
+            assertThat(physical).isRegularFile()
+            val sourceFileId = rowCount("SELECT data_file_id FROM ducklake_data_file WHERE table_id = "
+                    + "(SELECT table_id FROM ducklake_table WHERE table_name = ? AND end_snapshot IS NULL)",
+                    "cleanup_shared_a")
+            computeActual("CALL system.add_files(schema_name => 'test_schema', table_name => 'cleanup_shared_b', "
+                    + "files => ARRAY['${physical.toString().replace("'", "''")}'])")
+            assertThat(computeScalar("SELECT id FROM $owner")).isEqualTo(42)
+            assertThat(computeScalar("SELECT \"\$path\" FROM $owner")).isEqualTo(physical.toString())
+            val ownerFileId = rowCount("SELECT data_file_id FROM ducklake_data_file WHERE table_id = "
+                    + "(SELECT table_id FROM ducklake_table WHERE table_name = ? AND end_snapshot IS NULL)",
+                    "cleanup_shared_b")
+            assertThat(ownerFileId).isNotEqualTo(sourceFileId)
+
+            computeActual("DROP TABLE $source")
+            computeActual("CREATE TABLE $keeper AS SELECT 7 AS id")
+            val latest = maxSnapshot()
+            val toExpire = allSnapshotIds().filter { it != latest }
+            computeActual("CALL system.expire_snapshots(snapshot_ids => ${sqlArray(toExpire)}, dry_run => false)")
+            val queuedPath = "SELECT count(*) FROM ducklake_files_scheduled_for_deletion " +
+                    "WHERE path = ? AND path_is_relative = false"
+            assertThat(rowCount("$queuedPath AND data_file_id = $sourceFileId", physical.toString()))
+                    .`as`("A's retired reference schedules the shared physical file").isEqualTo(1L)
+            assertThat(physical).isRegularFile()
+
+            computeActual("CALL system.cleanup_old_files(retention_threshold => '0s', dry_run => false)")
+            assertThat(physical).`as`("B still owns the physical file").isRegularFile()
+            assertThat(computeScalar("SELECT id FROM $owner")).isEqualTo(42)
+            assertThat(rowCount(queuedPath, physical.toString()))
+                    .`as`("obsolete A request is cancelled, not left for another engine").isZero()
+
+            assertDuckdbCleanupPreservesOwner(owner)
+            assertThat(physical).`as`("stock DuckDB cleanup cannot delete B's file").isRegularFile()
+            assertThat(computeScalar("SELECT id FROM $owner")).isEqualTo(42)
+
+            computeActual("DROP TABLE $owner")
+            computeActual("INSERT INTO $keeper VALUES (8)")
+            val finalLatest = maxSnapshot()
+            val finalExpiry = allSnapshotIds().filter { it != finalLatest }
+            computeActual("CALL system.expire_snapshots(snapshot_ids => ${sqlArray(finalExpiry)}, dry_run => false)")
+            assertThat(rowCount("$queuedPath AND data_file_id = $ownerFileId", physical.toString()))
+                    .`as`("retiring the last owner requeues the same physical file").isEqualTo(1L)
+            assertThat(physical).isRegularFile()
+
+            computeActual("CALL system.cleanup_old_files(retention_threshold => '0s', dry_run => false)")
+            assertThat(physical).`as`("unowned file is eventually reclaimed").doesNotExist()
+            assertThat(rowCount("SELECT count(*) FROM ducklake_files_scheduled_for_deletion"))
+                    .`as`("cleanup drains the queue").isZero()
+            assertThat(computeActual("SELECT id FROM $keeper ORDER BY id").materializedRows.map { it.getField(0) as Int })
+                    .containsExactly(7, 8)
+        }
+        finally {
+            tryDrop(source)
+            tryDrop(owner)
+            tryDrop(keeper)
+        }
+    }
+
+    private fun assertDuckdbCleanupPreservesOwner(owner: String) {
+        DriverManager.getConnection("jdbc:duckdb:").use { conn ->
+            conn.createStatement().use { stmt ->
+                stmt.execute("LOAD postgres")
+                stmt.execute("LOAD ducklake")
+                stmt.execute("ATTACH '" + pgServer!!.getDuckDbAttachUri("ducklake_expire_snapshots_e2e")
+                        + "' AS lake (DATA_PATH '" + dataDir.toAbsolutePath() + "/')")
+                stmt.execute("CALL ducklake_cleanup_old_files('lake', cleanup_all => true)")
+                stmt.executeQuery("SELECT id FROM lake.$owner").use { rs ->
+                    assertThat(rs.next()).isTrue()
+                    assertThat(rs.getInt(1)).isEqualTo(42)
+                    assertThat(rs.next()).isFalse()
+                }
+            }
+        }
+    }
+
     /**
      * cleanup_old_files must resolve ROOT-relative scheduled paths (the form DuckLake writes — the
      * schedule table has no table_id) against the catalog data_path root, not a per-table dir. We

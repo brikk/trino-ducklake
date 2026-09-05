@@ -162,6 +162,8 @@ Catalog properties (set in `etc/catalog/<name>.properties`):
 | `ducklake.catalog.database-password` | Conditional | — | Catalog database password. Required for PostgreSQL and MySQL; omit for local DuckDB |
 | `ducklake.data-path` | Yes | — | Base path for data files |
 | `ducklake.catalog.max-connections` | No | 10 | Max JDBC connections to catalog |
+| `ducklake.cleanup.batch-size` | No | 256 | Maximum queued requests selected per `cleanup_old_files` call and retained references per page; allowed 1..1024 |
+| `ducklake.cleanup.max-reference-files` | No | 1000000 | Combined retained data/delete reference scan budget per cleanup call; allowed 1..10000000. Exceeding it aborts before deletion or queue cancellation |
 | `ducklake.default-snapshot-id` | No | — | Pin all reads to a snapshot ID |
 | `ducklake.default-snapshot-timestamp` | No | — | Pin all reads to a point in time |
 | `ducklake.temporal-partition-encoding` | No | `calendar` | **Deprecated.** Default `calendar` is the DuckLake 1.0 spec contract; `epoch` retained for legacy catalogs |
@@ -448,7 +450,7 @@ operates on whichever DuckLake catalog you invoke through.
 | `rewrite_data_files(schema_name, table_name, [file_size_threshold], [target_file_size], [reclaim_sources_immediately])` | Compaction / `optimize`: merge a table's small data files into fewer larger files through the real read path (so delete files / partial files / schema evolution all apply). Per-partition groups for partitioned tables; size-bounded output (`target_file_size`, default 512MB). Registers the merged files + end-snapshots the sources atomically; `reclaim_sources_immediately => true` writes the partial-emitting (`merge_adjacent`) variant that deletes sources outright. |
 | `remove_orphan_files([schema_name], [table_name], [retention_threshold], [dry_run])` | Delete files under the target data path(s) that no catalog row references (the residue of failed/aborted commits) and that are older than `retention_threshold` (default `'7d'`). **Only DuckLake-written residue is deleted** — `ducklake-`-prefixed data/delete files (`.parquet`/`.puffin`); foreign files a user parked under the path (`_SUCCESS`, `foo.txt`, their own non-`ducklake-` parquet) are never touched. **Scope by args:** both → one table; `schema_name` only → the whole schema; neither → the whole catalog (the wide scopes reclaim residue from a failed `CREATE TABLE` that a per-table call can't name). The threshold is floored by `ducklake.remove-orphan-files.min-retention` (default `7d`) — a grace period protecting files an in-flight, possibly cross-engine, writer just produced. `dry_run => true` reports and removes nothing. Touches storage only. |
 | `expire_snapshots([retention_threshold], [snapshot_ids], [dry_run])` | Catalog-wide. Remove old DuckLake snapshots and reclaim the data/delete files only they referenced. Select either by `retention_threshold` (default `'7d'`, floored by `ducklake.maintenance.min-retention`) or an explicit `snapshot_ids` ARRAY (not floored); the latest snapshot is never expirable. Plain catalog transaction (no new snapshot); only **schedules** dead files for deletion — run `cleanup_old_files` to reclaim the space. `dry_run => true` lists the snapshots that would be expired. Mirrors upstream `ducklake_expire_snapshots`. |
-| `cleanup_old_files([retention_threshold], [dry_run])` | Catalog-wide. Physically delete files previously scheduled by `expire_snapshots` (or a cross-engine DuckLake op) once they are older than `retention_threshold` (default `'7d'`, floored by `ducklake.maintenance.min-retention` — the grace period protecting in-flight readers). The second phase of two-phase deletion. Mirrors upstream `ducklake_cleanup_old_files`. |
+| `cleanup_old_files([retention_threshold], [dry_run])` | Catalog-wide, one bounded batch per call. After the retention period (default `'7d'`, floored by `ducklake.maintenance.min-retention`), delete unowned scheduled files or cancel obsolete requests for files still owned by retained metadata. Owner reads are paged and budgeted. Dry runs perform the checks without mutation. Repeat for further batches; simultaneous import/cleanup is not coordinated. |
 
 ### `add_files`
 
@@ -532,9 +534,30 @@ a catalog-scoped procedure, not table-scoped — and reclaims the data/delete fi
 snapshots referenced (liveness is the half-open `[begin_snapshot, end_snapshot)` window against the
 surviving snapshots; the latest snapshot is never expirable). It is a plain catalog transaction
 (no new snapshot) that only **schedules** the dead files into `ducklake_files_scheduled_for_deletion`;
-`cleanup_old_files` is the second phase that physically deletes them once they age past the grace
-period. This two-phase split (schedule, then age-gated unlink) is what keeps deletion safe against
-in-flight readers on other engines — see [dev-docs/DESIGN-maintenance.md](dev-docs/DESIGN-maintenance.md).
+`cleanup_old_files` is the second phase that checks a bounded batch after the grace period. Before
+deleting, it scans retained data/delete references in SQL-limited pages. If another retained
+reference owns the same file, cleanup preserves the file and cancels only the obsolete selected
+queue request. It does not leave that request for a later DuckDB cleanup to consume. The final
+owner's normal retirement can schedule the file again for eventual reclamation.
+
+Each call selects at most `ducklake.cleanup.batch-size` requests (256 by default, maximum 1024).
+Repeat the call for further batches. Reference pages share that size; exceeding
+`ducklake.cleanup.max-reference-files` fails before any deletion or cancellation. Paths and the
+catalog root are bounded to 16,384 characters, with bounded overflow/lookahead sentinels. These
+limits bound coordinator materialization, not database scan time or the number of members in a
+legacy directory deletion. Identical duplicate queue rows describe one request and are removed
+together. Failed deletions remain queued; persistent failures or deferred requests may require
+operator attention before later batches can progress.
+
+Dry runs perform the same owner/path/budget checks without modifying storage or the queue.
+Prefix-only directory overlaps are deferred with a warning, not cancelled: retiring a child
+does not necessarily reschedule the whole parent. Those requests require manual reconciliation
+before another engine processes them. RV-03's path-identity restrictions also apply here.
+
+This is not a lock against simultaneous import/cleanup, nor a guarantee that an independent
+stock DuckDB cleaner will check owners. Avoid overlapping those operations on the same objects.
+Retention provides a grace period, not a coordinated reader lease. See
+[dev-docs/DESIGN-shared-file-ownership.md](dev-docs/DESIGN-shared-file-ownership.md).
 Expire also GCs the metadata rows of fully-expired dropped tables; dead schema/view/macro rows are
 left as harmless dangling rows (a follow-up).
 

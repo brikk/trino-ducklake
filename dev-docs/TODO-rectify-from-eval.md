@@ -75,6 +75,15 @@ of work. Order = suggested order.
   `totalValueCount`/`totalNullCount` in the null-fraction estimate (`DucklakeMetadata.kt:472-483`).
 
 - [ ] **TR-4 — Flush via `flushInlinedDataWithSnapshots`** (`1121e3e`; closes P-C1 + P-M5).
+  BLOCKED after catalog 0.7.1. `FlushedInlinedFile` needs its own `rowIdStart`; the API currently
+  accepts one global `preservedRowIdStart` and registers every file with that same value. A correct
+  flush writes one file per inlined schema version (old files must retain dropped historical fields
+  after physical metadata deletion), so the current API creates overlapping row-id ranges. A
+  combined current-schema file avoids overlap but breaks old-schema time travel. Required catalog
+  shape: `FlushedInlinedFile(..., rowIdStart, ...)`, used per entry by
+  `flushInlinedDataWithSnapshots` (the global argument can then be removed/deprecated). Regression:
+  two inlined schema versions with non-contiguous original row-id ranges; each registered file gets
+  its own minimum id and DuckDB time travel sees fields dropped between versions.
   `DucklakeFlushInlinedDataProcedure` must write `_ducklake_internal_snapshot_id` (field id
   2147483539) per row, include deleted inlined rows plus a snapshot-tagged delete file, and call
   `flushInlinedDataWithSnapshots(tableId, List<FlushedInlinedFile>, preservedRowIdStart)`. Until

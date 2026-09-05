@@ -1,9 +1,70 @@
 # RV-04: Shared Physical File Ownership
 
-**Status: PROPOSAL / BLOCKED. Not implemented.** Source research only, 2026-09-05.
+**Status: bounded practical fix implemented; stronger concurrent protocol deferred.** Updated 2026-09-05.
 Companion: [RV-04 review finding](REVIEW-2026-09-05.md#rv-04-scheduled-cleanup-is-not-safe-for-shared-physical-ownership).
 
-**RV-04-D01 (decision): Cross-engine design first.** Preserve unrestricted stock DuckDB
+## Current Practical Scope
+
+**RV-04-D21 (approved decision, supersedes D01):** Check retained owners before our cleaner
+deletes a scheduled file. Prevent the ordinary sequential A/B sharing failure without requiring
+upstream coordination. The user accepts the residual simultaneous import/cleanup race. A useful
+bounded check is not rejected merely because it cannot establish a universal ownership protocol.
+`add_files` remains zero-copy and still permits sharing.
+
+**RV-04-D22 (enforced limits):** Never materialize the entire catalog to perform this check.
+
+| Limit | Default / maximum | Meaning |
+|---|---|---|
+| Selected requests and reference page size | 256 / 1024 | `ducklake.cleanup.batch-size`; one queued batch per call, SQL-limited reference pages |
+| Combined data/delete reference budget | 1,000,000 / 10,000,000 | `ducklake.cleanup.max-reference-files`; overflow aborts before any deletion/cancellation |
+| Path field length | 16,384 characters | SQL projections fetch one overflow character, then reject oversized values; resolved paths are checked too |
+| Root/hierarchy sentinels | Two root rows; page-local parent count + 1 | Detect duplicate roots/parents without unbounded parent/history fetches |
+| Queue mutation chunks | 64 predicates | Input capped at 1024 selected tuples; identical duplicate rows coalesce and may exceed 64 affected rows |
+
+The reference budget permits one lookahead row to distinguish exact exhaustion from overflow.
+Memory is bounded by candidates plus a reference page, not total retained file count. This is
+not a bound on database scan/sort time, bytes independent of character encoding, or the number
+of physical members removed by one legacy-directory request. Old unbounded catalog APIs remain
+for existing consumers, but this cleanup path never calls them.
+
+**RV-04-D23 (implemented planning):** Read one candidate batch, the bounded root, and all needed
+reference pages within `catalog.readSession`. Data and delete files use separate numeric keyset
+cursors and a shared total budget. Each page resolves only its own latest table/schema hierarchy,
+including retired files and dropped-but-unexpired owners. The deletion queue is not counted as
+ownership. No candidates means no root or owner scan. RV-03 comparison keys and refusal rules
+apply; raw stored paths and deletion targets stay unchanged. Plan the entire bounded batch before
+any cancellation or physical deletion.
+
+**RV-04-D24 (implemented cancellation/reclamation):** An exact retained owner preserves the
+physical object and cancels the selected obsolete deletion request. Match its original file ID,
+path bytes, relative flag, and timestamp; do not cancel by normalized path or ID alone. This
+removes the stale instruction that a later stock DuckDB cleaner might otherwise consume.
+Normal final-owner retirement schedules a new request, allowing eventual reclamation. Unowned
+objects are deleted and then their exact selected requests acknowledged; failed deletions remain
+queued. Dry runs perform the same checks but neither cancel nor delete.
+
+**RV-04-D25 (remaining limits):** Simultaneous imports, independent cleaners, path replacement,
+external catalogs, and expired-reader leases remain uncoordinated. Stock DuckDB cleanup alone
+still has its upstream behavior. Exact shared directories are protected, but prefix-only
+overlaps are deferred with a warning and remain scheduled: retiring a child cannot be assumed
+to reschedule/reclaim the whole parent. Reconcile those requests before another engine cleans
+them. Persistent failed/deferred oldest entries can occupy later batches and need operator
+attention. These limitations are explicit, not blockers requiring D10-D20's full protocol first.
+
+**RV-04-D26 (verification and delivery):** Connector commit `fb1a3a9` implements this scope.
+Real tests exercise A/B sharing, A's request cancellation,
+subsequent stock DuckDB cleanup, final-owner retirement/reclamation, and an S3 alias against
+MinIO. Other regressions cover tiny pages, budget overflow before mutation, hostile collations,
+bounded root/path projections, whitespace filenames, precise acknowledgments, and directory
+overlaps. See the review's verification record for commands and results. Catalog changes are
+on `fix/rv04-bounded-cleanup`, verified locally as `0.9.0-rv04-SNAPSHOT` to avoid concurrent
+artifact collisions (catalog commit `4cdc725`). Merge/release that API and repin the connector before pushing/deploying
+the consumer. No remote artifacts have been published as part of this work.
+
+<details>
+<summary>Historical full cross-engine proposal, retained for traceability and not a prerequisite for D21-D26</summary>
+
+**RV-04-D01 (previous decision, superseded by D21): Cross-engine design first.** Preserve unrestricted stock DuckDB
 interoperability, including shared imports and native maintenance. A Trino-only rejection,
 lock, or cleanup check is not a complete fix. This document selects requirements and an upstream
 coordination direction, not a storage architecture, schema migration, or trigger implementation.
@@ -211,8 +272,11 @@ Existing `TestDucklakeExpireSnapshots` checks retirement/cleanup and surviving s
 `TestDucklakeAddFiles` checks sharing separately. Neither establishes the combined protocol.
 Use focused suites and selected corpus directories, never a full-corpus run by default.
 
-**RV-04-D20 (completion gate): RV-04 remains BLOCKED until** the upstream cross-engine contract
+**RV-04-D20 (deferred full-protocol gate, not the D21 practical-fix gate):** The stronger guarantee remains blocked until the upstream cross-engine contract
 and scope are agreed, every registrar/scheduler/deleter participates, legacy schedules and stale
 clients are safely handled, recovery is specified and implemented, and D19 passes against real
 stock DuckDB and released dependencies. A design document, RV-03 fix, local guard, or JVM-only
-green test is not completion. This change implements none of that protocol.
+green test is not completion of that stronger guarantee. The practical fix implements none of
+that distributed protocol and does not need to claim it.
+
+</details>

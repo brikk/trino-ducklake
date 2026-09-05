@@ -13,6 +13,8 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
+import dev.brikk.ducklake.catalog.DucklakeCatalog
+import dev.brikk.ducklake.catalog.JdbcDucklakeCatalog
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -93,5 +95,70 @@ class TestDucklakeAddFilesCrossEngine : AbstractDucklakeCrossEngineTest() {
         finally {
             tryDropTable("test_schema.xengine_add_files_dst")
         }
+    }
+
+    @Test
+    fun nestedNameMapSurvivesTargetFieldRenames() {
+        val outputDir = getIsolatedCatalog().dataDir.parent.resolve("add_files_nested_xengine")
+        java.nio.file.Files.createDirectories(outputDir)
+        val parquetPath = outputDir.resolve("nested.parquet").toAbsolutePath()
+        createDuckdbConnection().use { duckdb ->
+            duckdb.createStatement().use { statement ->
+                statement.execute(
+                        "COPY (SELECT {'DisplayName': 'Alice', 'Details': {'ScoreValue': 42::INTEGER}} " +
+                                "AS \"Payload\") TO '$parquetPath' (FORMAT PARQUET)")
+            }
+        }
+
+        val table = "test_schema.xengine_nested_add_files"
+        computeActual("CREATE TABLE $table (payload ROW(displayname VARCHAR, details ROW(scorevalue INTEGER)))")
+        try {
+            computeActual(
+                    "CALL ducklake.system.add_files(schema_name => 'test_schema', " +
+                            "table_name => 'xengine_nested_add_files', files => ARRAY['$parquetPath'])")
+
+            withCatalog { catalog ->
+                val snapshot = catalog.currentSnapshotId
+                val stored = catalog.getTable("test_schema", "xengine_nested_add_files", snapshot)!!
+                val columns = catalog.getAllColumnsWithParentage(stored.tableId, snapshot)
+                val displayName = columns.single { it.columnName == "displayname" }
+                val scoreValue = columns.single { it.columnName == "scorevalue" }
+                val mappingId = catalog.getDataFiles(stored.tableId, snapshot).single().mappingId!!
+                assertThat(catalog.getNameMaps(setOf(mappingId)).getValue(mappingId))
+                        .`as`("0.8.0 exposes top-level and nested target ids")
+                        .containsEntry(displayName.columnId, "displayname")
+                        .containsEntry(scoreValue.columnId, "scorevalue")
+                catalog.renameColumn(stored.tableId, displayName.columnId, "label")
+                catalog.renameColumn(stored.tableId, scoreValue.columnId, "score")
+            }
+
+            assertThat(computeActual("SELECT payload.label, payload.details.score FROM $table")
+                    .materializedRows.single().fields)
+                    .containsExactly("Alice", 42)
+            createDuckdbConnection().use { duckdb ->
+                duckdb.createStatement().use { statement ->
+                    statement.executeQuery(
+                            "SELECT payload.label, payload.details.score FROM ducklake_db.$table").use { rows ->
+                        assertThat(rows.next()).isTrue()
+                        assertThat(rows.getString(1)).isEqualTo("Alice")
+                        assertThat(rows.getInt(2)).isEqualTo(42)
+                        assertThat(rows.next()).isFalse()
+                    }
+                }
+            }
+        }
+        finally {
+            tryDropTable(table)
+        }
+    }
+
+    private fun withCatalog(action: (DucklakeCatalog) -> Unit) {
+        val isolated = getIsolatedCatalog()
+        JdbcDucklakeCatalog(DucklakeConfig()
+                .setCatalogDatabaseUrl(isolated.jdbcUrl)
+                .setCatalogDatabaseUser(isolated.user)
+                .setCatalogDatabasePassword(isolated.password)
+                .setDataPath(isolated.dataDir.toAbsolutePath().toString())
+                .toCatalogConfig()).use(action)
     }
 }

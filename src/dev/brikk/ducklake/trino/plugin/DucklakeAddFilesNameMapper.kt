@@ -166,7 +166,7 @@ internal class DucklakeAddFilesNameMapper(
                 leafCounter[0] += countParquetLeaves(parquetField)
                 continue
             }
-            val targetType: Type = typeConverter.toTrinoType(match.columnType)
+            val targetType: Type = typeConverter.toTrinoType(match, allColumns)
             val entry = mapField(parquetField, parquetName, match, targetType, childrenByParent)
             resultEntries.add(entry)
             topLevelMatches.add(TopLevelMatch(i, match.columnId, parquetName, targetType))
@@ -193,7 +193,7 @@ internal class DucklakeAddFilesNameMapper(
                     }
                 }
                 val stringValue = hivePartitionValues[pathKey]
-                val targetType: Type = typeConverter.toTrinoType(column.columnType)
+                val targetType: Type = typeConverter.toTrinoType(column, allColumns)
                 if (isNestedType(targetType)) {
                     throw DucklakeAddFilesException(String.format(
                             "Type \"%s\" is not supported for hive partitioning (column \"%s\")",

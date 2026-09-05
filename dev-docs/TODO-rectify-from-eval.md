@@ -131,8 +131,9 @@ of work. Order = suggested order.
   `DucklakeTypeConverter.toDucklakeType` output is accepted for every Trino type we allow and that
   the connector maps `DucklakeInvalidOperationException` (TR-1) to a clear DDL error.
 
-- [x] **TR-13 — Bump the pin to the released `0.5.0`** (drop `-SNAPSHOT`) once published; the
-  DONE 2026-09-04 `48ce139` (0.5.0), then 0.6.0 and 0.7.0 for the catalog parity/path releases.
+- [x] **TR-13 — Keep the connector on released ducklake-catalog artifacts.**
+  DONE through 0.8.0: 0.5.0 initial reconciliation; 0.6.0 parity/DDL; 0.7.x path/flush fixes;
+  0.8.0 nested name maps.
   Harness: `9dfd6cc` fixes the corpus engine for the replay driver's re-ATTACH `connect()`.
   scoped `mavenLocal()` in `buildlogic.kotlin.brikk` stays for the dev loop.
 
@@ -372,7 +373,7 @@ of work. Order = suggested order.
   `ColumnIO`; predicate-only columns are included. Regressions cover a three-step name swap and
   `rename a→old_a; add a; WHERE a IS NULL` (the old file remains and projects NULL).
 
-- [ ] **R-H3 — Nested struct fields resolved by name, not field id** (also T-C3).
+- [x] **R-H3 — Nested struct fields resolved by name, not field id** (also T-C3).
   `DucklakeParquetTypeUtils.kt:52-66` `groupColumnIO.getChild(fieldName)` with the *current*
   Trino name; no field id, era name, or `initial_default`. `getNameMaps` (`JdbcDucklakeCatalog.kt:
   1450-1452`) drops nested name-map rows ("handled by Trino's reader" — it isn't). Upstream
@@ -381,18 +382,22 @@ of work. Order = suggested order.
   stale data resurrected; nested `ADD ... DEFAULT` → NULL. `DESIGN-nested-field-evolution.md:13-14`
   asserts field-id binding that doesn't exist. Inlined path (`InlinedNestedFieldMapping.kt`) does
   do id mapping — parquet should match it.
-  CORE DONE 2026-09-05: ROW children resolve source-name-map (when available), field ID, era name,
+  DONE 2026-09-05: ROW children resolve source-name-map, field ID, era name,
   then identity-gated current name; ARRAY/MAP recurse with catalog child identities. Regressions
-  cover nested rename and nested drop/readd. Remaining: nested `initial_default` materialization,
-  and nested add_files name maps (R-H5 below).
+  cover nested rename and nested drop/readd. Catalog 0.8.0 supplies nested add_files maps (R-H5).
+  Nested `initial_default` remains unsupported by the connector/catalog DDL surface; track it if
+  that surface is added rather than silently inventing semantics now.
 
-- [ ] **R-H5 — Catalog `getNameMaps` drops nested add_files mappings.** Catalog 0.7.2 filters
+- [x] **R-H5 — Catalog `getNameMaps` drops nested add_files mappings.** Catalog 0.7.2 filters
   `ducklake_name_mapping.parent_column IS NULL`, so the connector receives only top-level
   `target_field_id → source_name`. Core nested field-ID resolution is fixed, but external Parquet
   files without field IDs still need nested source names. Generic catalog fix: return every
   non-partition mapping row (remove the parent filter); target field IDs are globally sufficient
   because the connector already has the parent tree. Until then nested add_files keeps its prior
   name fallback and is not identity-safe after nested rename/case differences.
+  DONE with ducklake-catalog 0.8.0 `ba3e517`: all non-partition nested target-id/source-name entries
+  are returned. Connector regression registers raw field-ID-less nested Parquet, renames deep target
+  fields, and verifies both Trino and DuckDB still read through the mapping.
 
 - [ ] **R-H4 — Catalog-stat file pruning never executes in production; its value encoding is
   wrong if enabled.** `pruneDataFiles` (`DucklakeSplitManager.kt:236-247`) and
@@ -700,7 +705,8 @@ of work. Order = suggested order.
   types are built recursively from case-preserving `DucklakeColumn` parent/child rows and ordered
   by `column_order`; rendered type-string parsing is no longer used there. DuckDB regression reads
   fields `DisplayName`, `Value`, and `a:b,c` from Parquet and verifies DESCRIBE preserves them.
-  The only remaining rendered nested-type consumer is add_files, tracked as R-H5.
+  `add_files` also builds target types from the catalog tree as of 0.8.0 adoption; no production
+  nested path parses rendered struct field names.
 
 ### High
 

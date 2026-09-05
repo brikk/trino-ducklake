@@ -152,11 +152,11 @@ class DucklakeAddFilesProcedure @Inject constructor(
         val partitionSpecs: List<DucklakePartitionSpec> = catalog.getPartitionSpecs(tableId, snapshotId)
         val activePartitionSpec: Optional<DucklakePartitionSpec> = activePartitionSpecOf(partitionSpecs)
 
-        if (activePartitionSpec.isPresent && hivePartitioning) {
+        if (activePartitionSpec.isPresent) {
             for (field in activePartitionSpec.get().fields) {
                 if (field.transform != DucklakePartitionTransform.IDENTITY) {
                     throw TrinoException(NOT_SUPPORTED, String.format(
-                            "add_files with hive_partitioning => true currently supports identity partition transforms only; "
+                            "add_files on a partitioned table currently supports identity partition transforms only; "
                                     + "table \"%s.%s\" has transform %s",
                             schemaName, tableName, field.transform))
                 }
@@ -289,6 +289,13 @@ class DucklakeAddFilesProcedure @Inject constructor(
 
             val recordCount = aggregateRecordCount(thriftMetadata)
 
+            validatePartitionCoverage(
+                    filePath,
+                    activePartitionSpec,
+                    result.partitionValues,
+                    topLevelColumns,
+                    hivePartitioning)
+
             val partitionId: OptionalLong = activePartitionSpec.map { spec -> OptionalLong.of(spec.partitionId) }
                     .orElse(OptionalLong.empty())
 
@@ -345,6 +352,45 @@ class DucklakeAddFilesProcedure @Inject constructor(
             }
         }
         return out
+    }
+
+    /**
+     * DuckLake requires one path-derived value for every field of the file's partition spec.
+     * Registering a partition_id with missing values makes partition pruning undecidable and is a
+     * catalog shape upstream rejects. Extra table-column hive keys are rejected too: silently
+     * treating a non-partition path segment as an authoritative body-column replacement changes
+     * data while recording no partition key for it.
+     */
+    private fun validatePartitionCoverage(
+            filePath: String,
+            activePartitionSpec: Optional<DucklakePartitionSpec>,
+            valuesByFieldId: Map<Int, String>,
+            topLevelColumns: List<DucklakeColumn>,
+            hivePartitioning: Boolean) {
+        if (activePartitionSpec.isEmpty) {
+            return
+        }
+        if (!hivePartitioning) {
+            throw TrinoException(
+                    INVALID_PROCEDURE_ARGUMENT,
+                    "Cannot add file '$filePath' to a partitioned table without hive_partitioning => true; " +
+                            "the path must provide every active identity partition value")
+        }
+        val spec = activePartitionSpec.get()
+        val required = spec.fields.mapTo(linkedSetOf()) { it.columnId }
+        val provided = valuesByFieldId.keys.mapTo(linkedSetOf()) { it.toLong() }
+        if (provided == required) {
+            return
+        }
+        val namesById = topLevelColumns.associate { it.columnId to it.columnName }
+        val missing = (required - provided).map { namesById[it] ?: "field_id=$it" }
+        val extra = (provided - required).map { namesById[it] ?: "field_id=$it" }
+        throw TrinoException(
+                INVALID_PROCEDURE_ARGUMENT,
+                "Invalid hive partition values for file '$filePath': " +
+                        "missing=${missing.ifEmpty { listOf("<none>") }}, " +
+                        "extra=${extra.ifEmpty { listOf("<none>") }}; " +
+                        "the path must provide exactly the active identity partition columns")
     }
 
     companion object {

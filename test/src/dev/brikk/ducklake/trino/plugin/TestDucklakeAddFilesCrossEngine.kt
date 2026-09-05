@@ -205,6 +205,46 @@ class TestDucklakeAddFilesCrossEngine : AbstractDucklakeCrossEngineTest() {
         }
     }
 
+    @Test
+    fun completeHivePartitionValuesRoundTripToDuckdb() {
+        val outputDir = getIsolatedCatalog().dataDir.parent
+                .resolve("add_files_partition_xengine").resolve("region=us")
+        java.nio.file.Files.createDirectories(outputDir)
+        val parquetPath = outputDir.resolve("rows.parquet").toAbsolutePath()
+        createDuckdbConnection().use { duckdb ->
+            duckdb.createStatement().use { statement ->
+                statement.execute("COPY (SELECT 'hello' AS val UNION ALL SELECT 'world') " +
+                        "TO '$parquetPath' (FORMAT PARQUET)")
+            }
+        }
+
+        val table = "test_schema.xengine_partition_add_files"
+        computeActual("CREATE TABLE $table (region VARCHAR, val VARCHAR) " +
+                "WITH (partitioned_by = ARRAY['region'])")
+        try {
+            computeActual("CALL ducklake.system.add_files(schema_name => 'test_schema', " +
+                    "table_name => 'xengine_partition_add_files', files => ARRAY['$parquetPath'], " +
+                    "hive_partitioning => true)")
+
+            createDuckdbConnection().use { duckdb ->
+                duckdb.createStatement().use { statement ->
+                    statement.executeQuery(
+                            "SELECT region, val FROM ducklake_db.$table WHERE region='us' ORDER BY val").use { rows ->
+                        assertThat(rows.next()).isTrue()
+                        assertThat(rows.getString(1)).isEqualTo("us")
+                        assertThat(rows.getString(2)).isEqualTo("hello")
+                        assertThat(rows.next()).isTrue()
+                        assertThat(rows.getString(2)).isEqualTo("world")
+                        assertThat(rows.next()).isFalse()
+                    }
+                }
+            }
+        }
+        finally {
+            tryDropTable(table)
+        }
+    }
+
     private fun fileColumnBounds(tableName: String, columnName: String): List<String> {
         val isolated = getIsolatedCatalog()
         java.sql.DriverManager.getConnection(isolated.jdbcUrl, isolated.user, isolated.password).use { connection ->

@@ -881,13 +881,17 @@ of work. Order = suggested order.
   source files remain available to older snapshots. Regression compacts clean peers while keeping
   the delete-bearing source and verifies the deleted row remains visible before its delete snapshot.
 
-- [ ] **P-H3 — `add_files` on a partitioned table accepts files with missing/incomplete partition
+- [x] **P-H3 — `add_files` on a partitioned table accepts files with missing/incomplete partition
   values → enforced partition predicates leak rows** (interacts with R-C1). `DucklakeAddFiles
   Procedure.kt:292-297` sets `partition_id = activeSpec` unconditionally; `remapPartitionValuesTo
   PartitionKeyIndex` (`:327-348`) copies whatever hive keys were found (none when
   `hive_partitioning` defaults to `false`, `:100`). Upstream `ducklake_add_data_files.cpp:
   1205-1231` throws on size mismatch (`add_file_partitioned.test`), default `hive_partitioning` is
   AUTOMATIC. Fix: require full coverage or reject.
+  DONE 2026-09-05: partitioned add_files supports identity transforms only and requires
+  `hive_partitioning => true`; path-derived target field IDs must exactly equal the active spec's
+  fields. Missing, partial, and extra table-column hive keys fail before commit with names in the
+  error. Complete values round-trip through Trino and DuckDB with partition predicates.
 
 - [x] **P-H4 — `add_files` min/max decoded with the wrong physical type / time unit → wrong stats →
   pruning skips matching files.** `toThriftFileMetaData` (`DucklakeAddFilesProcedure.kt:492-533`)

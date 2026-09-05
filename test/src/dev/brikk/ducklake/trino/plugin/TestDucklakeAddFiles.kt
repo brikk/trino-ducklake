@@ -486,6 +486,86 @@ internal open class TestDucklakeAddFiles
     // ==================== Hive partitioning (IDENTITY) ====================
 
     @Test
+    fun testPartitionedAddFilesRequiresHivePartitioning()
+    {
+        computeActual("CREATE TABLE test_schema.part_guard_src (region VARCHAR, val VARCHAR)")
+        computeActual("CREATE TABLE test_schema.part_guard_dst (region VARCHAR, val VARCHAR) " +
+                "WITH (partitioned_by = ARRAY['region'])")
+        try {
+            computeActual("INSERT INTO test_schema.part_guard_src VALUES ('us', 'hello')")
+            val file = singleFileAbsolutePath("part_guard_src")
+
+            assertThatThrownBy {
+                computeActual("CALL ducklake.system.add_files(schema_name => 'test_schema', " +
+                        "table_name => 'part_guard_dst', files => ARRAY['$file'])")
+            }
+                    .hasMessageContaining("partitioned table")
+                    .hasMessageContaining("hive_partitioning => true")
+            assertThat(computeScalar("SELECT count(*) FROM \"part_guard_dst\$files\"")).isEqualTo(0L)
+        }
+        finally {
+            tryDropTable("test_schema.part_guard_src")
+            tryDropTable("test_schema.part_guard_dst")
+        }
+    }
+
+    @Test
+    fun testPartitionedAddFilesRejectsIncompleteHiveValues()
+    {
+        computeActual("CREATE TABLE test_schema.part_partial_src (country VARCHAR, val VARCHAR)")
+        computeActual("CREATE TABLE test_schema.part_partial_dst (region VARCHAR, country VARCHAR, val VARCHAR) " +
+                "WITH (partitioned_by = ARRAY['region', 'country'])")
+        try {
+            computeActual("INSERT INTO test_schema.part_partial_src VALUES ('ca', 'hello')")
+            val source = Paths.get(singleFileAbsolutePath("part_partial_src"))
+            val destination = source.parent.resolve("region=us").resolve("partial.parquet")
+            Files.createDirectories(destination.parent)
+            Files.copy(source, destination)
+
+            assertThatThrownBy {
+                computeActual("CALL ducklake.system.add_files(schema_name => 'test_schema', " +
+                        "table_name => 'part_partial_dst', files => ARRAY['${destination.toAbsolutePath()}'], " +
+                        "hive_partitioning => true)")
+            }
+                    .hasMessageContaining("Invalid hive partition values")
+                    .hasMessageContaining("missing=[country]")
+            assertThat(computeScalar("SELECT count(*) FROM \"part_partial_dst\$files\"")).isEqualTo(0L)
+        }
+        finally {
+            tryDropTable("test_schema.part_partial_src")
+            tryDropTable("test_schema.part_partial_dst")
+        }
+    }
+
+    @Test
+    fun testPartitionedAddFilesRejectsExtraHiveTableColumns()
+    {
+        computeActual("CREATE TABLE test_schema.part_extra_src (val VARCHAR)")
+        computeActual("CREATE TABLE test_schema.part_extra_dst (region VARCHAR, country VARCHAR, val VARCHAR) " +
+                "WITH (partitioned_by = ARRAY['region'])")
+        try {
+            computeActual("INSERT INTO test_schema.part_extra_src VALUES ('hello')")
+            val source = Paths.get(singleFileAbsolutePath("part_extra_src"))
+            val destination = source.parent.resolve("region=us").resolve("country=ca").resolve("extra.parquet")
+            Files.createDirectories(destination.parent)
+            Files.copy(source, destination)
+
+            assertThatThrownBy {
+                computeActual("CALL ducklake.system.add_files(schema_name => 'test_schema', " +
+                        "table_name => 'part_extra_dst', files => ARRAY['${destination.toAbsolutePath()}'], " +
+                        "allow_missing => true, hive_partitioning => true)")
+            }
+                    .hasMessageContaining("Invalid hive partition values")
+                    .hasMessageContaining("extra=[country]")
+            assertThat(computeScalar("SELECT count(*) FROM \"part_extra_dst\$files\"")).isEqualTo(0L)
+        }
+        finally {
+            tryDropTable("test_schema.part_extra_src")
+            tryDropTable("test_schema.part_extra_dst")
+        }
+    }
+
+    @Test
     @Throws(Exception::class)
     fun testAddFilesHivePartitioningIdentity()
     {

@@ -22,12 +22,10 @@ Severity suffix: `C` critical (data loss / silent wrong rows / catalog unloadabl
 reviews found the same issue it is listed once with the other labels in parentheses.
 
 **2026-09-04 update:** ducklake-catalog 0.5.0 resolved most `E-*` items in `abb26ce..5ba4864`;
-0.6.0 (`861f67c..90927e3`) resolves the remaining catalog parity/DDL items below. The connector is
-on 0.6.0. One 0.6 API blocker remains: `listAllReferencedFiles().tableFiles` carries `tablePath`
-but not the owning schema path, even though the catalog itself documents table paths as
-schema-relative. The connector therefore cannot safely resolve relative files belonging to a
-dropped table/schema. P-H1/P-M1 stay open until the ref also carries `schemaPath` + relativity (or
-a fully resolved table base path); no connector-side metadata-SQL workaround will be added.
+0.6.0 (`861f67c..90927e3`) resolves the remaining catalog parity/DDL items below. Catalog 0.7.0
+`addf581` then fixes the last API gap: `DucklakeTableFilePathRef` carries the complete retained
+schema -> table -> file path hierarchy. The connector is on 0.7.0 and P-H1/P-M1 are closed without
+a connector-side metadata-SQL workaround.
 
 The ducklake-catalog repo resolved most `E-*` items in `abb26ce..5ba4864`
 (its own review doc uses labels `W/R/C/Q/S/X`). Items below are annotated with the resolving commit;
@@ -130,7 +128,7 @@ of work. Order = suggested order.
   the connector maps `DucklakeInvalidOperationException` (TR-1) to a clear DDL error.
 
 - [x] **TR-13 — Bump the pin to the released `0.5.0`** (drop `-SNAPSHOT`) once published; the
-  DONE 2026-09-04 `48ce139` (0.5.0), then 0.6.0 after the catalog parity follow-up release.
+  DONE 2026-09-04 `48ce139` (0.5.0), then 0.6.0 and 0.7.0 for the catalog parity/path releases.
   Harness: `9dfd6cc` fixes the corpus engine for the replay driver's re-ATTACH `connect()`.
   scoped `mavenLocal()` in `buildlogic.kotlin.brikk` stays for the dev loop.
 
@@ -798,12 +796,11 @@ of work. Order = suggested order.
 
 ### High
 
-- [ ] **P-H1 — `remove_orphan_files` known-set omits dropped-but-unexpired tables → deletes
-  CATALOG API PARTIAL in 0.6.0 `861f67c`: `listAllReferencedFiles()` now includes every table at
-  every snapshot and separates scheduled paths. **Blocked:** each `DucklakeTableFilePathRef` lacks
-  the schema path required to resolve its schema-relative `tablePath`, especially after table or
-  schema drop. Catalog must add that path (or return the resolved table base). The connector stays
-  on the old path rather than guess. **Still the top open procedure data-loss item.**
+- [x] **P-H1 — `remove_orphan_files` known-set omits dropped-but-unexpired tables → deletes
+  DONE with ducklake-catalog 0.7.0 `addf581`: `listAllReferencedFiles()` includes every retained
+  schema/table/file hierarchy and separates scheduled paths. The procedure always builds one
+  global known set, even for narrow scan scopes. Regression drops both table and schema, backdates
+  the retained file, runs catalog-wide cleanup, and then successfully time-travels through it.
   catalog-referenced files.** Targets from `listTables/listSchemas(snapshotId)` (`DucklakeRemove
   OrphanFilesProcedure.kt:141,146,190-193`) are `activeAt` filtered (`JdbcDucklakeCatalog.kt:266,
   283`); `listReferencedFilePaths` only runs for those. Upstream `GetKnownFilesForCleanupQuery`
@@ -859,9 +856,9 @@ of work. Order = suggested order.
 
 ### Medium
 
-- [ ] **P-M1 — Root-relative scheduled paths resolved against the table path in the orphan
-  Catalog 0.6.0 separates scheduled paths correctly, but adoption is blocked by the table-file
-  schema-path gap described in P-H1. Fix/adopt together.
+- [x] **P-M1 — Root-relative scheduled paths resolved against the table path in the orphan
+  DONE with P-H1 / catalog 0.7.0: scheduled paths are resolved against global `data_path`, never a
+  table path. Regression protects an aged, relative scheduled file from orphan deletion.
   known-set.** `listReferencedFilePaths` (`JdbcDucklakeCatalog.kt:627-632`) mixes
   `ducklake_files_scheduled_for_deletion` (root-relative) into the table-relative list; procedure
   resolves all with `resolveKnown(ref, tableDataPath)` (`:152-155,322-323`). A DuckDB-scheduled

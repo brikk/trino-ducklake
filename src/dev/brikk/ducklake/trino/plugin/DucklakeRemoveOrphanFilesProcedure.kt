@@ -17,9 +17,10 @@ import com.google.common.collect.ImmutableList
 import com.google.inject.Inject
 import com.google.inject.Provider
 import dev.brikk.ducklake.catalog.DucklakeCatalog
-import dev.brikk.ducklake.catalog.DucklakeFilePathRef
+import dev.brikk.ducklake.catalog.DucklakeReferencedFiles
 import dev.brikk.ducklake.catalog.DucklakeSchema
 import dev.brikk.ducklake.catalog.DucklakeTable
+import dev.brikk.ducklake.catalog.DucklakeTableFilePathRef
 import io.airlift.log.Logger
 import io.airlift.slice.Slices.utf8Slice
 import io.airlift.units.Duration
@@ -46,19 +47,19 @@ import java.time.Instant
  * before this, Trino had no way to reclaim them.
  *
  * Scope by argument presence (the more you supply, the narrower):
- *  - `schema_name` + `table_name` → one table's data path (the known set is that table's files).
+ *  - `schema_name` + `table_name` → one table's data path.
  *  - `schema_name` only → every table in the schema; scans the schema's data directory.
  *  - neither → the whole catalog; scans the warehouse root. The known set is the UNION of every
- *      in-scope table's referenced files, so residue from a **failed CREATE TABLE** (no catalog
+ *      catalog-referenced file, so residue from a **failed CREATE TABLE** (no catalog
  *      row, so no per-table sweep could name it) is reclaimed, and one table's live files are never
  *      mistaken for another's orphans. (Tables with a custom absolute `location` outside the
  *      scanned root are covered by a table-scoped call — the wide scan only walks the root tree.)
  *
  * Safety (see dev-docs/DESIGN-maintenance.md):
  *  - Orphans have no catalog row, so this touches storage ONLY — no snapshot, no catalog mutation,
- *    no conflict matrix. The "known set" is every path the catalog references for the table at ANY
- *    snapshot (data + delete files, including end-snapshotted ones) plus files already scheduled
- *    for deletion ([DucklakeCatalog.listReferencedFilePaths]); a listed file not in that set, and
+ *    no conflict matrix. The global "known set" is every path the catalog references at ANY
+ *    snapshot (including dropped-but-unexpired tables/schemas) plus files already scheduled for
+ *    deletion ([DucklakeCatalog.listAllReferencedFiles]); a listed file not in that set, and
  *    not inside a known dataset directory (lance/vortex dirs), is a candidate orphan.
  *  - **Type-scoped, not a blind diff**: only files that are recognizably DuckLake residue are
  *    deleted — a `ducklake-`-prefixed data/delete file (`.parquet`/`.puffin`/`.vortex`) or a
@@ -123,38 +124,30 @@ class DucklakeRemoveOrphanFilesProcedure @Inject constructor(
 
         // Resolve the target tables and the directory root(s) to scan by scope:
         //   both args -> one table; schema only -> that schema; neither -> the whole catalog.
-        // The KNOWN set is always the UNION of the referenced files of EVERY table in scope,
-        // each resolved against ITS OWN data path — so a schema-/catalog-wide sweep can't mistake
-        // one table's live files for another's orphans, and it reaches residue from a FAILED
-        // CREATE TABLE (which has no catalog row) by scanning the schema/root directory itself.
-        val targets: List<Pair<DucklakeSchema, DucklakeTable>>
+        // Scan scope is narrowable, but the KNOWN set is always global. This is conservative and
+        // crucial after DROP: a retained table/schema row can still own files for time travel even
+        // though active-object listing no longer finds it.
         val scanRoots: List<String>
         val scopeLabel: String
         when {
             !schemaName.isNullOrEmpty() && !tableName.isNullOrEmpty() -> {
                 val (schema, table) = resolveTable(schemaName, tableName, snapshotId)
-                targets = listOf(schema to table)
                 scanRoots = listOf(pathResolver.resolveTableDataPath(schema, table))
                 scopeLabel = "table $schemaName.$tableName"
             }
             !schemaName.isNullOrEmpty() -> {
                 val schema = catalog.getSchema(schemaName, snapshotId)
                         ?: throw TrinoException(NOT_SUPPORTED, "Schema not found: $schemaName")
-                targets = catalog.listTables(schema.schemaId, snapshotId).map { schema to it }
                 scanRoots = listOf(pathResolver.resolveSchemaDataPath(schema))
                 scopeLabel = "schema $schemaName"
             }
             else -> {
-                targets = allTables(snapshotId)
                 scanRoots = listOf(pathResolver.rootDataPath())
                 scopeLabel = "catalog"
             }
         }
 
-        val knownPaths: Set<String> = targets.flatMap { (schema, table) ->
-            val tableDataPath = pathResolver.resolveTableDataPath(schema, table)
-            catalog.listReferencedFilePaths(table.tableId).map { resolveKnown(it, tableDataPath) }
-        }.toSet()
+        val knownPaths: Set<String> = resolveKnownPaths(catalog.listAllReferencedFiles())
 
         sweep(fileSystem, scanRoots, knownPaths, cutoff, dryRun, scopeLabel)
     }
@@ -187,12 +180,6 @@ class DucklakeRemoveOrphanFilesProcedure @Inject constructor(
         scanRoots.forEach { removeEmptiedDatasetDirectories(fileSystem, it, orphans) }
         log.info("remove_orphan_files: deleted %d orphan file(s) for %s", orphans.size, scopeLabel)
     }
-
-    /** Every (schema, table) live at [snapshotId], across all schemas — the catalog-wide target set. */
-    private fun allTables(snapshotId: Long): List<Pair<DucklakeSchema, DucklakeTable>> =
-        catalog.listSchemas(snapshotId).flatMap { schema ->
-            catalog.listTables(schema.schemaId, snapshotId).map { schema to it }
-        }
 
     /**
      * After deleting orphan *files*, an orphaned lance/vortex dataset *directory* (whose members
@@ -322,8 +309,21 @@ class DucklakeRemoveOrphanFilesProcedure @Inject constructor(
         }
     }
 
-    private fun resolveKnown(ref: DucklakeFilePathRef, tableDataPath: String): String =
-            Location.of(pathResolver.resolveFilePath(ref.path, ref.pathIsRelative, tableDataPath)).toString()
+    /** Resolve all three spec path scopes without losing dropped-but-retained ownership. */
+    private fun resolveKnownPaths(refs: DucklakeReferencedFiles): Set<String> {
+        val root = pathResolver.rootDataPath()
+        val tableFiles = refs.tableFiles.map { resolveKnownTableFile(it, root) }
+        val scheduledFiles = refs.scheduledFiles.map { ref ->
+            Location.of(pathResolver.resolveFilePath(ref.path, ref.pathIsRelative, root)).toString()
+        }
+        return (tableFiles + scheduledFiles).toSet()
+    }
+
+    private fun resolveKnownTableFile(ref: DucklakeTableFilePathRef, root: String): String {
+        val schemaPath = pathResolver.resolveScopedPath(ref.schemaPath, ref.schemaPathIsRelative, root)
+        val tablePath = pathResolver.resolveScopedPath(ref.tablePath, ref.tablePathIsRelative, schemaPath)
+        return Location.of(pathResolver.resolveFilePath(ref.path, ref.pathIsRelative, tablePath)).toString()
+    }
 
     private fun parseRetention(value: String?): Duration {
         val raw = if (value.isNullOrBlank()) "7d" else value

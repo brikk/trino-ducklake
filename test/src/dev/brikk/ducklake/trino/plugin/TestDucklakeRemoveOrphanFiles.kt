@@ -51,12 +51,12 @@ class TestDucklakeRemoveOrphanFiles : AbstractTestQueryFramework() {
 
     private var pgServer: dev.brikk.ducklake.catalog.TestingDucklakePostgreSqlCatalogServer? = null
     private lateinit var dataDir: Path
+    private val dbName = "ducklake_remove_orphans_e2e"
 
     @Throws(Exception::class)
     override fun createQueryRunner(): QueryRunner {
         val pg = DucklakeTestCatalogEnvironment.getServer()
         pgServer = pg
-        val dbName = "ducklake_remove_orphans_e2e"
         dataDir = Files.createTempDirectory("ducklake-orphans-")
         pg.createDatabase(dbName)
         DriverManager.getConnection("jdbc:duckdb:").use { conn ->
@@ -224,6 +224,74 @@ class TestDucklakeRemoveOrphanFiles : AbstractTestQueryFramework() {
         finally {
             tryDrop(tableA)
             tryDrop(tableB)
+        }
+    }
+
+    /**
+     * A dropped table/schema remains time-travel-owned until its snapshots expire. Active-object
+     * listing cannot see it, so the old known set classified its aged data file as an orphan and
+     * deleted it. Catalog 0.7 returns the retained schema -> table -> file path hierarchy.
+     */
+    @Test
+    fun catalogWideSweepProtectsDroppedUnexpiredSchemaFiles() {
+        val schema = "orphan_dropped_schema"
+        val table = "$schema.t"
+        computeActual("CREATE SCHEMA $schema")
+        computeActual("CREATE TABLE $table AS SELECT 42 AS id")
+        val snapshot = computeScalar("SELECT max(snapshot_id) FROM $schema.\"t\$snapshots\"") as Long
+        val dataFile = dataDir.resolve(schema).resolve("t").let { dir ->
+            Files.list(dir).use { files ->
+                files.filter { it.toString().endsWith(".parquet") }.findFirst().orElseThrow()
+            }
+        }
+        Files.setLastModifiedTime(dataFile, FileTime.from(Instant.now().minus(8, ChronoUnit.DAYS)))
+
+        computeActual("DROP TABLE $table")
+        computeActual("DROP SCHEMA $schema")
+        computeActual("CALL system.remove_orphan_files(retention_threshold => '7d', dry_run => false)")
+
+        assertThat(Files.exists(dataFile))
+                .`as`("dropped-but-unexpired table file remains catalog-owned")
+                .isTrue()
+        assertThat(computeActual("SELECT id FROM $table FOR VERSION AS OF $snapshot").onlyValue)
+                .`as`("time travel through the retained file still works")
+                .isEqualTo(42)
+    }
+
+    /** Scheduled relative paths are rooted at catalog data_path, never at a table directory. */
+    @Test
+    fun catalogWideSweepProtectsCatalogRootRelativeScheduledFile() {
+        val relative = "scheduled/ducklake-scheduled.parquet"
+        val physical = dataDir.resolve(relative)
+        Files.createDirectories(physical.parent)
+        Files.write(physical, byteArrayOf(1, 2, 3))
+        Files.setLastModifiedTime(physical, FileTime.from(Instant.now().minus(8, ChronoUnit.DAYS)))
+        val fileId = 9_000_001L
+        val pg = checkNotNull(pgServer)
+        DriverManager.getConnection(pg.getJdbcUrl(dbName), pg.getUser(), pg.getPassword()).use { connection ->
+            connection.prepareStatement(
+                    "INSERT INTO ducklake_files_scheduled_for_deletion " +
+                            "(data_file_id, path, path_is_relative, schedule_start) VALUES (?, ?, true, CURRENT_TIMESTAMP)").use { statement ->
+                statement.setLong(1, fileId)
+                statement.setString(2, relative)
+                statement.executeUpdate()
+            }
+        }
+        try {
+            computeActual("CALL system.remove_orphan_files(retention_threshold => '7d', dry_run => false)")
+            assertThat(Files.exists(physical))
+                    .`as`("scheduled path resolved from catalog root and excluded from orphans")
+                    .isTrue()
+        }
+        finally {
+            DriverManager.getConnection(pg.getJdbcUrl(dbName), pg.getUser(), pg.getPassword()).use { connection ->
+                connection.prepareStatement(
+                        "DELETE FROM ducklake_files_scheduled_for_deletion WHERE data_file_id = ?").use { statement ->
+                    statement.setLong(1, fileId)
+                    statement.executeUpdate()
+                }
+            }
+            Files.deleteIfExists(physical)
         }
     }
 

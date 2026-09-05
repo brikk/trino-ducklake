@@ -84,6 +84,24 @@ of work. Order = suggested order.
   `flushInlinedDataWithSnapshots` (the global argument can then be removed/deprecated). Regression:
   two inlined schema versions with non-contiguous original row-id ranges; each registered file gets
   its own minimum id and DuckDB time travel sees fields dropped between versions.
+  **Further 0.7.2 audit findings:**
+  * The method must accept the caller's `readSnapshotId`. It currently calls
+    `deleteFlushedInlinedRows(..., tx.getCurrentSnapshotId())`, where `current` is captured only
+    after the connector has already materialized files. A concurrent insert is therefore still
+    deleted without entering a file; a concurrent end-snapshot can be resurrected. Validate
+    intervening flush/schema/drop/inlined changes from the caller's read snapshot, and delete only
+    `begin_snapshot <= readSnapshotId`.
+  * Upstream flush also drains `ducklake_inlined_delete_<tableId>` (small deletes of rows in
+    existing data files): merge them with any active delete file, write a snapshot-tagged
+    replacement, schedule/remove the superseded file, then delete only inlined-delete rows through
+    `readSnapshotId`. The current API can attach a delete fragment only to a newly flushed inlined
+    data file, so it needs a separate `existingFileDeletes: List<DucklakeDeleteFragment>` argument
+    (actual dataFileId values) and atomic cleanup of those metadata rows.
+  Suggested complete API:
+  `flushInlinedDataWithSnapshots(tableId, files, existingFileDeletes, readSnapshotId)`; each
+  `FlushedInlinedFile` carries its own `rowIdStart`. A compatibility overload may delegate only
+  when there is one file and no existing-file deletes, but must not claim concurrency safety
+  without an explicit read snapshot.
   `DucklakeFlushInlinedDataProcedure` must write `_ducklake_internal_snapshot_id` (field id
   2147483539) per row, include deleted inlined rows plus a snapshot-tagged delete file, and call
   `flushInlinedDataWithSnapshots(tableId, List<FlushedInlinedFile>, preservedRowIdStart)`. Until

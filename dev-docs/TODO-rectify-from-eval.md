@@ -359,7 +359,7 @@ of work. Order = suggested order.
   tested. Fix: custom decoders (mask/widen) or map `uint32→BIGINT` via a post-read fixup and
   `uint64` via unsigned→decimal conversion.
 
-- [ ] **R-H2 — Column resolution is name-first, not field-id-first; predicate pushdown is
+- [x] **R-H2 — Column resolution is name-first, not field-id-first; predicate pushdown is
   name-only.** `resolveColumnIO` (`DucklakePageSourceProvider.kt:1557-1566`) tries the bare current
   name first, then field id; `toParquetTupleDomain` (`:1443-1461`) maps domains by lowercased name.
   Upstream `ducklake_multi_file_reader.cpp:223` is `BY_FIELD_ID`, name mapping only for files
@@ -367,6 +367,10 @@ of work. Order = suggested order.
   reads the other column's bytes; rename `a→x` + `ADD COLUMN a` then `WHERE a IS NULL` pushes to the
   old physical `a` (null_count=0) → row group pruned → under-return. Fix: field-id-first; pushdown
   must go through the same resolution as projection.
+  DONE 2026-09-05: root resolution is field-id first, then era/current-name fallback only when the
+  identity existed in the file era. Projection and predicate pushdown share the exact resolved
+  `ColumnIO`; predicate-only columns are included. Regressions cover a three-step name swap and
+  `rename a→old_a; add a; WHERE a IS NULL` (the old file remains and projects NULL).
 
 - [ ] **R-H3 — Nested struct fields resolved by name, not field id** (also T-C3).
   `DucklakeParquetTypeUtils.kt:52-66` `groupColumnIO.getChild(fieldName)` with the *current*
@@ -377,6 +381,18 @@ of work. Order = suggested order.
   stale data resurrected; nested `ADD ... DEFAULT` → NULL. `DESIGN-nested-field-evolution.md:13-14`
   asserts field-id binding that doesn't exist. Inlined path (`InlinedNestedFieldMapping.kt`) does
   do id mapping — parquet should match it.
+  CORE DONE 2026-09-05: ROW children resolve source-name-map (when available), field ID, era name,
+  then identity-gated current name; ARRAY/MAP recurse with catalog child identities. Regressions
+  cover nested rename and nested drop/readd. Remaining: nested `initial_default` materialization,
+  and nested add_files name maps (R-H5 below).
+
+- [ ] **R-H5 — Catalog `getNameMaps` drops nested add_files mappings.** Catalog 0.7.2 filters
+  `ducklake_name_mapping.parent_column IS NULL`, so the connector receives only top-level
+  `target_field_id → source_name`. Core nested field-ID resolution is fixed, but external Parquet
+  files without field IDs still need nested source names. Generic catalog fix: return every
+  non-partition mapping row (remove the parent filter); target field IDs are globally sufficient
+  because the connector already has the parent tree. Until then nested add_files keeps its prior
+  name fallback and is not identity-safe after nested rename/case differences.
 
 - [ ] **R-H4 — Catalog-stat file pruning never executes in production; its value encoding is
   wrong if enabled.** `pruneDataFiles` (`DucklakeSplitManager.kt:236-247`) and
@@ -670,7 +686,7 @@ of work. Order = suggested order.
   INTERVAL FLBA(12) decode (months/days/millis → Trino INTERVAL or VARCHAR text). Fix the audit test
   to force a flush.
 
-- [ ] **T-C3 — Struct field names lowercased and matched case-sensitively → mixed-case struct
+- [x] **T-C3 — Struct field names lowercased and matched case-sensitively → mixed-case struct
   fields read as NULL** (also R-H3). `DucklakeTypeConverter.kt:58` lowercases the whole type string
   incl. struct field names from `resolveColumnType` (`JdbcDucklakeCatalog.kt:4002-4008`);
   `DucklakeParquetTypeUtils.kt:63` binds children by exact name. DuckDB preserves case
@@ -680,6 +696,11 @@ of work. Order = suggested order.
   containing `:` `,` `<` `>` or edge spaces mis-split (`:70-75`, `splitTopLevelCommas`). Fix:
   build the Trino type from the column *tree* (`DucklakeColumn` children), never from the type
   string; lowercase only the type keyword.
+  DONE 2026-09-05 for all normal table/read/write/change-feed/flush/rewrite paths: nested Trino
+  types are built recursively from case-preserving `DucklakeColumn` parent/child rows and ordered
+  by `column_order`; rendered type-string parsing is no longer used there. DuckDB regression reads
+  fields `DisplayName`, `Value`, and `a:b,c` from Parquet and verifies DESCRIBE preserves them.
+  The only remaining rendered nested-type consumer is add_files, tracked as R-H5.
 
 ### High
 

@@ -1,8 +1,9 @@
 # DESIGN — nested struct field evolution on non-parquet reads (step 2)
 
-**Status:** design for review. Step 1 (SPI + catalog + parquet support + a non-parquet gate) ships
-first; this doc is the plan for step 2 — removing the gate by teaching the DuckDB-engine read path
-to reshape structs per file, the nested generalization of T2-A.
+**Status:** archived historical design. The non-Parquet DuckDB-engine path moved out of this repo.
+The remaining Parquet path now resolves nested fields by catalog column identity (field ID first,
+then era-name fallback) and builds ROW types from the case-preserving catalog tree. Nested
+field-ID-less add_files mappings remain tracked as R-H5 in `TODO-rectify-from-eval.md`.
 
 ## Problem
 
@@ -10,9 +11,10 @@ to reshape structs per file, the nested generalization of T2-A.
 the change, OLD data files were written with the *old* struct shape. Reading them must reconcile the
 file's shape against the table's *current* shape.
 
-- **Parquet: already correct.** Trino's parquet reader binds struct fields by name (+ field-id) and
-  NULL-fills a missing subfield (`DucklakeParquetTypeUtils.constructField`, ROW branch). ADD and DROP
-  both read old files correctly. No work.
+- **Parquet (current):** `DucklakeParquetTypeUtils` recursively binds children by catalog field ID,
+  then era/current name only when the identity existed. Missing children NULL-fill; nested rename
+  and drop/readd are regression-tested. (The original name-first implementation described here was
+  not correct.)
 - **Non-parquet (duckdb/vortex/lance via the DuckDB engine): broken.** The read path projects struct
   columns *as-is* and binds Arrow struct children *positionally*:
   - ADD FIELD → `DucklakeArrowToPageConverter.appendRowEntry` throws `NOT_SUPPORTED` when the old

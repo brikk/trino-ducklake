@@ -270,6 +270,9 @@ class DucklakeMetadata(
         val columns: List<DucklakeColumn> = catalog.getTableColumns(
                 ducklakeTableHandle.tableId,
                 ducklakeTableHandle.snapshotId)
+        val allColumns = catalog.getAllColumnsWithParentage(
+                ducklakeTableHandle.tableId,
+                ducklakeTableHandle.snapshotId)
         val columnComments: Map<Long, String> = catalog.getColumnComments(
                 ducklakeTableHandle.tableId,
                 ducklakeTableHandle.snapshotId)
@@ -278,7 +281,7 @@ class DucklakeMetadata(
         for (column in columns) {
             columnMetadata.add(ColumnMetadata.builder()
                     .setName(column.columnName)
-                    .setType(typeConverter.toTrinoType(column.columnType))
+                    .setType(typeConverter.toTrinoType(column, allColumns))
                     .setNullable(column.nullsAllowed)
                     .setComment(Optional.ofNullable(columnComments[column.columnId]))
                     .build())
@@ -362,6 +365,9 @@ class DucklakeMetadata(
         val columns: List<DucklakeColumn> = catalog.getTableColumns(
                 ducklakeTableHandle.tableId,
                 ducklakeTableHandle.snapshotId)
+        val allColumns = catalog.getAllColumnsWithParentage(
+                ducklakeTableHandle.tableId,
+                ducklakeTableHandle.snapshotId)
 
         val columnHandles: ImmutableMap.Builder<String, ColumnHandle> = ImmutableMap.builder()
         for (column in columns) {
@@ -370,7 +376,7 @@ class DucklakeMetadata(
                     DucklakeColumnHandle(
                             column.columnId,
                             column.columnName,
-                            typeConverter.toTrinoType(column.columnType),
+                            typeConverter.toTrinoType(column, allColumns),
                             column.nullsAllowed,
                             // Rows predating an ADD COLUMN ... DEFAULT must project the
                             // initial default, not NULL (upstream issue 1135 semantics).
@@ -685,13 +691,14 @@ class DucklakeMetadata(
             val table: DucklakeTable? = catalog.getTable(tableName.schemaName, tableName.tableName, snapshotId)
             if (table != null) {
                 val tableColumns: List<DucklakeColumn> = catalog.getTableColumns(table.tableId, snapshotId)
+                val allColumns = catalog.getAllColumnsWithParentage(table.tableId, snapshotId)
                 columns.put(
                         tableName,
                         tableColumns.stream()
                                 .map { column ->
                                     ColumnMetadata.builder()
                                             .setName(column.columnName)
-                                            .setType(typeConverter.toTrinoType(column.columnType))
+                                            .setType(typeConverter.toTrinoType(column, allColumns))
                                             .setNullable(column.nullsAllowed)
                                             .build()
                                 }
@@ -939,7 +946,7 @@ class DucklakeMetadata(
                     ?: throw TrinoException(NOT_SUPPORTED, "Field not found: ${fieldPath.joinToString(".")} (no '$name')")
             parentId = current.columnId
         }
-        return typeConverter.toTrinoType(current!!.columnType)
+        return typeConverter.toTrinoType(current!!, columns)
     }
 
     // Nested struct field DDL. `addField`'s parentPath includes the top-level column name (there is no
@@ -1132,16 +1139,15 @@ class DucklakeMetadata(
                 .filter { it.type is TimestampWithTimeZoneType }
                 .associate { it.name to it.type }
         val catalogColumns: List<DucklakeColumn> = catalog.getTableColumns(table.tableId, snapshotId)
+        val allCatalogColumns: List<DucklakeColumn> = catalog.getAllColumnsWithParentage(table.tableId, snapshotId)
         val columnHandles: List<DucklakeColumnHandle> = catalogColumns.stream()
                 .filter { col -> col.parentColumn == null }
                 .map { col -> DucklakeColumnHandle(
                         col.columnId,
                         col.columnName,
-                        declaredTstzByName[col.columnName] ?: typeConverter.toTrinoType(col.columnType),
+                        declaredTstzByName[col.columnName] ?: typeConverter.toTrinoType(col, allCatalogColumns),
                         col.nullsAllowed) }
                 .collect(toImmutableList())
-
-        val allCatalogColumns: List<DucklakeColumn> = catalog.getAllColumnsWithParentage(table.tableId, snapshotId)
 
         val partitionSpecs: List<DucklakePartitionSpec> = catalog.getPartitionSpecs(table.tableId, snapshotId)
         val activePartitionSpec: Optional<DucklakePartitionSpec> = activePartitionSpecOf(partitionSpecs)
@@ -1316,16 +1322,15 @@ class DucklakeMetadata(
         }
 
         // Build insert handle for UPDATE support (delete+insert pattern)
+        val allCatalogColumns: List<DucklakeColumn> = catalog.getAllColumnsWithParentage(handle.tableId, handle.snapshotId)
         val ducklakeColumns: List<DucklakeColumnHandle> = catalog.getTableColumns(handle.tableId, handle.snapshotId).stream()
                 .filter { col -> col.parentColumn == null }
                 .map { col -> DucklakeColumnHandle(
                         col.columnId,
                         col.columnName,
-                        typeConverter.toTrinoType(col.columnType),
+                        typeConverter.toTrinoType(col, allCatalogColumns),
                         col.nullsAllowed) }
                 .collect(toImmutableList())
-
-        val allCatalogColumns: List<DucklakeColumn> = catalog.getAllColumnsWithParentage(handle.tableId, handle.snapshotId)
 
         val partitionSpecs: List<DucklakePartitionSpec> = catalog.getPartitionSpecs(handle.tableId, handle.snapshotId)
         val activePartitionSpec: Optional<DucklakePartitionSpec> = activePartitionSpecOf(partitionSpecs)

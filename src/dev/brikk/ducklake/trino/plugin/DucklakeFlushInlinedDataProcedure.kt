@@ -194,11 +194,12 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
                     "Cannot resolve schema version ${info.schemaVersion} for inlined table $tableId")
         val sourceColumns = catalog.getTableColumns(tableId, schemaSnapshot)
                 .filter { it.parentColumn == null }
+        val allColumns = catalog.getAllColumnsWithParentage(tableId, schemaSnapshot)
         val handles = sourceColumns.map { column ->
             DucklakeColumnHandle(
                     column.columnId,
                     column.columnName,
-                    typeConverter.toTrinoType(column.columnType),
+                    typeConverter.toTrinoType(column, allColumns),
                     column.nullsAllowed)
         }
         val changes = catalog.getInlinedChangesBetween(
@@ -210,7 +211,7 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
         if (changes.isEmpty()) {
             return null
         }
-        return VersionRows(handles, catalog.getAllColumnsWithParentage(tableId, schemaSnapshot), changes)
+        return VersionRows(handles, allColumns, changes)
     }
 
     private fun materializeVersion(

@@ -84,6 +84,7 @@ import io.trino.spi.type.Type
 import org.apache.parquet.column.ColumnDescriptor
 import org.apache.parquet.io.ColumnIO
 import org.apache.parquet.io.MessageColumnIO
+import org.apache.parquet.io.PrimitiveColumnIO
 import org.apache.parquet.schema.MessageType
 import org.joda.time.DateTimeZone.UTC
 import java.io.IOException
@@ -112,41 +113,12 @@ class DucklakePageSourceProvider @Inject constructor(
     // manager's injected resolver uses; the provider isn't handed one directly.
     private val pathResolver: DucklakePathResolver = DucklakePathResolver(catalog, ducklakeConfig)
 
-    // Schema-evolution resolution cache: (tableId, file begin_snapshot) -> column_id ->
-    // physical name in the file. Used by the parquet reader's era-name fallback (renamed/added
-    // columns) and by the inlined-data nested-field / era-default resolution below.
-    // Bounded + cleared wholesale on overflow; schema-evolution reads are rare so it stays tiny.
-    private val fileColumnNamesCache: java.util.concurrent.ConcurrentMap<FileColumnNamesKey, Map<Long, String>> =
-            java.util.concurrent.ConcurrentHashMap()
-
-    // Full column tree (incl. nested rows, with parent_column) per (tableId, snapshot), used by the
-    // inlined-data nested-field mapping. Same bounded/cleared-on-overflow policy as fileColumnNamesCache.
+    // Full identity-bearing column tree per (tableId, snapshot), shared by Parquet field-id
+    // resolution and inlined nested-field mapping. Bounded + cleared wholesale on overflow.
     private val columnTreeCache: java.util.concurrent.ConcurrentMap<FileColumnNamesKey, List<DucklakeColumn>> =
             java.util.concurrent.ConcurrentHashMap()
 
     private data class FileColumnNamesKey(val tableId: Long, val beginSnapshot: Long)
-
-    /**
-     * Resolve `column_id -> physical name in the file` for a data split, by reading the table's
-     * column set as of the file's begin_snapshot. Empty when the table handle or begin_snapshot is
-     * unavailable (test splits) — the parquet reader then projects current names directly (the
-     * no-evolution fast path).
-     */
-    private fun resolveFileColumnNames(table: ConnectorTableHandle, split: DucklakeSplit): Map<Long, String> {
-        if (table !is DucklakeTableHandle || split.beginSnapshot <= 0L) {
-            return emptyMap()
-        }
-        val key = FileColumnNamesKey(table.tableId, split.beginSnapshot)
-        fileColumnNamesCache[key]?.let { return it }
-        if (fileColumnNamesCache.size >= MAX_FILE_COLUMN_NAME_CACHE_ENTRIES) {
-            fileColumnNamesCache.clear()
-        }
-        val resolved: Map<Long, String> = catalog.getTableColumns(table.tableId, split.beginSnapshot)
-                .filter { it.parentColumn == null }
-                .associate { it.columnId to it.columnName }
-        fileColumnNamesCache[key] = resolved
-        return resolved
-    }
 
     private fun columnTree(tableId: Long, snapshotId: Long): List<DucklakeColumn> {
         val key = FileColumnNamesKey(tableId, snapshotId)
@@ -235,9 +207,13 @@ class DucklakePageSourceProvider @Inject constructor(
         }
         val dataFileLocation: Location = toLocation(ducklakeSplit.dataFilePath)
         val inputFile: TrinoInputFile = fileSystem.newInputFile(dataFileLocation)
+        val currentTree = if (table is DucklakeTableHandle) columnTree(table.tableId, table.snapshotId) else emptyList()
+        val eraTree = if (table is DucklakeTableHandle && ducklakeSplit.beginSnapshot > 0L)
+            columnTree(table.tableId, ducklakeSplit.beginSnapshot)
+        else
+            emptyList()
         return createParquetPageSource(
-                inputFile, sourceColumns, ducklakeSplit, effectivePredicate, fileSystem)
-        { resolveFileColumnNames(table, ducklakeSplit) }
+                inputFile, sourceColumns, ducklakeSplit, effectivePredicate, fileSystem, currentTree, eraTree)
     }
 
     /**
@@ -1125,10 +1101,9 @@ class DucklakePageSourceProvider @Inject constructor(
             split: DucklakeSplit,
             effectivePredicate: TupleDomain<DucklakeColumnHandle>,
             fileSystem: TrinoFileSystem,
-            eraColumnNamesSupplier: () -> Map<Long, String> = { emptyMap() }): ConnectorPageSource
+            currentColumnTree: List<DucklakeColumn> = emptyList(),
+            eraColumnTree: List<DucklakeColumn> = emptyList()): ConnectorPageSource
     {
-        // Lazily resolved on first miss (see era-name fallback below).
-        val eraColumnNames: Map<Long, String> by lazy(eraColumnNamesSupplier)
         // Create memory context for reading
         val memoryContext: AggregatedMemoryContext = newSimpleAggregatedMemoryContext()
 
@@ -1159,6 +1134,28 @@ class DucklakePageSourceProvider @Inject constructor(
             val fileSchema: MessageType = fileMetadata.schema
             val dataSourceId: ParquetDataSourceId = dataSource.id
             val descriptorsByPath: Map<List<String>, ColumnDescriptor> = getDescriptors(fileSchema, fileSchema)
+            val messageColumnIO: MessageColumnIO = getColumnIO(fileSchema, fileSchema)
+            val fieldIdToColumnIO: MutableMap<Int, ColumnIO> = mutableMapOf()
+            for (field in fileSchema.fields) {
+                if (field.id != null) {
+                    messageColumnIO.getChild(field.name)?.let { child ->
+                        fieldIdToColumnIO[field.id.intValue()] = child
+                    }
+                }
+            }
+            val hasNameMap: Boolean = split.fieldIdToParquetSourceName.isNotEmpty()
+            val predicateColumns = effectivePredicate.domains.orElse(emptyMap()).keys
+            val resolvedColumnIO = (columns + predicateColumns).distinct()
+                    .filterNot { positionalColumnKind(it) != null }
+                    .associateWith { column ->
+                        resolveColumnIO(
+                                column,
+                                hasNameMap,
+                                messageColumnIO,
+                                fieldIdToColumnIO,
+                                split,
+                                eraColumnTree)
+                    }
             // B3b: when the split carries active position deletes, disable in-reader predicate
             // pushdown (row-group pruning + page-level skipping). PositionalVirtualInjectingPageSource and
             // DeleteRowFilterTransform derive file positions from cumulative page sizes
@@ -1191,7 +1188,7 @@ class DucklakePageSourceProvider @Inject constructor(
                     splitHasActiveDeletes(split) || columns.any { positionalColumnKind(it) != null }
             val parquetTupleDomain: TupleDomain<ColumnDescriptor> =
                     if (requiresContiguousPositions) TupleDomain.all()
-                    else toParquetTupleDomain(descriptorsByPath, effectivePredicate)
+                    else toParquetTupleDomain(resolvedColumnIO, effectivePredicate)
             val parquetPredicate: TupleDomainParquetPredicate = buildPredicate(fileSchema, parquetTupleDomain, descriptorsByPath, UTC)
             val rowGroups: List<RowGroupInfo> = getFilteredRowGroups(
                     0,
@@ -1226,35 +1223,12 @@ class DucklakePageSourceProvider @Inject constructor(
 
             // Build list of columns to read, handling missing columns for schema evolution
             val parquetColumns: ImmutableList.Builder<Column> = ImmutableList.builder()
-            val messageColumnIO: MessageColumnIO = getColumnIO(fileSchema, fileSchema)
             val transforms: TransformConnectorPageSource.Builder = TransformConnectorPageSource.builder()
             var parquetColumnOrdinal = 0
 
-            // Build field_id → ColumnIO index for field_id-based column matching (schema evolution: renames)
-            val fieldIdToColumnIO: MutableMap<Int, ColumnIO> = mutableMapOf()
-            for (field in fileSchema.fields) {
-                if (field.id != null) {
-                    val childIO: ColumnIO? = messageColumnIO.getChild(field.name)
-                    if (childIO != null) {
-                        fieldIdToColumnIO[field.id.intValue()] = childIO
-                    }
-                }
-            }
-
-            // A file registered via add_files carries a name map (mapping_id): for such
-            // files the map is AUTHORITATIVE — a column resolves ONLY through its
-            // target_field_id → source_name entry, never by a bare name coincidence.
-            // Otherwise a column DROPPED then RE-ADDED under a new column_id (whose old
-            // physical column of the same name still sits in the file) would resurrect
-            // the dead identity's data (upstream add_files.test: col2 reads NULL, we read
-            // the stale bytes). INSERT-written files have no map → name/field-id matching
-            // as before.
-            val hasNameMap: Boolean = split.fieldIdToParquetSourceName.isNotEmpty()
-
             for (column in fileColumns) {
                 val columnName: String = column.columnName
-                val columnIO: ColumnIO? = resolveColumnIO(
-                        column, hasNameMap, messageColumnIO, fieldIdToColumnIO, split, eraColumnNames)
+                val columnIO: ColumnIO? = resolvedColumnIO[column]
 
                 if (columnIO == null) {
                     // Missing column in file. Two cases:
@@ -1268,7 +1242,12 @@ class DucklakePageSourceProvider @Inject constructor(
 
                 val field: Optional<Field> = DucklakeParquetTypeUtils.constructField(
                         column.columnType,
-                        columnIO)
+                        columnIO,
+                        column.columnId,
+                        currentColumnTree,
+                        eraColumnTree,
+                        split.fieldIdToParquetSourceName,
+                        hasNameMap)
                 if (field.isEmpty) {
                     // Could not construct field — return nulls (or partition constant if available)
                     transforms.constantValue(buildMissingColumnBlock(column, split))
@@ -1433,7 +1412,7 @@ class DucklakePageSourceProvider @Inject constructor(
         }
 
         private fun toParquetTupleDomain(
-                descriptorsByPath: Map<List<String>, ColumnDescriptor>,
+                resolvedColumnIO: Map<DucklakeColumnHandle, ColumnIO?>,
                 effectivePredicate: TupleDomain<DucklakeColumnHandle>): TupleDomain<ColumnDescriptor>
         {
             if (effectivePredicate.isNone) {
@@ -1444,13 +1423,6 @@ class DucklakePageSourceProvider @Inject constructor(
             }
 
             val predicate: ImmutableMap.Builder<ColumnDescriptor, Domain> = ImmutableMap.builder()
-            val topLevelDescriptors: Map<String, ColumnDescriptor> = descriptorsByPath.entries.stream()
-                    .filter { entry -> entry.key.size == 1 }
-                    .collect(toImmutableMap(
-                            { entry -> entry.key[0].lowercase(Locale.ENGLISH) },
-                            { entry -> entry.value },
-                            { first, _ -> first }))
-
             val domains: Optional<Map<DucklakeColumnHandle, Domain>> = effectivePredicate.getDomains()
             if (domains.isEmpty) {
                 return TupleDomain.all()
@@ -1458,7 +1430,8 @@ class DucklakePageSourceProvider @Inject constructor(
 
             for (entry in domains.get().entries) {
                 val columnHandle: DucklakeColumnHandle = entry.key
-                val descriptor: ColumnDescriptor? = topLevelDescriptors[columnHandle.columnName.lowercase(Locale.ENGLISH)]
+                val descriptor: ColumnDescriptor? =
+                        (resolvedColumnIO[columnHandle] as? PrimitiveColumnIO)?.columnDescriptor
                 if (descriptor != null) {
                     predicate.put(descriptor, entry.value)
                 }
@@ -1534,7 +1507,7 @@ class DucklakePageSourceProvider @Inject constructor(
          * miss = column absent when the file was written → NULL/default), never a
          * bare-name coincidence — otherwise a dropped-then-re-added column would
          * resurrect the dead identity's physical data. Unmapped (INSERT-written /
-         * legacy) files: name → field-id → era-name (rename fallbacks), with the bare-name
+         * legacy) files: field-id → era-name → current-name (rename fallbacks), with name
          * match gated on era-aware column existence (see below).
          */
         private fun resolveColumnIO(
@@ -1543,30 +1516,25 @@ class DucklakePageSourceProvider @Inject constructor(
                 messageColumnIO: MessageColumnIO,
                 fieldIdToColumnIO: Map<Int, ColumnIO>,
                 split: DucklakeSplit,
-                eraColumnNames: Map<Long, String>): ColumnIO?
+                eraColumns: List<DucklakeColumn>): ColumnIO?
         {
             if (hasNameMap) {
                 return split.fieldIdToParquetSourceName[column.columnId]
                         ?.let { messageColumnIO.getChild(it) }
             }
-            // Bare-name match — but ONLY when this column_id existed at the file's begin_snapshot.
-            // eraColumnNames is column_id → physical name as of begin_snapshot; when it is populated
-            // (real reads carrying a begin_snapshot) a column_id ABSENT from it did not exist when
-            // the file was written, so a physical column that happens to share the current name
-            // belongs to a DIFFERENT, since-dropped identity. Accepting it would resurrect the dead
-            // column's bytes — upstream add_files.test: an unmapped INSERT-written file physically
-            // carrying an old `col2`, read after col2 was DROPPED then RE-ADDED under a new
-            // column_id, must read NULL, not the stale value. An empty era map (test split / no
-            // begin_snapshot) keeps the legacy name-first behavior.
-            if (eraColumnNames.isEmpty() || eraColumnNames.containsKey(column.columnId)) {
-                messageColumnIO.getChild(column.columnName)?.let { return it }
-            }
+            // Field identity is authoritative whenever present. Name-first binding swaps values
+            // after rename cycles and lets a re-added name bind the dropped field's bytes.
             if (column.columnId > 0) {
                 fieldIdToColumnIO[column.columnId.toInt()]?.let { return it }
-                val eraName: String? = eraColumnNames[column.columnId]
+                val eraName: String? = eraColumns.firstOrNull { it.columnId == column.columnId }?.columnName
                 if (eraName != null && !eraName.equals(column.columnName, ignoreCase = true)) {
-                    return messageColumnIO.getChild(eraName)
+                    messageColumnIO.getChild(eraName)?.let { return it }
                 }
+            }
+            // Name fallback is for legacy files without field ids, but only when this identity
+            // existed in the file's era. Otherwise a dropped/re-added name belongs to another id.
+            if (eraColumns.isEmpty() || eraColumns.any { it.columnId == column.columnId }) {
+                return messageColumnIO.getChild(column.columnName)
             }
             return null
         }

@@ -92,6 +92,7 @@ abstract class AbstractChangeFeedTableFunction(
                 ?: invalidArgument("Table not found at snapshot $endSnapshot: $schemaName.$tableName")
 
         val columns: List<DucklakeColumn> = catalog.getTableColumns(table.tableId, endSnapshot)
+        val allColumns: List<DucklakeColumn> = catalog.getAllColumnsWithParentage(table.tableId, endSnapshot)
         accessControl.checkCanSelectFromColumns(
                 null,
                 SchemaTableName(schemaName, tableName),
@@ -101,7 +102,7 @@ abstract class AbstractChangeFeedTableFunction(
             DucklakeColumnHandle(
                     column.columnId,
                     column.columnName,
-                    typeConverter.toTrinoType(column.columnType),
+                    typeConverter.toTrinoType(column, allColumns),
                     column.nullsAllowed)
         }
         val outputColumns: List<DucklakeColumnHandle> = ChangeFeedColumns.outputColumns(feedType, dataColumns)

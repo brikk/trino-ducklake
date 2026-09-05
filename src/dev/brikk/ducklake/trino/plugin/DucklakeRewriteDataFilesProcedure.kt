@@ -161,11 +161,11 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
 
         val topLevelColumns: List<DucklakeColumn> = catalog.getTableColumns(tableId, snapshotId)
                 .filter { it.parentColumn == null }
+        val allCatalogColumns: List<DucklakeColumn> = catalog.getAllColumnsWithParentage(tableId, snapshotId)
         val columnHandles: List<DucklakeColumnHandle> = topLevelColumns.map { col ->
-            DucklakeColumnHandle(col.columnId, col.columnName, typeConverter.toTrinoType(col.columnType), col.nullsAllowed)
+            DucklakeColumnHandle(col.columnId, col.columnName, typeConverter.toTrinoType(col, allCatalogColumns), col.nullsAllowed)
         }
         val columnTypes: List<Type> = columnHandles.map { it.columnType }
-        val allCatalogColumns: List<DucklakeColumn> = catalog.getAllColumnsWithParentage(tableId, snapshotId)
         val partitionValuesByFile: Map<Long, List<DucklakeFilePartitionValue>> =
                 if (catalog.getPartitionSpecs(tableId, snapshotId).isEmpty()) emptyMap()
                 else catalog.getFilePartitionValues(tableId, snapshotId)

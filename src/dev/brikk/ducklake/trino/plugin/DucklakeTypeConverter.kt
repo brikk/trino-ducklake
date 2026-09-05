@@ -15,6 +15,7 @@ package dev.brikk.ducklake.trino.plugin
 
 import com.google.common.collect.ImmutableList
 import com.google.inject.Inject
+import dev.brikk.ducklake.catalog.DucklakeColumn
 import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
 import io.trino.spi.TrinoException
 import io.trino.spi.type.ArrayType
@@ -50,6 +51,46 @@ import java.util.regex.Pattern
  * Handles all Ducklake primitive, nested, and special types.
  */
 open class DucklakeTypeConverter @Inject constructor(private val typeManager: TypeManager) {
+
+    /**
+     * Convert a catalog column using the identity-bearing parent/child rows rather than parsing a
+     * rendered type string. Struct names retain exact case and punctuation, and nested shape stays
+     * tied to column_id. Primitive leaves still use [toTrinoType].
+     */
+    open fun toTrinoType(column: DucklakeColumn, allColumns: List<DucklakeColumn>): Type {
+        val childrenByParent = allColumns.filter { it.parentColumn != null }
+                .groupBy { it.parentColumn!! }
+                .mapValues { (_, children) -> children.sortedBy { it.columnOrder } }
+
+        fun convert(node: DucklakeColumn): Type {
+            val base = node.columnType.trim().substringBefore('<').lowercase(Locale.ROOT)
+            val children = childrenByParent[node.columnId].orEmpty()
+            return when (base) {
+                "struct" -> RowType.from(children.map { child ->
+                    RowType.Field(Optional.of(child.columnName), convert(child))
+                })
+                "list" -> {
+                    require(children.size == 1) {
+                        "DuckLake list column ${node.columnId} has ${children.size} children"
+                    }
+                    ArrayType(convert(children.single()))
+                }
+                "map" -> {
+                    val key = children.singleOrNull { it.columnName.equals("key", ignoreCase = true) }
+                        ?: throw IllegalArgumentException("DuckLake map column ${node.columnId} has no key child")
+                    val value = children.singleOrNull { it.columnName.equals("value", ignoreCase = true) }
+                        ?: throw IllegalArgumentException("DuckLake map column ${node.columnId} has no value child")
+                    typeManager.getParameterizedType(
+                            StandardTypes.MAP,
+                            ImmutableList.of(
+                                    TypeParameter.typeParameter(convert(key).typeDescriptor),
+                                    TypeParameter.typeParameter(convert(value).typeDescriptor)))
+                }
+                else -> toTrinoType(node.columnType)
+            }
+        }
+        return convert(column)
+    }
 
     /**
      * Convert Ducklake type string to Trino Type

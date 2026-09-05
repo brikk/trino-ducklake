@@ -26,9 +26,9 @@ import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 
 /**
- * Unit tests for [DucklakeSortPropertyMapper]. The end-to-end planner
- * check (Trino skips the sort operator when the catalog declares the right
- * order) lives in the cross-engine integration test.
+ * Unit tests for [DucklakeSortPropertyMapper]'s per-file write-order interpretation. The
+ * cross-engine integration test separately pins that these properties are not advertised as a
+ * globally sorted scan stream.
  */
 class TestDucklakeSortPropertyMapper {
     @Test

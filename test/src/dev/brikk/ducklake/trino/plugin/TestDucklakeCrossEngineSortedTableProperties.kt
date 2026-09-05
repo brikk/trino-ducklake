@@ -15,11 +15,7 @@ package dev.brikk.ducklake.trino.plugin
 
 import dev.brikk.ducklake.catalog.DucklakeCatalog
 import dev.brikk.ducklake.catalog.JdbcDucklakeCatalog
-import io.trino.spi.connector.ColumnHandle
 import io.trino.spi.connector.ConnectorTableProperties
-import io.trino.spi.connector.LocalProperty
-import io.trino.spi.connector.SortOrder
-import io.trino.spi.connector.SortingProperty
 import io.trino.testing.connector.TestingConnectorSession.SESSION
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
@@ -28,18 +24,16 @@ import org.junit.jupiter.api.parallel.ExecutionMode
 import java.util.UUID
 
 /**
- * End-to-end check that DuckDB-written sort metadata surfaces to Trino's
- * planner as a [SortingProperty] list. DuckDB does the writing
+ * End-to-end check that DuckDB-written per-file sort metadata is NOT advertised to Trino's
+ * planner as a globally sorted scan stream. DuckDB does the writing
  * (Trino-side `ALTER TABLE ... SET SORTED BY` isn't implemented and
  * doesn't need to be for the read-awareness story to work); Trino sees the
- * same catalog through [DucklakeMetadata.getTableProperties].
+ * same catalog through [DucklakeMetadata.getTableProperties]. The connector still reads the sort
+ * spec for physical write ordering; it simply cannot claim multiple scan splits are one ordered
+ * stream.
  *
  *
- * We assert the SPI shape directly rather than going through
- * `EXPLAIN` — that keeps the test stable against Trino planner
- * output formatting changes, and the unit tests in
- * [TestDucklakeSortPropertyMapper] already cover the translation
- * permutations.
+ * We assert the SPI shape directly rather than relying on planner output formatting.
  *
  * SAME_THREAD (like every sibling cross-engine test): methods write to ONE shared per-class
  * catalog via cross-engine DuckDB CREATE/ALTER; serialize so concurrent commits can't race the
@@ -53,7 +47,7 @@ class TestDucklakeCrossEngineSortedTableProperties
     }
 
     @Test
-    fun testDuckdbSortedTableSurfacesAsSortingProperty() {
+    fun testDuckdbSortedTableDoesNotClaimGloballySortedScan() {
         val tableName = "xengine_sorted_" + UUID.randomUUID().toString().substring(0, 8)
         val fullDuckdb = "ducklake_db.test_schema.$tableName"
 
@@ -70,9 +64,9 @@ class TestDucklakeCrossEngineSortedTableProperties
 
             val properties = readTableProperties("test_schema", tableName)
 
-            assertThat(properties.localProperties).hasSize(2)
-            assertSortingProperty(properties.localProperties[0], "name", SortOrder.ASC_NULLS_LAST)
-            assertSortingProperty(properties.localProperties[1], "price", SortOrder.DESC_NULLS_FIRST)
+            assertThat(properties.localProperties)
+                    .`as`("DuckLake ordering is per-file, not a scan-stream guarantee")
+                    .isEmpty()
         }
         finally {
             tryDropDuckdbTable(fullDuckdb)
@@ -169,15 +163,4 @@ class TestDucklakeCrossEngineSortedTableProperties
         }
     }
 
-    companion object {
-        private fun assertSortingProperty(property: LocalProperty<ColumnHandle>, expectedColumnName: String, expectedOrder: SortOrder) {
-            assertThat(property).isInstanceOf(SortingProperty::class.java)
-            @Suppress("UNCHECKED_CAST")
-            val sorting = property as SortingProperty<ColumnHandle>
-            val handle = sorting.column
-            assertThat(handle).isInstanceOf(DucklakeColumnHandle::class.java)
-            assertThat((handle as DucklakeColumnHandle).columnName).isEqualTo(expectedColumnName)
-            assertThat(sorting.order).isEqualTo(expectedOrder)
-        }
-    }
 }

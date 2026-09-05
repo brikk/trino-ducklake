@@ -24,8 +24,10 @@ import io.trino.spi.connector.SortingProperty
 import java.util.Locale
 
 /**
- * Translates DuckLake's catalog-stored sort spec into Trino
- * [LocalProperty] entries for the planner.
+ * Resolves DuckLake's catalog-stored sort spec for physical per-file write ordering. The optional
+ * [LocalProperty] adapter is only valid when a caller independently knows its whole scan stream is
+ * ordered; [DucklakeMetadata] deliberately does not use it because DuckLake's guarantee is per
+ * file and a scan spans multiple splits.
  *
  * Trino interprets a `List<LocalProperty<ColumnHandle>>` as a
  * sequence: the table is sorted by the first property, then within ties by
@@ -88,8 +90,8 @@ class DucklakeSortPropertyMapper private constructor() {
          *   - not a simple column reference, or
          *   - naming a column absent from [resolvableLowercaseColumnNames].
          *
-         * Read and write MUST agree on this prefix, otherwise a data file could be sorted by a
-         * key the planner did not advertise (or vice versa), so both callers route through here.
+         * Every physical writer routes through here so supported sort keys are interpreted
+         * consistently. This says nothing about ordering across files/splits.
          */
         internal fun resolveHonoredPrefix(
                 sortKeys: List<DucklakeSortKey>,

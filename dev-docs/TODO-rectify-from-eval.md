@@ -565,7 +565,7 @@ of work. Order = suggested order.
   (`DucklakeParquetSchemaBuilder` already exists — extend it to build the MessageType directly with
   INT64 TIMESTAMP(MICROS, adjustedToUTC=true), INT64 TIME(MICROS), FLBA(16) UUID).
 
-- [ ] **W-H6 — Read side declares sorted `LocalProperty` for every table with a sort spec, but
+- [x] **W-H6 — Read side declares sorted `LocalProperty` for every table with a sort spec, but
   writes only sort in one gated case.** `getTableProperties` (`DucklakeMetadata.kt:282-310`) vs
   writes sorting only when unpartitioned + parquet (`:1057-1062`); partitioned INSERTs and *all*
   UPDATE/MERGE inserts (`beginMerge :1335-1344` passes no `sortColumns`) write unsorted files. Also
@@ -573,6 +573,15 @@ of work. Order = suggested order.
   plan streaming/window operators with `preSortedOrderPrefix` on unsorted input → wrong results.
   Upstream sorts partitioned inserts too (`ducklake_insert.cpp:784-794`). Fix: stop advertising
   `LocalProperty` (per-file sortedness isn't a stream property), and sort on every write path.
+  DONE (correctness half) 2026-09-05: `getTableProperties` never advertises a sorted scan stream.
+  DuckLake sort metadata is per-file; write-side prefix parsing and existing unpartitioned physical
+  sorting remain intact. Cross-engine SPI regression creates a two-key DuckDB sort spec and asserts
+  empty `localProperties`, preventing the planner from eliding a required Sort across splits.
+
+- [ ] **W-M8 — Apply DuckLake sort specs on every write path.** Follow-up split from W-H6 after
+  removing the unsafe planner guarantee. Partitioned INSERT and UPDATE/MERGE insert files still
+  fall back to unsorted writes; upstream sorts each output file (`ducklake_insert.cpp:784-794`).
+  This is format/write parity, no longer a Trino planner correctness hazard.
 
 ### Medium
 

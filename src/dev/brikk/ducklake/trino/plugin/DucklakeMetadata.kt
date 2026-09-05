@@ -63,7 +63,6 @@ import io.trino.spi.connector.ConnectorTableMetadata
 import io.trino.spi.connector.ConnectorTableProperties
 import io.trino.spi.connector.ConnectorTableVersion
 import io.trino.spi.connector.PointerType
-import io.trino.spi.connector.LocalProperty
 import io.trino.spi.connector.ConnectorViewDefinition
 import io.trino.spi.connector.Constraint
 import io.trino.spi.connector.ConstraintApplicationResult
@@ -307,32 +306,12 @@ class DucklakeMetadata(
 
     override fun getTableProperties(session: ConnectorSession, table: ConnectorTableHandle): ConnectorTableProperties
     {
-        if (table !is DucklakeTableHandle) {
-            return ConnectorTableProperties()
-        }
-        val handle: DucklakeTableHandle = table
-        val sortKeys: List<DucklakeSortKey> = catalog.getSortKeys(handle.tableId, handle.snapshotId)
-        if (sortKeys.isEmpty()) {
-            return ConnectorTableProperties()
-        }
-        val columnHandlesByLowercaseName: MutableMap<String, ColumnHandle> = mutableMapOf()
-        for (column in catalog.getTableColumns(handle.tableId, handle.snapshotId)) {
-            columnHandlesByLowercaseName[column.columnName.lowercase(Locale.ROOT)] = DucklakeColumnHandle(
-                    column.columnId,
-                    column.columnName,
-                    typeConverter.toTrinoType(column.columnType),
-                    column.nullsAllowed)
-        }
-        val localProperties: List<LocalProperty<ColumnHandle>> =
-                DucklakeSortPropertyMapper.toLocalProperties(sortKeys, columnHandlesByLowercaseName)
-        if (localProperties.isEmpty()) {
-            return ConnectorTableProperties()
-        }
-        return ConnectorTableProperties(
-                TupleDomain.all(),
-                Optional.empty(),
-                Optional.empty(),
-                localProperties)
+        // DuckLake sort metadata describes ordering WITHIN each data file. ConnectorTableProperties
+        // localProperties describes the stream emitted by a scan driver; multiple files/splits are
+        // not globally ordered, and partitioned/MERGE writes are not consistently sorted either.
+        // Advertising the per-file spec here lets Trino omit a required Sort and can produce wrong
+        // window/streaming results. Keep sort metadata for write-side per-file ordering only.
+        return ConnectorTableProperties()
     }
 
     override fun listTables(session: ConnectorSession, schemaName: Optional<String>): List<SchemaTableName>

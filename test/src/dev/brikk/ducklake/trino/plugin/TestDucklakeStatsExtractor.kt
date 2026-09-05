@@ -21,6 +21,8 @@ import io.trino.spi.type.DecimalType
 import io.trino.spi.type.DoubleType.DOUBLE
 import io.trino.spi.type.IntegerType.INTEGER
 import io.trino.spi.type.RealType.REAL
+import io.trino.spi.type.TimestampType
+import io.trino.spi.type.TimestampWithTimeZoneType.TIMESTAMP_TZ_MICROS
 import io.trino.spi.type.VarcharType.VARCHAR
 import org.apache.parquet.format.ColumnChunk
 import org.apache.parquet.format.ColumnMetaData
@@ -42,6 +44,25 @@ internal class TestDucklakeStatsExtractor {
     fun testConvertIntegerStats() {
         val bytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(42).array()
         assertThat(DucklakeStatsExtractor.convertStatValue(bytes, INTEGER)).isEqualTo("42")
+    }
+
+    @Test
+    fun timestampStatsUsePhysicalUnitsAndDuckdbText() {
+        assertThat(DucklakeStatsExtractor.convertStatValue(
+                longBytes(0L), TimestampType.createTimestampType(0), Type.INT64))
+                .isEqualTo("1970-01-01 00:00:00")
+        assertThat(DucklakeStatsExtractor.convertStatValue(
+                longBytes(123L), TimestampType.createTimestampType(3), Type.INT64))
+                .isEqualTo("1970-01-01 00:00:00.123")
+        assertThat(DucklakeStatsExtractor.convertStatValue(
+                longBytes(123_456L), TimestampType.createTimestampType(6), Type.INT64))
+                .isEqualTo("1970-01-01 00:00:00.123456")
+        assertThat(DucklakeStatsExtractor.convertStatValue(
+                longBytes(123_456_789L), TimestampType.createTimestampType(9), Type.INT64))
+                .isEqualTo("1970-01-01 00:00:00.123456789")
+        assertThat(DucklakeStatsExtractor.convertStatValue(
+                longBytes(123_456L), TIMESTAMP_TZ_MICROS, Type.INT64))
+                .isEqualTo("1970-01-01 00:00:00.123456+00")
     }
 
     @Test
@@ -278,6 +299,33 @@ internal class TestDucklakeStatsExtractor {
         assertThat(stats[0].valueCount!! + stats[0].nullCount!!).isEqualTo(100L)
     }
 
+    @Test
+    fun missingBoundsInOneNonNullRowGroupMakesFileBoundsUnknown() {
+        val file = fileMetaData(
+                rowGroup(10L, column(INT_TYPE, intBytes(1), intBytes(10), 0L)),
+                rowGroup(10L, columnWithoutBounds(INT_TYPE, 0L)))
+
+        val stats = DucklakeStatsExtractor.extractStats(
+                file, listOf(LeafStatsTarget(7L, INTEGER, 0))).single()
+
+        assertThat(stats.valueCount).isEqualTo(20L)
+        assertThat(stats.nullCount).isZero()
+        assertThat(stats.minValue).isNull()
+        assertThat(stats.maxValue).isNull()
+    }
+
+    @Test
+    fun missingNullCountMakesFileCountsAndBoundsUnknown() {
+        val file = fileMetaData(rowGroup(10L, columnWithoutBounds(INT_TYPE, null)))
+        val stats = DucklakeStatsExtractor.extractStats(
+                file, listOf(LeafStatsTarget(7L, INTEGER, 0))).single()
+
+        assertThat(stats.valueCount).isNull()
+        assertThat(stats.nullCount).isNull()
+        assertThat(stats.minValue).isNull()
+        assertThat(stats.maxValue).isNull()
+    }
+
     // ==================== Thrift FileMetaData builders ====================
 
     companion object {
@@ -330,9 +378,31 @@ internal class TestDucklakeStatsExtractor {
             return chunk
         }
 
+        private fun columnWithoutBounds(type: Type, nullCount: Long?): ColumnChunk {
+            val meta = ColumnMetaData()
+            meta.setType(type)
+            meta.setEncodings(listOf(Encoding.PLAIN))
+            meta.setPath_in_schema(listOf("leaf"))
+            meta.setCodec(CompressionCodec.UNCOMPRESSED)
+            meta.setNum_values(0L)
+            meta.setTotal_uncompressed_size(0L)
+            meta.setTotal_compressed_size(0L)
+            meta.setData_page_offset(0L)
+            if (nullCount != null) {
+                meta.setStatistics(Statistics().setNull_count(nullCount))
+            }
+            val chunk = ColumnChunk()
+            chunk.setFile_offset(0L)
+            chunk.setMeta_data(meta)
+            return chunk
+        }
+
         private fun intBytes(v: Int): ByteArray {
             return ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(v).array()
         }
+
+        private fun longBytes(v: Long): ByteArray =
+            ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(v).array()
 
         private fun utf8Bytes(s: String): ByteArray {
             return s.toByteArray(java.nio.charset.StandardCharsets.UTF_8)

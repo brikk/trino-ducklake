@@ -392,7 +392,7 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
                 Optional.empty())
         // Single unpartitioned file (partitioned tables are gated above).
         val writer = ParquetFileWriter(
-                parquetWriter, outputStream, fileName, emptyMap(), null, columnHandles, allCatalogColumns)
+                parquetWriter, outputStream, fileName, emptyMap(), null, columnHandles, allCatalogColumns, messageType)
 
         val rowsWithLineage: List<List<Any?>> = rows.mapIndexed { i, row ->
             row + rowIds[i] + beginSnapshots[i]

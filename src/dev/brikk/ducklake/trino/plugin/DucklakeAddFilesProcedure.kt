@@ -285,7 +285,7 @@ class DucklakeAddFilesProcedure @Inject constructor(
             // order, with parquetColumnIndex tracking through ignored-extra-columns and
             // hive-partition-overrides so the index stays aligned with RowGroup.columns.
             val stats: List<DucklakeFileColumnStats> = DucklakeStatsExtractor.extractStats(
-                    thriftMetadata, result.leafStatsTargets)
+                    thriftMetadata, result.leafStatsTargets, fileMetadata.schema)
 
             val recordCount = aggregateRecordCount(thriftMetadata)
 
@@ -500,6 +500,7 @@ class DucklakeAddFilesProcedure @Inject constructor(
                 for (column in block.columns()) {
                     val chunk = org.apache.parquet.format.ColumnChunk()
                     val meta = org.apache.parquet.format.ColumnMetaData()
+                    meta.setType(toThriftPhysicalType(column.primitiveType.primitiveTypeName))
                     meta.setNum_values(column.valueCount)
                     meta.setTotal_compressed_size(column.totalSize)
                     val nativeStats: org.apache.parquet.column.statistics.Statistics<*>? = column.statistics
@@ -531,5 +532,13 @@ class DucklakeAddFilesProcedure @Inject constructor(
             thrift.setNum_rows(numRows)
             return thrift
         }
+
+        private fun toThriftPhysicalType(
+                type: org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName): org.apache.parquet.format.Type =
+            when (type) {
+                org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName.BINARY ->
+                    org.apache.parquet.format.Type.BYTE_ARRAY
+                else -> org.apache.parquet.format.Type.valueOf(type.name)
+            }
     }
 }

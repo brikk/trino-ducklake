@@ -25,6 +25,7 @@ import io.trino.spi.type.DoubleType.DOUBLE
 import io.trino.spi.type.RealType.REAL
 import org.apache.parquet.format.FileMetaData
 import org.apache.parquet.format.Util
+import org.apache.parquet.schema.MessageType
 import java.io.IOException
 import java.io.OutputStream
 import java.lang.Float.intBitsToFloat
@@ -40,7 +41,8 @@ class ParquetFileWriter(
     partitionValues: Map<Int, String?>,
     private val partitionId: Long?,
     columns: List<DucklakeColumnHandle>,
-    allCatalogColumns: List<DucklakeColumn>)
+    allCatalogColumns: List<DucklakeColumn>,
+    private val parquetSchema: MessageType)
         : DucklakeFileWriter {
     private val partitionValues: MutableMap<Int, String?> = partitionValues.toMutableMap()
     private val leafStatsTargets: List<LeafStatsTarget> =
@@ -126,7 +128,7 @@ class ParquetFileWriter(
         }
 
         val extracted: List<DucklakeFileColumnStats> =
-                DucklakeStatsExtractor.extractStats(fileMetaData, leafStatsTargets)
+                DucklakeStatsExtractor.extractStats(fileMetaData, leafStatsTargets, parquetSchema)
         // Footer min/max can't express NaN, so the extractor leaves contains_nan NULL (unknown).
         // We DID observe every value of the top-level REAL/DOUBLE columns as they streamed
         // through, so for those we can assert TRUE or FALSE. Nested float leaves stay unknown —

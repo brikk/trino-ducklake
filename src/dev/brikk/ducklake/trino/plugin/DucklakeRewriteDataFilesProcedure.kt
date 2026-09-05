@@ -423,7 +423,7 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
             val parquetWriter = ParquetWriter(outputStream, messageType, schemaConverter.primitiveTypes, writerOptions,
                     CompressionCodec.ZSTD, trinoVersion, Optional.empty(), Optional.empty())
             writer = ParquetFileWriter(parquetWriter, outputStream, fileName,
-                    group.partitionValues, group.partitionId, columnHandles, allCatalogColumns)
+                    group.partitionValues, group.partitionId, columnHandles, allCatalogColumns, messageType)
             minBegin = Long.MAX_VALUE
             maxBegin = Long.MIN_VALUE
         }

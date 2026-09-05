@@ -433,7 +433,9 @@ class DucklakePageSink(
                 Optional.empty())
 
         val partitionId = partitioner?.getPartitionId()
-        return ParquetFileWriter(parquetWriter, outputStream, relativePath, partitionValues, partitionId, handle.columns, handle.allCatalogColumns)
+        return ParquetFileWriter(
+                parquetWriter, outputStream, relativePath, partitionValues, partitionId,
+                handle.columns, handle.allCatalogColumns, messageType)
     }
 
     private fun buildRelativePath(partitionValues: Map<Int, String?>, fileName: String): String {

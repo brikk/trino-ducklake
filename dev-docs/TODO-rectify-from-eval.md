@@ -554,15 +554,18 @@ of work. Order = suggested order.
 
 ### High
 
-- [ ] **W-H1 — `timestamp_s/_ms/_ns` file stats decoded as microseconds** (also R-M1).
+- [x] **W-H1 — `timestamp_s/_ms/_ns` file stats decoded as microseconds** (also R-M1).
   `DucklakeStatsExtractor.kt:174-179` always treats INT64 stats as µs, but Trino's
   `ParquetSchemaConverter` writes p≤3 as MILLIS and p>6 as NANOS, and `DucklakeTypeConverter.kt:
   187-191` maps those DuckLake types to p=0/3/9. min/max off by 10³ → DuckDB prunes via
   `TRY_CAST(min_value ...)` (`ducklake_metadata_manager.cpp:1167-1215`) → silently empty results
   for range predicates in DuckDB; also poisons `ducklake_table_column_stats`. Fix: decode by the
   parquet logical-type unit.
+  DONE 2026-09-05: extraction receives the actual Parquet schema and decodes each physical leaf's
+  MILLIS/MICROS/NANOS annotation (INT96 stays unknown). Unit and DuckDB-oracle tests cover p3/p6/p9;
+  add_files proves source physical units are used independently of catalog target type.
 
-- [ ] **W-H3 — Temporal min/max use Java ISO text, not DuckDB's canonical form → cross-engine
+- [x] **W-H3 — Temporal min/max use Java ISO text, not DuckDB's canonical form → cross-engine
   table-stat merge corrupts bounds.** `DucklakeStatsExtractor.kt:176-184` → `LocalDateTime.
   toString()` (`2024-01-15T10:30`, drops `:00`) / `Instant.toString()` (`...Z`). Upstream
   `Timestamp::ToString` → `2024-01-15 10:30:00[.ffffff]`, tz `…+00`. The catalog merges temporal
@@ -571,6 +574,9 @@ of work. Order = suggested order.
   → table-level max regresses → DuckDB folds filters against `ducklake_table_column_stats` → empty
   scans. Fix: one canonical DuckDB-format stringifier shared by the stats extractor, add_files,
   and the pruner (R-H4); fix E-L10 to compare by value.
+  DONE 2026-09-05: timestamp text uses DuckDB's space separator, mandatory seconds, trimmed
+  fraction, and `+00` for timestamptz. Catalog value-based comparison was already fixed by E-L10.
+  DuckDB equality predicates retain Trino-written p3/p6/p9 files.
 
 - [ ] **W-H4 — `TIMESTAMP WITH TIME ZONE`, `TIME`, `TIME WITH TIME ZONE`, `UUID` columns are
   accepted at DDL but cannot be written; a pure DELETE on such a table also fails** (also T-H1).
@@ -606,10 +612,12 @@ of work. Order = suggested order.
 
 ### Medium
 
-- [ ] **W-M2 — Row-group stat aggregation not conservative.** `DucklakeStatsExtractor.kt:89-102`
+- [x] **W-M2 — Row-group stat aggregation not conservative.** `DucklakeStatsExtractor.kt:89-102`
   sets `hasStats` if *any* row group has min/max, skipping groups without. Upstream requires all
   (`parquet_writer.cpp:1040-1044,1067`). parquet-mr omits stats when 1024-byte binary truncation
   can't produce a valid bound → too-tight bounds. Require all groups.
+  DONE 2026-09-05: a non-null row group missing/undecodable min/max makes file bounds unknown; a
+  missing null count makes both counts and bounds unknown. All-null groups do not invalidate bounds.
 
 - [ ] **W-M3 — Upstream write settings ignored** (also T-M6). Compression hard-coded ZSTD
   (`DucklakePageSink.kt:430`, `DucklakeMergeSink.kt:369`); row-group size / `parquet_version` /
@@ -881,7 +889,7 @@ of work. Order = suggested order.
   1205-1231` throws on size mismatch (`add_file_partitioned.test`), default `hive_partitioning` is
   AUTOMATIC. Fix: require full coverage or reject.
 
-- [ ] **P-H4 — `add_files` min/max decoded with the wrong physical type / time unit → wrong stats →
+- [x] **P-H4 — `add_files` min/max decoded with the wrong physical type / time unit → wrong stats →
   pruning skips matching files.** `toThriftFileMetaData` (`DucklakeAddFilesProcedure.kt:492-533`)
   never calls `meta.setType(...)`, so `columnMeta.getType()` is null in `convertStatValue` (`:91-92`)
   → `decodeDecimalUnscaled` (`:208-217`) takes the big-endian branch for INT32/INT64 decimals (the
@@ -890,6 +898,10 @@ of work. Order = suggested order.
   `BufferUnderflowException` → swallowed → null. Poisons `ducklake_table_column_stats` for DuckDB
   too. No decimal/timestamp test in `TestDucklakeAddFiles`. Fix with W-H1/W-H3 (one stat
   stringifier keyed by parquet physical+logical type).
+  DONE 2026-09-05: the metadata adapter preserves physical primitive type and extraction consumes
+  the original Parquet schema. Cross-engine raw-file test verifies INT-backed DECIMAL(10,2),
+  TIMESTAMP_MS and TIMESTAMP_NS bounds plus a DuckDB predicate scan. Unsupported primitive
+  widenings remain stats-unknown rather than guessed.
 
 - [x] **P-H5 — `rewrite_data_files` identifies files by basename only → same-basename files
   collide.** `candidatesByBasename = candidates.associateBy { basename(it.path) }`

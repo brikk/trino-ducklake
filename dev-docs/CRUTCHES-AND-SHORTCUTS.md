@@ -70,13 +70,14 @@ import/cleanup race; no upstream agreement is a prerequisite for this bounded im
 - Failed/deferred oldest requests remain queued and can occupy subsequent batches. Their cause
   needs operator attention; this implementation adds no retry ledger or queue fairness protocol.
 
-**Release gate:** the connector currently consumes locally verified `0.9.0-rv04-SNAPSHOT` from
-the catalog branch `fix/rv04-bounded-cleanup`. This unique version avoids overwriting artifacts
-from concurrent catalog work. Catalog API commit: `4cdc725`. It is not published remotely. Merge/release the bounded catalog
-API and repin to matching published catalog/replay artifacts before pushing/deploying this
-consumer change. Do not replace it with an unbounded fallback to the old 0.8.0 API.
+**Dependency gate resolved, 2026-09-05:** the connector now consumes the official `0.9.0`
+catalog and corpus-replay artifacts from Maven Central. The temporary feature-snapshot pin is
+removed; no local catalog build is required. Published-artifact verification is recorded as
+`RV-V11` in the review. This closes the dependency gate, not the concurrency limitations above.
+Do not replace the bounded APIs with an unbounded fallback to an older release.
 
 **Verification scope:** real shared-file lifecycle tests cover Trino followed by stock DuckDB
-cleanup, last-owner reclamation, and MinIO with an S3 scheme alias. Catalog query tests run on
-PostgreSQL, MySQL, local DuckDB, and Quack, including hostile path collations and bounded projections.
+cleanup, last-owner reclamation, and MinIO with an S3 scheme alias. Initial catalog query
+verification covered PostgreSQL, MySQL, local DuckDB, and Quack, including hostile path collations
+and bounded projections; `RV-V11` records this connector's checks against the official release.
 The old orphan-sweep full-reference materialization remains the separate RV-25g item.

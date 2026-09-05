@@ -56,10 +56,10 @@ Real tests exercise A/B sharing, A's request cancellation,
 subsequent stock DuckDB cleanup, final-owner retirement/reclamation, and an S3 alias against
 MinIO. Other regressions cover tiny pages, budget overflow before mutation, hostile collations,
 bounded root/path projections, whitespace filenames, precise acknowledgments, and directory
-overlaps. See the review's verification record for commands and results. Catalog changes are
-on `fix/rv04-bounded-cleanup`, verified locally as `0.9.0-rv04-SNAPSHOT` to avoid concurrent
-artifact collisions (catalog commit `4cdc725`). Merge/release that API and repin the connector before pushing/deploying
-the consumer. No remote artifacts have been published as part of this work.
+overlaps. The connector now consumes the official catalog and corpus-replay `0.9.0` release
+from Maven Central, replacing the temporary feature snapshot. The dependency gate is resolved;
+see `RV-V11` in the review for published-artifact verification. Earlier development verification
+remains recorded under `RV-V10`; its snapshot is no longer a build requirement.
 
 <details>
 <summary>Historical full cross-engine proposal, retained for traceability and not a prerequisite for D21-D26</summary>

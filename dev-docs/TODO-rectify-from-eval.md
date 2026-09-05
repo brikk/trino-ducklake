@@ -131,14 +131,15 @@ of work. Order = suggested order.
   `DucklakeTypeConverter.toDucklakeType` output is accepted for every Trino type we allow and that
   the connector maps `DucklakeInvalidOperationException` (TR-1) to a clear DDL error.
 
-- [ ] **TR-13 — Keep the connector on released ducklake-catalog artifacts.**
+- [x] **TR-13 — Keep the connector on released ducklake-catalog artifacts.**
   DONE through 0.8.0: 0.5.0 initial reconciliation; 0.6.0 parity/DDL; 0.7.x path/flush fixes;
   0.8.0 nested name maps.
   Harness: `9dfd6cc` fixes the corpus engine for the replay driver's re-ATTACH `connect()`.
   scoped `mavenLocal()` in `buildlogic.kotlin.brikk` stays for the dev loop.
-  REOPENED 2026-09-05 for RV-04: bounded cleanup consumes locally verified
-  `0.9.0-rv04-SNAPSHOT` (catalog commit `4cdc725`, connector `fb1a3a9`). Merge/release the
-  catalog API and repin matching catalog/replay artifacts before pushing/deploying the consumer.
+  DONE again 2026-09-05 after the temporary RV-04 feature-snapshot pin: catalog, test fixtures,
+  corpus-replay, and transitive slt-format now resolve to official `0.9.0` release artifacts.
+  Consumer verification: 124 selected JUnit tests passed with no skips, including the `catalog`
+  corpus directory; detekt passed. See `RV-V11` in the review. No local catalog build is required.
 
 ---
 

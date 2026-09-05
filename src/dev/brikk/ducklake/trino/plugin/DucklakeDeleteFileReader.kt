@@ -155,6 +155,7 @@ object DucklakeDeleteFileReader {
      * `ROW_ID_PARQUET_FIELD_ID`.
      */
     const val ROW_ID_PARQUET_FIELD_ID: Int = 2_147_483_540
+    const val SNAPSHOT_ID_PARQUET_FIELD_ID: Int = 2_147_483_539
 
     /**
      * Reads the embedded row-lineage column (parquet field-id [ROW_ID_PARQUET_FIELD_ID]) of a data

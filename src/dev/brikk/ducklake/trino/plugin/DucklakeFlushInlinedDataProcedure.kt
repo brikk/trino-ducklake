@@ -18,16 +18,23 @@ import com.google.inject.Inject
 import com.google.inject.Provider
 import dev.brikk.ducklake.catalog.DucklakeCatalog
 import dev.brikk.ducklake.catalog.DucklakeColumn
+import dev.brikk.ducklake.catalog.DucklakeDeleteFragment
+import dev.brikk.ducklake.catalog.DucklakeInlinedChangeRow
 import dev.brikk.ducklake.catalog.DucklakeInlinedDataInfo
+import dev.brikk.ducklake.catalog.DucklakeInlinedFileDelete
 import dev.brikk.ducklake.catalog.DucklakeSchema
 import dev.brikk.ducklake.catalog.DucklakeTable
 import dev.brikk.ducklake.catalog.DucklakeWriteFragment
+import dev.brikk.ducklake.catalog.FlushedInlinedFile
 import dev.brikk.ducklake.catalog.TransactionConflictException
 import io.trino.filesystem.Location
 import io.trino.filesystem.TrinoFileSystem
+import io.trino.parquet.ParquetReaderOptions
 import io.trino.parquet.writer.ParquetSchemaConverter
 import io.trino.parquet.writer.ParquetWriter
 import io.trino.parquet.writer.ParquetWriterOptions
+import io.trino.plugin.base.metrics.FileFormatDataSourceStats
+import io.trino.plugin.hive.parquet.ParquetReaderConfig
 import io.trino.spi.NodeVersion
 import io.trino.spi.StandardErrorCode.INVALID_PROCEDURE_ARGUMENT
 import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
@@ -45,6 +52,7 @@ import java.lang.invoke.MethodHandle
 import java.lang.invoke.MethodHandles
 import java.lang.invoke.MethodType
 import java.util.Optional
+import java.util.TreeMap
 import java.util.UUID
 
 /**
@@ -71,10 +79,13 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
         private val fileSystemFactory: DucklakeFileSystemFactory,
         private val typeConverter: DucklakeTypeConverter,
         private val pathResolver: DucklakePathResolver,
+        parquetReaderConfig: ParquetReaderConfig,
+        private val fileFormatDataSourceStats: FileFormatDataSourceStats,
         nodeVersion: NodeVersion,
 ) : Provider<Procedure> {
     private val trinoVersion: String = nodeVersion.toString()
     private val writerOptions: ParquetWriterOptions = ParquetWriterOptions.builder().build()
+    private val parquetReaderOptions: ParquetReaderOptions = parquetReaderConfig.toParquetReaderOptions()
 
     override fun get(): Procedure =
         Procedure(
@@ -133,10 +144,16 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
             failOnPartitioned: Boolean,
     ): Boolean {
         val tableId = table.tableId
+        val versions = catalog.getInlinedDataInfos(tableId, snapshotId)
+                .mapNotNull { loadVersionRows(tableId, snapshotId, it) }
+        val inlinedFileDeletes = catalog.getInlinedFileDeletesBetween(tableId, 0L, snapshotId)
+        if (versions.isEmpty() && inlinedFileDeletes.isEmpty()) {
+            return false
+        }
 
-        // v1: a partitioned table's inlined rows have no partition assignment to write into a
-        // hive-style file; gate rather than produce an unpartitioned (unprunable) file.
-        if (catalog.getPartitionSpecs(tableId, snapshotId).isNotEmpty()) {
+        // Inlined DATA rows carry no partition assignment to write into a hive-style file. File
+        // deletion rows already target partitioned files and can be flushed independently.
+        if (versions.isNotEmpty() && catalog.getPartitionSpecs(tableId, snapshotId).isNotEmpty()) {
             if (failOnPartitioned) {
                 throw TrinoException(NOT_SUPPORTED,
                         "flush_inlined_data does not support partitioned tables yet: ${schema.schemaName}.${table.tableName}")
@@ -146,60 +163,177 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
             return false
         }
 
-        val liveInfos: List<DucklakeInlinedDataInfo> = catalog.getInlinedDataInfos(tableId, snapshotId)
-                .filter { it.hasLiveRows }
-        if (liveInfos.isEmpty()) {
-            return false // nothing inlined — no-op
-        }
-
-        // Top-level columns at the current snapshot; the rows we write conform to these.
-        val topLevelColumns: List<DucklakeColumn> = catalog.getTableColumns(tableId, snapshotId)
-                .filter { it.parentColumn == null }
-        val columnHandles: List<DucklakeColumnHandle> = topLevelColumns.map { col ->
-            DucklakeColumnHandle(col.columnId, col.columnName, typeConverter.toTrinoType(col.columnType), col.nullsAllowed)
-        }
-        val columnTypes: List<Type> = columnHandles.map { it.columnType }
-        val allCatalogColumns: List<DucklakeColumn> = catalog.getAllColumnsWithParentage(tableId, snapshotId)
-
-        // Read + convert every live inlined row across schema versions, carrying each row's
-        // original DuckLake global row_id (readInlinedData and readInlinedRowIds both order by
-        // row_id, so they align positionally). The row_ids are embedded in the flushed file as
-        // _ducklake_internal_row_id so the flush preserves row identity (a storage move, not a
-        // re-insert) — matching upstream flush_row_id_start.
-        val rows: MutableList<List<Any?>> = mutableListOf()
-        val rowIds: MutableList<Long> = mutableListOf()
-        for (info in liveInfos) {
-            val rawRows: List<List<Any?>> = catalog.readInlinedData(tableId, info.schemaVersion, snapshotId, topLevelColumns)
-            val ids: List<Long> = catalog.readInlinedRowIds(tableId, info.schemaVersion, snapshotId)
-            if (ids.size != rawRows.size) {
-                throw TrinoException(NOT_SUPPORTED,
-                        "Inlined row/row_id count mismatch for ${schema.schemaName}.${table.tableName} " +
-                                "(schema version ${info.schemaVersion}): ${rawRows.size} rows vs ${ids.size} row_ids")
-            }
-            for (i in rawRows.indices) {
-                val raw = rawRows[i]
-                rows.add(raw.indices.map { j -> DucklakeInlinedValueConverter.convertJdbcValue(raw[j], columnTypes[j]) })
-                rowIds.add(ids[i])
-            }
-        }
-        if (rows.isEmpty()) {
-            return false // descriptor said live, but no rows resolved at this snapshot — nothing to do
-        }
-
         val fileSystem: TrinoFileSystem = fileSystemFactory.create(session)
         val tableDataPath: String = pathResolver.resolveTableDataPath(schema, table)
-        val fragment: DucklakeWriteFragment = writeParquetFile(
-                fileSystem, tableDataPath, columnHandles, allCatalogColumns, columnTypes, rows, rowIds)
+        val deleteWriter = DucklakeFlushDeleteFileWriter(fileSystem, writerOptions, trinoVersion)
+        val files = versions.map { version -> materializeVersion(fileSystem, deleteWriter, tableDataPath, version) }
+        val existingFileDeletes = materializeExistingFileDeletes(
+                fileSystem, deleteWriter, tableDataPath, tableId, snapshotId, inlinedFileDeletes)
 
         try {
-            // Register at the ORIGINAL min row-id (the per-row ids ride in the file's embedded
-            // lineage column); record_count / next_row_id stay unchanged (see flushInlinedData).
-            catalog.flushInlinedData(tableId, ImmutableList.of(fragment), rowIds.min())
+            catalog.flushInlinedDataWithSnapshots(tableId, files, existingFileDeletes, snapshotId)
         }
         catch (e: TransactionConflictException) {
             throw TrinoException(TRANSACTION_CONFLICT, e.message, e)
         }
         return true
+    }
+
+    private data class VersionRows(
+            val columns: List<DucklakeColumnHandle>,
+            val allColumns: List<DucklakeColumn>,
+            val changes: List<DucklakeInlinedChangeRow>)
+
+    /** One physical inlined schema version -> one Parquet file with that historical schema. */
+    private fun loadVersionRows(
+            tableId: Long,
+            readSnapshotId: Long,
+            info: DucklakeInlinedDataInfo): VersionRows? {
+        val schemaSnapshot = catalog.resolveSchemaVersionSnapshot(tableId, info.schemaVersion, readSnapshotId)
+            ?: throw TrinoException(NOT_SUPPORTED,
+                    "Cannot resolve schema version ${info.schemaVersion} for inlined table $tableId")
+        val sourceColumns = catalog.getTableColumns(tableId, schemaSnapshot)
+                .filter { it.parentColumn == null }
+        val handles = sourceColumns.map { column ->
+            DucklakeColumnHandle(
+                    column.columnId,
+                    column.columnName,
+                    typeConverter.toTrinoType(column.columnType),
+                    column.nullsAllowed)
+        }
+        val changes = catalog.getInlinedChangesBetween(
+                tableId,
+                info.schemaVersion,
+                0L,
+                readSnapshotId,
+                sourceColumns.map { it.columnId })
+        if (changes.isEmpty()) {
+            return null
+        }
+        return VersionRows(handles, catalog.getAllColumnsWithParentage(tableId, schemaSnapshot), changes)
+    }
+
+    private fun materializeVersion(
+            fileSystem: TrinoFileSystem,
+            deleteWriter: DucklakeFlushDeleteFileWriter,
+            tableDataPath: String,
+            version: VersionRows): FlushedInlinedFile {
+        val types = version.columns.map { it.columnType }
+        val rows = version.changes.map { change ->
+            change.values.indices.map { index ->
+                DucklakeInlinedValueConverter.convertJdbcValue(change.values[index], types[index])
+            }
+        }
+        val rowIds = version.changes.map { it.rowId }
+        val beginSnapshots = version.changes.map { it.beginSnapshot }
+        val fragment = writeParquetFile(
+                fileSystem,
+                tableDataPath,
+                version.columns,
+                version.allColumns,
+                types,
+                rows,
+                rowIds,
+                beginSnapshots)
+        val deleted = version.changes.mapIndexedNotNull { position, change ->
+            change.endSnapshot?.let { DucklakeFlushDeleteFileWriter.DeletedPosition(position.toLong(), it) }
+        }
+        val resolvedDataPath = pathResolver.resolveFilePath(fragment.path, fragment.pathIsRelative, tableDataPath)
+        val deleteFragment = if (deleted.isEmpty()) null else
+            deleteWriter.write(tableDataPath, resolvedDataPath, 0L, deleted)
+        return FlushedInlinedFile(
+                fragment,
+                beginSnapshots.min(),
+                beginSnapshots.max(),
+                rowIds.min(),
+                deleteFragment)
+    }
+
+    /**
+     * Fold metadata-resident deletes of existing data files into snapshot-tagged replacements.
+     * Existing cumulative delete positions retain their original snapshots; newly inlined
+     * positions already carry the exact snapshot in [DucklakeInlinedFileDelete].
+     */
+    private fun materializeExistingFileDeletes(
+            fileSystem: TrinoFileSystem,
+            writer: DucklakeFlushDeleteFileWriter,
+            tableDataPath: String,
+            tableId: Long,
+            readSnapshotId: Long,
+            inlinedDeletes: List<DucklakeInlinedFileDelete>): List<DucklakeDeleteFragment> {
+        if (inlinedDeletes.isEmpty()) {
+            return emptyList()
+        }
+        val filesById = catalog.getDataFiles(tableId, readSnapshotId).groupBy { it.dataFileId }
+        val deleteBeginByPath = catalog.getDeletionsBetween(tableId, 0L, readSnapshotId)
+                .mapNotNull { event -> event.currentDeletePath?.let { it to event.snapshotId } }
+                .groupBy({ it.first }, { it.second })
+                .mapValues { (_, snapshots) -> snapshots.min() }
+        return inlinedDeletes.groupBy { it.dataFileId }.map { (dataFileId, newDeletes) ->
+            val joinedRows = filesById[dataFileId]
+                ?: throw TrinoException(NOT_SUPPORTED, "Inlined deletion references inactive data_file_id $dataFileId")
+            val primary = joinedRows.first()
+            val activeDeleteRows = joinedRows.filter { it.deleteFilePath != null }
+                    .distinctBy { it.deleteFilePath }
+            check(activeDeleteRows.size <= 1) {
+                "data_file_id $dataFileId has ${activeDeleteRows.size} active delete files"
+            }
+            val merged = TreeMap<Long, Long>()
+            activeDeleteRows.singleOrNull()?.let { dataFile ->
+                val beginSnapshot = deleteBeginByPath[dataFile.deleteFilePath]
+                    ?: throw TrinoException(NOT_SUPPORTED,
+                            "Cannot resolve begin snapshot for delete file ${dataFile.deleteFilePath}")
+                readExistingDeletePositions(fileSystem, tableDataPath, dataFile, beginSnapshot)
+                        .forEach { (position, snapshot) -> merged.merge(position, snapshot, ::minOf) }
+            }
+            newDeletes.forEach { deletion -> merged.merge(deletion.position, deletion.snapshotId, ::minOf) }
+            val resolvedDataPath = pathResolver.resolveFilePath(primary.path, primary.pathIsRelative, tableDataPath)
+            writer.write(
+                    tableDataPath,
+                    resolvedDataPath,
+                    dataFileId,
+                    merged.map { (position, snapshot) ->
+                        DucklakeFlushDeleteFileWriter.DeletedPosition(position, snapshot)
+                    })
+        }
+    }
+
+    private fun readExistingDeletePositions(
+            fileSystem: TrinoFileSystem,
+            tableDataPath: String,
+            file: dev.brikk.ducklake.catalog.DucklakeDataFile,
+            beginSnapshot: Long): Map<Long, Long> {
+        val deletePath = pathResolver.resolveFilePath(
+                file.deleteFilePath!!,
+                file.deleteFilePathIsRelative ?: false,
+                tableDataPath)
+        if (file.deleteFileFormat.equals("puffin", ignoreCase = true)) {
+            return DucklakePuffinDeleteReader.readDeletedPositions(fileSystem.newInputFile(toLocation(deletePath)))
+                    .associateWith { beginSnapshot }
+        }
+        val withSnapshots = DucklakeDeleteFileReader.readPositionsWithSnapshotsIfPresent(
+                fileSystem,
+                deletePath,
+                file.deleteFileFooterSize ?: 0L,
+                parquetReaderOptions,
+                fileFormatDataSourceStats)
+        if (withSnapshots != null) {
+            return withSnapshots
+        }
+        val positions = DucklakeDeleteFileReader.readPositions(
+                fileSystem,
+                deletePath,
+                file.deleteFileFooterSize ?: 0L,
+                parquetReaderOptions,
+                fileFormatDataSourceStats)
+        return positions.values.associate { value ->
+            (if (positions.global) value - file.rowIdStart else value) to beginSnapshot
+        }
+    }
+
+    private fun toLocation(path: String): Location {
+        val location = Location.of(path)
+        return if (location.scheme().isPresent) location else Location.of("file://$path")
     }
 
     private fun resolveTable(schemaName: String, tableName: String, snapshotId: Long): Pair<DucklakeSchema, DucklakeTable> {
@@ -212,10 +346,9 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
 
     /**
      * Materialize [rows] into one Parquet data file and return its registration fragment. The
-     * file carries a trailing synthetic `_ducklake_internal_row_id` (field id 2147483540) column
-     * holding each row's original [rowIds] value, so the flush preserves row identity across
-     * gaps/deletes (mirrors the F7 lineage-preserving write path). The lineage column is appended
-     * LAST so the catalog-derived leaf-stat indices stay valid, and it is excluded from stats.
+     * file carries trailing `_ducklake_internal_row_id` / `_ducklake_internal_snapshot_id` columns
+     * holding each row's original [rowIds] / [beginSnapshots]. Both follow data columns, keeping
+     * catalog-derived leaf-stat indices valid and excluding internal columns from stats.
      */
     private fun writeParquetFile(
             fileSystem: TrinoFileSystem,
@@ -224,18 +357,24 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
             allCatalogColumns: List<DucklakeColumn>,
             columnTypes: List<Type>,
             rows: List<List<Any?>>,
-            rowIds: List<Long>): DucklakeWriteFragment {
+            rowIds: List<Long>,
+            beginSnapshots: List<Long>): DucklakeWriteFragment {
         val columnNames: List<String> = columnHandles.map { it.columnName }
-        // Physical write layout = catalog columns + a trailing BIGINT lineage column.
+        // Physical write layout = catalog columns + trailing BIGINT lineage/snapshot columns.
         // JSON columns are physically UTF-8 VARCHAR in parquet (catalog type stays 'json').
-        val writeNames: List<String> = columnNames + DucklakePageSink.LINEAGE_COLUMN_NAME
-        val writeTypes: List<Type> = columnTypes + BIGINT
+        val writeNames: List<String> = columnNames + listOf(
+                DucklakePageSink.LINEAGE_COLUMN_NAME,
+                DucklakeDeleteFileReader.INTERNAL_SNAPSHOT_ID_COLUMN)
+        val writeTypes: List<Type> = columnTypes + listOf(BIGINT, BIGINT)
         val schemaConverter = ParquetSchemaConverter(
                 writeTypes.map { DucklakeJsonSupport.toParquetWriteType(it) }, writeNames, false, false)
         val messageType = DucklakeParquetSchemaBuilder.buildMessageType(
                 columnHandles, allCatalogColumns, schemaConverter.messageType,
-                mapOf(DucklakePageSink.LINEAGE_COLUMN_NAME
-                        to DucklakeDeleteFileReader.ROW_ID_PARQUET_FIELD_ID.toLong()))
+                mapOf(
+                        DucklakePageSink.LINEAGE_COLUMN_NAME
+                                to DucklakeDeleteFileReader.ROW_ID_PARQUET_FIELD_ID.toLong(),
+                        DucklakeDeleteFileReader.INTERNAL_SNAPSHOT_ID_COLUMN
+                                to DucklakeDeleteFileReader.SNAPSHOT_ID_PARQUET_FIELD_ID.toLong()))
 
         val fileName = "ducklake-${UUID.randomUUID()}.parquet"
         val filePath: Location = Location.of(tableDataPath).appendPath(fileName)
@@ -254,8 +393,9 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
         val writer = ParquetFileWriter(
                 parquetWriter, outputStream, fileName, emptyMap(), null, columnHandles, allCatalogColumns)
 
-        // Append each row's original global row_id as the trailing lineage column value.
-        val rowsWithLineage: List<List<Any?>> = rows.mapIndexed { i, row -> row + rowIds[i] }
+        val rowsWithLineage: List<List<Any?>> = rows.mapIndexed { i, row ->
+            row + rowIds[i] + beginSnapshots[i]
+        }
 
         var fragment: DucklakeWriteFragment? = null
         try {

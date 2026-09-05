@@ -814,8 +814,9 @@ of work. Order = suggested order.
 
 ### Critical
 
-- [ ] **P-C1 — `flush_inlined_data` end-snapshots rows inserted after its read but never writes
-  PARTIAL in ducklake-catalog `1121e3e`: `flushInlinedDataWithSnapshots` deletes only `begin_snapshot <= upToSnapshot` (upstream shape, no race). The legacy 2-arg `flushInlinedData` the connector calls still end-snapshots **every** live row (`JdbcDucklakeCatalog.kt:3380-3392`) — the race is open until **TR-4** lands.
+- [x] **P-C1 — `flush_inlined_data` end-snapshots rows inserted after its read but never writes
+  DONE with TR-4 and catalog `1f5082b`: caller read snapshot is explicit; conflict validation spans
+  materialization-to-commit; only represented rows/deletes through that snapshot are drained.
   them → permanent row loss.** `DucklakeFlushInlinedDataProcedure.kt:97` reads at
   `currentSnapshotId`, writes Parquet, then `catalog.flushInlinedData` (`:197`) end-snapshots
   **every** live row: `JdbcDucklakeCatalog.kt:2722-2724` `.set(endSnapshot, new).where(endSnapshot.
@@ -921,8 +922,9 @@ of work. Order = suggested order.
   uses `GetRelativePath`. `file:///w/main/t/ducklake-abc.parquet` vs listed `/w/...` → live file
   deleted after 7d.
 
-- [ ] **P-M5 — Inlined rows never physically removed → unbounded metadata growth.** Flush
-  PARTIAL in ducklake-catalog `1121e3e`: the new `flushInlinedDataWithSnapshots` physically deletes flushed rows (upstream shape). The legacy 2-arg `flushInlinedData` the connector still calls keeps end-snapshotting → growth continues until **TR-4** lands.
+- [x] **P-M5 — Inlined rows never physically removed → unbounded metadata growth.** Flush
+  DONE with TR-4: represented inlined data and inlined file-delete rows are physically drained;
+  their history lives in back-dated data files and snapshot-tagged delete files.
   end-snapshots (`JdbcDucklakeCatalog.kt:2696,2710-2731`); `expireSnapshots` GCs none (only whole
   dead tables `:743-746`). Upstream deletes flushed rows (`:5105-5124`). Correctness OK; every latest
   read scans a growing table. Add GC of end-snapshotted inlined rows in `expireSnapshots`.

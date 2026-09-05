@@ -148,6 +148,178 @@ class TestDucklakeFlushInlinedData : AbstractDucklakeCrossEngineTest() {
         }
     }
 
+    @Test
+    fun flushPreservesDeletedInlinedRowHistoryAndChangeFeed() {
+        val table = "test_schema.flush_deleted_history"
+        val bare = "flush_deleted_history"
+        try {
+            computeActual("CREATE TABLE $table (id INTEGER, name VARCHAR)")
+            writeInlinedRows(bare, "(1, 'a')", "(2, 'b')", "(3, 'c')")
+            val insertSnapshot = latestSnapshot(bare)
+            val originalRowIds = duckdbRowIds(table)
+            createDuckdbConnection().use { duck ->
+                duck.createStatement().use { it.execute("DELETE FROM ducklake_db.$table WHERE id = 2") }
+            }
+            val deleteSnapshot = latestSnapshot(bare)
+
+            computeActual("CALL ducklake.system.flush_inlined_data(schema_name => 'test_schema', table_name => '$bare')")
+
+            assertThat(ids(table)).containsExactly(1, 3)
+            assertThat(ids("$table FOR VERSION AS OF $insertSnapshot")).containsExactly(1, 2, 3)
+            assertThat(ids("$table FOR VERSION AS OF $deleteSnapshot")).containsExactly(1, 3)
+            assertThat(duckdbRowIds(table)).containsExactly(originalRowIds[0], originalRowIds[2])
+            val deletions = computeActual(
+                    "SELECT snapshot_id, id FROM TABLE(ducklake.system.table_deletions(" +
+                            "'test_schema', '$bare', $deleteSnapshot, $deleteSnapshot))").materializedRows
+            assertThat(deletions.map { it.getField(0) as Long to it.getField(1) as Int })
+                    .containsExactly(deleteSnapshot to 2)
+            assertThat(activeInlinedRowCount(bare)).isZero()
+        }
+        finally {
+            tryDropTable(table)
+        }
+    }
+
+    @Test
+    fun flushWritesOneFilePerSchemaVersionAndPreservesDroppedFields() {
+        val table = "test_schema.flush_schema_history"
+        val bare = "flush_schema_history"
+        try {
+            computeActual("CREATE TABLE $table (id INTEGER, old_value VARCHAR)")
+            writeInlinedRows(bare, "(1, 'old')")
+            val oldSnapshot = latestSnapshot(bare)
+            computeActual("ALTER TABLE $table DROP COLUMN old_value")
+            computeActual("ALTER TABLE $table ADD COLUMN new_value VARCHAR")
+            writeInlinedRows(bare, "(2, 'new')")
+
+            computeActual("CALL ducklake.system.flush_inlined_data(schema_name => 'test_schema', table_name => '$bare')")
+
+            assertThat(computeActual("SELECT id, new_value FROM $table ORDER BY id").materializedRows
+                    .map { it.getField(0) as Int to it.getField(1) as String? })
+                    .containsExactly(1 to null, 2 to "new")
+            assertThat(computeActual(
+                    "SELECT id, old_value FROM $table FOR VERSION AS OF $oldSnapshot ORDER BY id").materializedRows
+                    .map { it.getField(0) as Int to it.getField(1) as String })
+                    .containsExactly(1 to "old")
+            assertThat(activeFileRowIdStarts(bare)).containsExactly(0L, 1L)
+        }
+        finally {
+            tryDropTable(table)
+        }
+    }
+
+    @Test
+    fun flushDrainsAndConsolidatesExistingFileInlinedDeletes() {
+        val table = "test_schema.flush_file_deletes"
+        val bare = "flush_file_deletes"
+        try {
+            computeActual("CREATE TABLE $table AS SELECT * FROM (VALUES 1, 2, 3, 4, 5) AS t(id)")
+            val insertSnapshot = latestSnapshot(bare)
+            setInliningLimit(bare, 1000)
+
+            duckdbDelete(table, 2)
+            val firstDelete = latestSnapshot(bare)
+            computeActual("CALL ducklake.system.flush_inlined_data(schema_name => 'test_schema', table_name => '$bare')")
+            assertThat(ids(table)).containsExactly(1, 3, 4, 5)
+
+            duckdbDelete(table, 4)
+            val secondDelete = latestSnapshot(bare)
+            computeActual("CALL ducklake.system.flush_inlined_data(schema_name => 'test_schema', table_name => '$bare')")
+
+            assertThat(ids(table)).containsExactly(1, 3, 5)
+            assertThat(ids("$table FOR VERSION AS OF $insertSnapshot")).containsExactly(1, 2, 3, 4, 5)
+            assertThat(ids("$table FOR VERSION AS OF $firstDelete")).containsExactly(1, 3, 4, 5)
+            assertThat(ids("$table FOR VERSION AS OF $secondDelete")).containsExactly(1, 3, 5)
+            assertThat(activeDeleteFileCount(bare)).isEqualTo(1L)
+            assertThat(inlinedFileDeleteCount(bare)).isZero()
+            assertThat(scheduledDeleteFileCount()).isGreaterThanOrEqualTo(1L)
+        }
+        finally {
+            tryDropTable(table)
+        }
+    }
+
+    private fun latestSnapshot(bare: String): Long =
+        computeScalar("SELECT max(snapshot_id) FROM \"$bare\$snapshots\"") as Long
+
+    private fun ids(tableExpression: String): List<Int> =
+        computeActual("SELECT id FROM $tableExpression ORDER BY id").materializedRows
+                .map { it.getField(0) as Int }
+
+    private fun setInliningLimit(bare: String, limit: Int) {
+        createDuckdbConnection().use { duck ->
+            duck.createStatement().use { statement ->
+                statement.execute("CALL ducklake_db.set_option('data_inlining_row_limit', $limit, " +
+                        "schema => 'test_schema', table_name => '$bare')")
+            }
+        }
+    }
+
+    private fun duckdbDelete(table: String, id: Int) {
+        createDuckdbConnection().use { duck ->
+            duck.createStatement().use { it.execute("DELETE FROM ducklake_db.$table WHERE id = $id") }
+        }
+    }
+
+    private fun activeInlinedRowCount(bare: String): Long {
+        val tableId = activeTableId(bare)
+        val catalog = getIsolatedCatalog()
+        DriverManager.getConnection(catalog.jdbcUrl, catalog.user, catalog.password).use { connection ->
+            val versions = mutableListOf<Long>()
+            connection.createStatement().use { statement ->
+                statement.executeQuery(
+                        "SELECT schema_version FROM ducklake_inlined_data_tables WHERE table_id=$tableId").use { rows ->
+                    while (rows.next()) versions += rows.getLong(1)
+                }
+            }
+            return versions.sumOf { version ->
+                connection.createStatement().use { statement ->
+                    statement.executeQuery("SELECT count(*) FROM ducklake_inlined_data_${tableId}_$version").use { rows ->
+                        check(rows.next())
+                        rows.getLong(1)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun activeFileRowIdStarts(bare: String): List<Long> {
+        val tableId = activeTableId(bare)
+        return catalogLongList(
+                "SELECT row_id_start FROM ducklake_data_file WHERE table_id = $tableId " +
+                        "AND end_snapshot IS NULL ORDER BY row_id_start")
+    }
+
+    private fun activeDeleteFileCount(bare: String): Long = catalogLong(
+            "SELECT count(*) FROM ducklake_delete_file d JOIN ducklake_table t ON t.table_id=d.table_id " +
+                    "WHERE t.table_name='$bare' AND t.end_snapshot IS NULL AND d.end_snapshot IS NULL")
+
+    private fun inlinedFileDeleteCount(bare: String): Long {
+        val tableId = activeTableId(bare)
+        return catalogLong("SELECT count(*) FROM ducklake_inlined_delete_$tableId")
+    }
+
+    private fun scheduledDeleteFileCount(): Long =
+        catalogLong("SELECT count(*) FROM ducklake_files_scheduled_for_deletion")
+
+    private fun activeTableId(bare: String): Long = catalogLong(
+            "SELECT table_id FROM ducklake_table WHERE table_name='$bare' AND end_snapshot IS NULL")
+
+    private fun catalogLong(sql: String): Long = catalogLongList(sql).single()
+
+    private fun catalogLongList(sql: String): List<Long> {
+        val catalog = getIsolatedCatalog()
+        DriverManager.getConnection(catalog.jdbcUrl, catalog.user, catalog.password).use { connection ->
+            connection.createStatement().use { statement ->
+                statement.executeQuery(sql).use { rows ->
+                    val values = mutableListOf<Long>()
+                    while (rows.next()) values += rows.getLong(1)
+                    return values
+                }
+            }
+        }
+    }
+
     /** DuckLake global rowid of the row with the given id, read through DuckDB. */
     private fun duckdbRowIdOf(fqTable: String, id: Int): Long {
         createDuckdbConnection().use { duck ->
@@ -306,6 +478,7 @@ class TestDucklakeFlushInlinedData : AbstractDucklakeCrossEngineTest() {
         try {
             computeActual("CREATE TABLE $table (id INTEGER, region VARCHAR) " +
                     "WITH (partitioned_by = ARRAY['region'])")
+            writeInlinedRows("flush_part", "(1, 'US')")
             assertThatThrownBy {
                 computeActual("CALL ducklake.system.flush_inlined_data(schema_name => 'test_schema', table_name => 'flush_part')")
             }.hasMessageContaining("does not support partitioned tables")

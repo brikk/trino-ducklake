@@ -75,6 +75,8 @@ import java.time.Instant
  *    never deleted. The argument is floored by `ducklake.remove-orphan-files.min-retention`
  *    (default 7d); a call below the floor is rejected so the op can't be turned into a foot-gun.
  *  - `dry_run => true` logs what would be deleted and removes nothing.
+ *  - Directory shells are retained: recursively deleting a directory after an emptiness check
+ *    can delete a concurrent writer's new files, bypassing ownership and retention checks.
  *
  * Modeled on upstream DuckLake's `ducklake_delete_orphaned_files` (filesystem set minus known set,
  * mtime-gated), scoped to one table's data path in the Trino procedure idiom — but type-scoped to
@@ -177,55 +179,7 @@ class DucklakeRemoveOrphanFilesProcedure @Inject constructor(
         catch (e: IOException) {
             throw TrinoException(NOT_SUPPORTED, "Failed to delete orphan files for $scopeLabel: ${e.message}", e)
         }
-        scanRoots.forEach { removeEmptiedDatasetDirectories(fileSystem, it, orphans) }
         log.info("remove_orphan_files: deleted %d orphan file(s) for %s", orphans.size, scopeLabel)
-    }
-
-    /**
-     * After deleting orphan *files*, an orphaned lance/vortex dataset *directory* (whose members
-     * were all orphans) is left as an empty directory shell on filesystems that model directories
-     * (local FS; no-op on object stores, which have none). For each orphan that lived under an
-     * intermediate directory beneath the table data path, remove that directory if it is now empty
-     * of files — the emptiness guard means this can never remove a directory that still holds live
-     * data.
-     */
-    private fun removeEmptiedDatasetDirectories(
-            fileSystem: TrinoFileSystem,
-            tableDataPath: String,
-            orphans: List<Location>,
-    ) {
-        val root: String = tableDataPath.trimEnd('/')
-        val candidateDirs: Set<String> = orphans
-                .mapNotNull { intermediateDirUnderRoot(root, it.toString()) }
-                .toSet()
-        for (dir in candidateDirs) {
-            try {
-                if (!fileSystem.listFiles(Location.of(dir)).hasNext()) {
-                    fileSystem.deleteDirectory(Location.of(dir))
-                }
-            }
-            catch (e: IOException) {
-                log.warn(e, "remove_orphan_files: could not remove emptied directory %s", dir)
-            }
-        }
-    }
-
-    /**
-     * The immediate directory under [root] that contains [path], or null when [path] sits directly
-     * under [root] (a stray file, no intermediate directory to reclaim). E.g. for root `/t` and
-     * path `/t/ds.lance/data/part.lance` returns `/t/ds.lance`.
-     */
-    private fun intermediateDirUnderRoot(root: String, path: String): String? {
-        val prefix = "$root/"
-        if (!path.startsWith(prefix)) {
-            return null
-        }
-        val remainder = path.substring(prefix.length)
-        val slash = remainder.indexOf('/')
-        if (slash < 0) {
-            return null
-        }
-        return "$root/${remainder.substring(0, slash)}"
     }
 
     /**

@@ -41,16 +41,13 @@ corpus. No tests are tag-excluded on the PR gate today. History of the two forme
   `github.com/brikk/duckbridge` (see `ci.yml` header + `PLAN-duckdb-parity-moveout.md`); the tests
   it named (`TestDucklakeLanceS3QuackRead`, `TestDucklakeQuackS3InitRace`) no longer exist here.
   Nothing to build in this repo — the portable-extension work now belongs in `brikk/duckbridge`.
-- [x] **`ci-unstable` — `TestDucklakeRemoveOrphanFiles.removesEmptiedOrphanDatasetDirectory`
-  (re-enabled 2026-07-19).** Was tag-excluded after the emptied orphan `.lance` dataset directory
-  was reported as surviving `remove_orphan_files` on the CI runner (pre repo-restructure).
-  Root-caused as not reproducible: on any POSIX local FS Trino 483's `HdfsFileSystem.deleteDirectory`
-  is a true recursive rmdir and `listFiles` is recursive/files-only, so once the member files are
-  deleted the empty `data/` + `_versions/` subdirs satisfy the emptiness guard and the whole tree is
-  removed (`DucklakeRemoveOrphanFilesProcedure.removeEmptiedDatasetDirectories`). Verified green
-  single-class on tmpfs AND ext4, and in the full concurrent suite with no exclusion. The tag +
-  the `-PexcludeTags=ci-unstable` in `ci.yml` are removed; the test now dumps any surviving tree in
-  its assertion message so a future CI failure is actionable rather than a hand-wave.
+- [x] **`ci-unstable` — orphan-dataset regression (re-enabled 2026-07-19).** The original
+  `TestDucklakeRemoveOrphanFiles.removesEmptiedOrphanDatasetDirectory` expected recursive removal
+  of an empty dataset tree. **2026-09-05, RV-05:** that behavior was removed because a writer can
+  create a file after the emptiness check and lose it to recursive deletion. The renamed
+  `reclaimsOrphanDatasetFilesButKeepsDirectories` verifies that aged member files are reclaimed
+  while directory shells remain; `keepsFileCreatedAfterEmptyDirectoryListing` pins the concurrent-
+  create interleaving. Both pass without exclusions. No `ci-unstable` tag or CI exclusion remains.
 
 ## DuckDB-as-Catalog Backend (Local + Quack)
 

@@ -13,10 +13,17 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
+import dev.brikk.ducklake.catalog.JdbcDucklakeCatalog
+import io.trino.filesystem.FileIterator
+import io.trino.filesystem.Location
+import io.trino.filesystem.TrinoFileSystem
+import io.trino.filesystem.local.LocalFileSystemFactory
+import io.trino.spi.security.ConnectorIdentity
 import io.trino.testing.AbstractTestQueryFramework
 import io.trino.testing.DistributedQueryRunner
 import io.trino.testing.QueryRunner
 import io.trino.testing.TestingSession.testSessionBuilder
+import io.trino.testing.connector.TestingConnectorSession.SESSION
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.AfterAll
@@ -302,15 +309,8 @@ class TestDucklakeRemoveOrphanFiles : AbstractTestQueryFramework() {
         }.hasMessageContaining("table_name requires schema_name")
     }
 
-    // Previously @Tag("ci-unstable"): an emptied orphan .lance dataset DIRECTORY was reported as
-    // surviving remove_orphan_files on the CI runner (pre repo-restructure). Root-caused as
-    // not reproducible: on any POSIX local FS Trino's HdfsFileSystem.deleteDirectory is a recursive
-    // rmdir and listFiles is recursive/files-only, so once the member files are deleted the empty
-    // data/ + _versions/ subdirs make the emptiness guard true and the whole tree is removed.
-    // Verified green single-class on tmpfs AND ext4, and in the full concurrent suite. Re-enabled
-    // 2026-07-19; the assertion below dumps any surviving tree so a future CI failure is actionable.
     @Test
-    fun removesEmptiedOrphanDatasetDirectory() {
+    fun reclaimsOrphanDatasetFilesButKeepsDirectories() {
         val table = "test_schema.orphan_dataset_dir"
         try {
             computeActual("CREATE TABLE $table AS SELECT * FROM (VALUES (1, 'a')) AS t(id, name)")
@@ -332,11 +332,71 @@ class TestDucklakeRemoveOrphanFiles : AbstractTestQueryFramework() {
             computeActual("CALL system.remove_orphan_files(schema_name => 'test_schema', "
                     + "table_name => 'orphan_dataset_dir', retention_threshold => '7d', dry_run => false)")
 
-            assertThat(Files.exists(dataset))
-                    .`as`("emptied orphan dataset directory removed; surviving tree: %s", survivingTree(dataset))
-                    .isFalse()
+            assertThat(part).doesNotExist()
+            assertThat(manifest).doesNotExist()
+            // Directory shells are not safe to recursively delete after an emptiness check.
+            assertThat(dataset).isDirectory()
+            assertThat(part.parent).isDirectory()
+            assertThat(manifest.parent).isDirectory()
             assertThat(computeActual("SELECT id FROM $table").materializedRows.map { it.getField(0) as Int })
                     .containsExactly(1)
+        }
+        finally {
+            tryDrop(table)
+        }
+    }
+
+    @Test
+    fun keepsFileCreatedAfterEmptyDirectoryListing() {
+        val tableName = "orphan_race"
+        val table = "test_schema.$tableName"
+        val dir = Files.createDirectories(dataDir.resolve("orphan_race_location"))
+        val tableLocation = Location.of("local://$dir")
+        val partition = Files.createDirectories(dir.resolve("partition"))
+        val partitionLocation = tableLocation.appendPath("partition")
+        val orphan = plantOrphan(partition, "ducklake-orphan-aged.parquet", ageDays = 8)
+        val newFile = partition.resolve("ducklake-new.parquet")
+        val content = byteArrayOf(9, 8, 7)
+        val delegate = LocalFileSystemFactory(Path.of("/")).create(SESSION)
+        val recursiveDeletes = mutableListOf<Location>()
+        var emptyListing: FileIterator? = null
+        val fileSystem = object : TrinoFileSystem by delegate {
+            override fun deleteFiles(locations: Collection<Location>) {
+                assertThat(locations).containsExactly(partitionLocation.appendPath(orphan.fileName.toString()))
+                delegate.deleteFiles(locations)
+                // Capture the empty listing, then interleave a writer before it is consumed.
+                emptyListing = delegate.listFiles(partitionLocation)
+                assertThat(checkNotNull(emptyListing).hasNext()).isFalse()
+                Files.write(newFile, content)
+            }
+
+            override fun listFiles(location: Location): FileIterator =
+                    if (location == partitionLocation && emptyListing != null) checkNotNull(emptyListing)
+                    else delegate.listFiles(location)
+
+            override fun deleteDirectory(location: Location) {
+                recursiveDeletes += location
+                delegate.deleteDirectory(location)
+            }
+        }
+        val fileSystemFactory = object : DucklakeFileSystemFactory {
+            override fun create(identity: ConnectorIdentity): TrinoFileSystem = fileSystem
+        }
+        val pg = checkNotNull(pgServer)
+        val config = DucklakeConfig()
+                .setCatalogDatabaseUrl(pg.getJdbcUrl(dbName))
+                .setCatalogDatabaseUser(pg.getUser())
+                .setCatalogDatabasePassword(pg.getPassword())
+        try {
+            computeActual("CREATE TABLE $table (id INTEGER) WITH (location = '$tableLocation')")
+            JdbcDucklakeCatalog(config.toCatalogConfig()).use { catalog ->
+                DucklakeRemoveOrphanFilesProcedure(catalog, fileSystemFactory, DucklakePathResolver(catalog, config), config)
+                        .removeOrphanFiles(SESSION, "test_schema", tableName, "7d", false)
+            }
+            assertThat(orphan).doesNotExist()
+            assertThat(newFile).exists()
+            assertThat(Files.readAllBytes(newFile)).containsExactly(*content)
+            assertThat(recursiveDeletes).isEmpty()
         }
         finally {
             tryDrop(table)
@@ -393,16 +453,6 @@ class TestDucklakeRemoveOrphanFiles : AbstractTestQueryFramework() {
         }
         finally {
             tryDrop(table)
-        }
-    }
-
-    /** On assertion failure, a diagnostic listing of whatever still lives under [dir] (empty if gone). */
-    private fun survivingTree(dir: Path): String {
-        if (!Files.exists(dir)) {
-            return "<removed>"
-        }
-        Files.walk(dir).use { w ->
-            return w.map { dir.parent.relativize(it).toString() }.collect(Collectors.joining(", "))
         }
     }
 

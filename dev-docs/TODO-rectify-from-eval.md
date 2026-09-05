@@ -977,8 +977,11 @@ of work. Order = suggested order.
 - [ ] **P-L5** — add_files: `JSON` logical annotation unhandled (`DucklakeAddFilesNameMapper.kt:
   393-440`) → BINARY→VARBINARY → rejected against a `json` column; upstream maps it
   (`ducklake_add_data_files.cpp:776-782`).
-- [ ] **P-L6** — remove_orphan: `removeEmptiedDatasetDirectories` (`:203-240`) can delete empty
+- [x] **P-L6** — remove_orphan: `removeEmptiedDatasetDirectories` (`:203-240`) can delete empty
   schema/table dirs of legitimately-empty tables.
+  DONE 2026-09-05 with RV-05: removed recursive directory cleanup entirely. Orphan member files
+  are still reclaimed; directory shells remain. A deterministic empty-listing/concurrent-create
+  regression failed on the old code (new file deleted) and passes with the fix.
 
 ### Nits
 

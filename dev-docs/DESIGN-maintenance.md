@@ -310,10 +310,16 @@ every in-scope table's `listReferencedFilePaths` resolved against *its own* data
 the scan root(s): catalog-wide = `pathResolver.rootDataPath()`; schema-wide =
 `resolveSchemaDataPath(schema)`; table = the table's data path. Pinned by
 `TestDucklakeRemoveOrphanFiles.catalogWideSweepReclaimsAllTablesAndFailedCreateResidue` (two live
-tables + a failed-CREATE `cw_ghost` dir reclaimed; a root `_SUCCESS` survives) and
+tables + failed-CREATE files under `cw_ghost` reclaimed; a root `_SUCCESS` survives) and
 `TestDucklakeFlushInlinedData.catalogWideFlushMovesEveryInlinedTable`. **Known limitation:** the
 wide scan walks only the root/schema tree, so orphans under a table with a custom *absolute*
 `location` outside that tree need a table-scoped call.
+
+**2026-09-05 safety update (RV-05):** orphan cleanup deletes only the selected files and leaves
+directory shells, including empty legacy dataset subdirectories. A separate emptiness check
+cannot make recursive directory deletion safe against a concurrent writer. The regression
+`keepsFileCreatedAfterEmptyDirectoryListing` captures an empty listing, creates a new file, and
+verifies the sweep preserves that file without calling `deleteDirectory`.
 
 ## 7. `optimize` / `rewrite_data_files` — non-partial v1 (the compaction WRITER) — ✅ DONE
 

@@ -502,6 +502,10 @@ catalog references at **any** snapshot (so end-snapshotted-but-not-yet-cleaned f
 files already scheduled for deletion. Touches storage only — no snapshot, no catalog
 mutation. See [dev-docs/DESIGN-maintenance.md](dev-docs/DESIGN-maintenance.md).
 
+Empty directories are intentionally left in place. The procedure deletes only the selected
+orphan files, never a directory tree: a writer can add a file after an emptiness check, making
+recursive directory cleanup unsafe.
+
 ### `expire_snapshots` + `cleanup_old_files`
 
 ```sql

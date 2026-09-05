@@ -506,6 +506,16 @@ Empty directories are intentionally left in place. The procedure deletes only th
 orphan files, never a directory tree: a writer can add a file after an emptiness check, making
 recursive directory cleanup unsafe.
 
+Path comparison recognizes `file:/`, `file:///`, and `local:///` aliases when native local storage
+is enabled, and `s3`/`s3a`/`s3n` aliases when native S3 is enabled. Object-key slashes, dot segments,
+percent text, and case are not normalized. Stored paths and deletion targets are not rewritten.
+Canonical paths in a single other filesystem namespace remain supported. Mixed unqualified or
+Hadoop/other namespaces and noncanonical non-S3 paths cause an explicit failure **before any
+deletion**, including in dry runs. This considers all retained and scheduled references, even
+outside the selected scan root. Do not blindly replace bare paths with `file:` URIs: native
+`local.location` and Hadoop's default filesystem can make them refer to different storage.
+See [the path-comparison limits](dev-docs/CRUTCHES-AND-SHORTCUTS.md#rv-03-path-comparison-boundary).
+
 ### `expire_snapshots` + `cleanup_old_files`
 
 ```sql

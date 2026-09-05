@@ -21,6 +21,7 @@ import dev.brikk.ducklake.catalog.DucklakeReferencedFiles
 import dev.brikk.ducklake.catalog.DucklakeSchema
 import dev.brikk.ducklake.catalog.DucklakeTable
 import dev.brikk.ducklake.catalog.DucklakeTableFilePathRef
+import dev.brikk.ducklake.trino.plugin.DucklakeFilePathIdentity.Key
 import io.airlift.log.Logger
 import io.airlift.slice.Slices.utf8Slice
 import io.airlift.units.Duration
@@ -77,6 +78,8 @@ import java.time.Instant
  *  - `dry_run => true` logs what would be deleted and removes nothing.
  *  - Directory shells are retained: recursively deleting a directory after an emptiness check
  *    can delete a concurrent writer's new files, bypassing ownership and retention checks.
+ *  - Comparison uses verified native-local/S3 aliases, not raw path spelling. Unresolved mixed
+ *    namespaces and noncanonical fallback paths abort the entire sweep before deletion.
  *
  * Modeled on upstream DuckLake's `ducklake_delete_orphaned_files` (filesystem set minus known set,
  * mtime-gated), scoped to one table's data path in the Trino procedure idiom — but type-scoped to
@@ -90,6 +93,7 @@ class DucklakeRemoveOrphanFilesProcedure @Inject constructor(
         private val fileSystemFactory: DucklakeFileSystemFactory,
         private val pathResolver: DucklakePathResolver,
         config: DucklakeConfig,
+        private val pathIdentity: DucklakeFilePathIdentity,
 ) : Provider<Procedure> {
     private val minRetention: Duration = config.getRemoveOrphanFilesMinRetention()
 
@@ -149,7 +153,8 @@ class DucklakeRemoveOrphanFilesProcedure @Inject constructor(
             }
         }
 
-        val knownPaths: Set<String> = resolveKnownPaths(catalog.listAllReferencedFiles())
+        val knownPaths = resolveKnownPaths(catalog.listAllReferencedFiles())
+        pathIdentity.validateNamespaces(knownPaths + scanRoots.map(pathIdentity::key))
 
         sweep(fileSystem, scanRoots, knownPaths, cutoff, dryRun, scopeLabel)
     }
@@ -158,7 +163,7 @@ class DucklakeRemoveOrphanFilesProcedure @Inject constructor(
     private fun sweep(
             fileSystem: TrinoFileSystem,
             scanRoots: List<String>,
-            knownPaths: Set<String>,
+            knownPaths: Set<Key>,
             cutoff: Instant,
             dryRun: Boolean,
             scopeLabel: String,
@@ -190,16 +195,19 @@ class DucklakeRemoveOrphanFilesProcedure @Inject constructor(
     private fun findOrphans(
             fileSystem: TrinoFileSystem,
             tableDataPath: String,
-            knownPaths: Set<String>,
+            knownPaths: Set<Key>,
             cutoff: Instant,
     ): List<Location> {
-        val knownDirPrefixes: List<String> = knownPaths.map { "$it/" }
+        val rootKey = pathIdentity.key(tableDataPath)
+        val knownDirPrefixes = knownPaths.map { it.directoryPrefix() }
         val orphans = mutableListOf<Location>()
         try {
             val files = fileSystem.listFiles(Location.of(tableDataPath))
             while (files.hasNext()) {
                 val entry = files.next()
-                if (isDeletableOrphan(entry, knownPaths, knownDirPrefixes, cutoff)) {
+                val key = pathIdentity.key(entry.location().toString())
+                pathIdentity.validateListing(rootKey, key)
+                if (isDeletableOrphan(entry, key, knownPaths, knownDirPrefixes, cutoff)) {
                     orphans.add(entry.location())
                 }
             }
@@ -223,13 +231,14 @@ class DucklakeRemoveOrphanFilesProcedure @Inject constructor(
      */
     private fun isDeletableOrphan(
             entry: io.trino.filesystem.FileEntry,
-            knownPaths: Set<String>,
-            knownDirPrefixes: List<String>,
+            key: Key,
+            knownPaths: Set<Key>,
+            knownDirPrefixes: List<Key>,
             cutoff: Instant,
     ): Boolean {
         val path = entry.location().toString()
-        return path !in knownPaths &&
-                knownDirPrefixes.none { prefix -> path.startsWith(prefix) } &&
+        return key !in knownPaths &&
+                knownDirPrefixes.none(key::isUnder) &&
                 isDucklakeManagedResidue(path) &&
                 entry.lastModified().isBefore(cutoff)
     }
@@ -264,19 +273,19 @@ class DucklakeRemoveOrphanFilesProcedure @Inject constructor(
     }
 
     /** Resolve all three spec path scopes without losing dropped-but-retained ownership. */
-    private fun resolveKnownPaths(refs: DucklakeReferencedFiles): Set<String> {
+    private fun resolveKnownPaths(refs: DucklakeReferencedFiles): Set<Key> {
         val root = pathResolver.rootDataPath()
         val tableFiles = refs.tableFiles.map { resolveKnownTableFile(it, root) }
         val scheduledFiles = refs.scheduledFiles.map { ref ->
-            Location.of(pathResolver.resolveFilePath(ref.path, ref.pathIsRelative, root)).toString()
+            pathIdentity.key(pathResolver.resolveFilePath(ref.path, ref.pathIsRelative, root))
         }
         return (tableFiles + scheduledFiles).toSet()
     }
 
-    private fun resolveKnownTableFile(ref: DucklakeTableFilePathRef, root: String): String {
+    private fun resolveKnownTableFile(ref: DucklakeTableFilePathRef, root: String): Key {
         val schemaPath = pathResolver.resolveScopedPath(ref.schemaPath, ref.schemaPathIsRelative, root)
         val tablePath = pathResolver.resolveScopedPath(ref.tablePath, ref.tablePathIsRelative, schemaPath)
-        return Location.of(pathResolver.resolveFilePath(ref.path, ref.pathIsRelative, tablePath)).toString()
+        return pathIdentity.key(pathResolver.resolveFilePath(ref.path, ref.pathIsRelative, tablePath))
     }
 
     private fun parseRetention(value: String?): Duration {

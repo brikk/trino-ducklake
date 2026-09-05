@@ -134,6 +134,7 @@ class TestDucklakeS3ParquetEndToEnd : AbstractTestQueryFramework() {
                 "ducklake.catalog.database-user" to pg.getUser(),
                 "ducklake.catalog.database-password" to pg.getPassword(),
                 "ducklake.data-path" to "s3://$BUCKET/data/",
+                "ducklake.remove-orphan-files.min-retention" to "0s",
                 "fs.native-s3.enabled" to "true",
                 "s3.endpoint" to endpoint,
                 "s3.region" to "us-east-1",
@@ -170,6 +171,34 @@ class TestDucklakeS3ParquetEndToEnd : AbstractTestQueryFramework() {
         assertThat(names)
                 .`as`("every $table data file is a physical object under s3://$BUCKET/")
                 .allSatisfy { name -> assertThat(objects).anySatisfy { assertThat(it).endsWith(name) } }
+    }
+
+    @Test
+    fun orphanSweepProtectsNativeS3SchemeAliases() {
+        for (scheme in listOf("s3a", "s3n")) {
+            val bareTable = "orphan_alias_$scheme"
+            val table = "test_schema.$bareTable"
+            val keyPrefix = "data/test_schema/$bareTable"
+            val orphanName = "ducklake-orphan-$scheme.parquet"
+            try {
+                computeActual("CREATE TABLE $table (id INTEGER) WITH (location = '$scheme://$BUCKET/$keyPrefix/')")
+                computeActual("INSERT INTO $table VALUES 42")
+                val fileName = (computeScalar("SELECT path FROM \"$bareTable\$files\"") as String).substringAfterLast('/')
+                val copy = checkNotNull(minio).execInContainer("mc", "cp",
+                        "local/$BUCKET/$keyPrefix/$fileName", "local/$BUCKET/$keyPrefix/$orphanName")
+                check(copy.exitCode == 0) { "orphan copy failed: ${copy.stdout}\n${copy.stderr}" }
+                assertThat(s3Objects()).anySatisfy { assertThat(it).endsWith(orphanName) }
+
+                // Catalog root lists s3:// paths; the retained table owns s3a:// or s3n:// paths.
+                computeActual("CALL system.remove_orphan_files(retention_threshold => '0s')")
+
+                assertThat(computeScalar("SELECT id FROM $table")).isEqualTo(42)
+                assertThat(s3Objects()).noneSatisfy { assertThat(it).endsWith(orphanName) }
+            }
+            finally {
+                tryDrop(table)
+            }
+        }
     }
 
     @Test

@@ -945,11 +945,17 @@ of work. Order = suggested order.
   `ducklake-metadata.db` while deleting the Parquet control. Legacy `.vortex`/`.lance` residue
   remains reclaimable.
 
-- [ ] **P-M4 — Known-set vs listing compared as raw strings; `add_files` stores the user path
+- [x] **P-M4 — Known-set vs listing compared as raw strings; `add_files` stores the user path
   verbatim.** `isDeletableOrphan :287-288` no scheme/`//`/`.` normalisation; `add_files` registers
   `filePath` as given with `pathIsRelative=false` (`DucklakeAddFilesProcedure.kt:300-302`); upstream
   uses `GetRelativePath`. `file:///w/main/t/ducklake-abc.parquet` vs listed `/w/...` → live file
   deleted after 7d.
+  DONE 2026-09-05 with RV-03's user-approved fail-closed scope: native-local and native-S3 aliases
+  use comparison keys without rewriting persisted paths or object keys. Unresolved namespace
+  mixtures (including bare/file-URI Hadoop paths) and noncanonical fallback paths abort before
+  any deletion. Canonical single-namespace Hadoop cleanup still works. See
+  `CRUTCHES-AND-SHORTCUTS.md` for the explicit support boundary; this is not arbitrary symlink,
+  mount, endpoint, or shared-ownership resolution. Real native-local and MinIO regressions pass.
 
 - [x] **P-M5 — Inlined rows never physically removed → unbounded metadata growth.** Flush
   DONE with TR-4: represented inlined data and inlined file-delete rows are physically drained;

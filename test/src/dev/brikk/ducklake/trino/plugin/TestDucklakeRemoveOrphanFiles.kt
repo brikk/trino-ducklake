@@ -13,17 +13,10 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
-import dev.brikk.ducklake.catalog.JdbcDucklakeCatalog
-import io.trino.filesystem.FileIterator
-import io.trino.filesystem.Location
-import io.trino.filesystem.TrinoFileSystem
-import io.trino.filesystem.local.LocalFileSystemFactory
-import io.trino.spi.security.ConnectorIdentity
 import io.trino.testing.AbstractTestQueryFramework
 import io.trino.testing.DistributedQueryRunner
 import io.trino.testing.QueryRunner
 import io.trino.testing.TestingSession.testSessionBuilder
-import io.trino.testing.connector.TestingConnectorSession.SESSION
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.AfterAll
@@ -347,59 +340,45 @@ class TestDucklakeRemoveOrphanFiles : AbstractTestQueryFramework() {
     }
 
     @Test
-    fun keepsFileCreatedAfterEmptyDirectoryListing() {
-        val tableName = "orphan_race"
-        val table = "test_schema.$tableName"
-        val dir = Files.createDirectories(dataDir.resolve("orphan_race_location"))
-        val tableLocation = Location.of("local://$dir")
-        val partition = Files.createDirectories(dir.resolve("partition"))
-        val partitionLocation = tableLocation.appendPath("partition")
-        val orphan = plantOrphan(partition, "ducklake-orphan-aged.parquet", ageDays = 8)
-        val newFile = partition.resolve("ducklake-new.parquet")
-        val content = byteArrayOf(9, 8, 7)
-        val delegate = LocalFileSystemFactory(Path.of("/")).create(SESSION)
-        val recursiveDeletes = mutableListOf<Location>()
-        var emptyListing: FileIterator? = null
-        val fileSystem = object : TrinoFileSystem by delegate {
-            override fun deleteFiles(locations: Collection<Location>) {
-                assertThat(locations).containsExactly(partitionLocation.appendPath(orphan.fileName.toString()))
-                delegate.deleteFiles(locations)
-                // Capture the empty listing, then interleave a writer before it is consumed.
-                emptyListing = delegate.listFiles(partitionLocation)
-                assertThat(checkNotNull(emptyListing).hasNext()).isFalse()
-                Files.write(newFile, content)
-            }
-
-            override fun listFiles(location: Location): FileIterator =
-                    if (location == partitionLocation && emptyListing != null) checkNotNull(emptyListing)
-                    else delegate.listFiles(location)
-
-            override fun deleteDirectory(location: Location) {
-                recursiveDeletes += location
-                delegate.deleteDirectory(location)
-            }
-        }
-        val fileSystemFactory = object : DucklakeFileSystemFactory {
-            override fun create(identity: ConnectorIdentity): TrinoFileSystem = fileSystem
-        }
-        val pg = checkNotNull(pgServer)
-        val config = DucklakeConfig()
-                .setCatalogDatabaseUrl(pg.getJdbcUrl(dbName))
-                .setCatalogDatabaseUser(pg.getUser())
-                .setCatalogDatabasePassword(pg.getPassword())
+    fun mixedBareAndImportedFileUriPathsFailBeforeDeletingAnything() {
+        val table = "test_schema.orphan_mixed_paths"
         try {
-            computeActual("CREATE TABLE $table (id INTEGER) WITH (location = '$tableLocation')")
-            JdbcDucklakeCatalog(config.toCatalogConfig()).use { catalog ->
-                DucklakeRemoveOrphanFilesProcedure(catalog, fileSystemFactory, DucklakePathResolver(catalog, config), config)
-                        .removeOrphanFiles(SESSION, "test_schema", tableName, "7d", false)
+            computeActual("CREATE TABLE $table (id INTEGER)")
+            val dir = Files.createDirectories(tableDataDir("orphan_mixed_paths"))
+            val live = dir.resolve("ducklake-imported.parquet")
+            DriverManager.getConnection("jdbc:duckdb:").use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.execute("COPY (SELECT 42 AS id) TO '$live' (FORMAT PARQUET)")
+                }
             }
-            assertThat(orphan).doesNotExist()
-            assertThat(newFile).exists()
-            assertThat(Files.readAllBytes(newFile)).containsExactly(*content)
-            assertThat(recursiveDeletes).isEmpty()
+            Files.setLastModifiedTime(live, FileTime.from(Instant.now().minus(8, ChronoUnit.DAYS)))
+            val importedPath = live.toUri().toString()
+            computeActual("CALL system.add_files(schema_name => 'test_schema', table_name => 'orphan_mixed_paths', " +
+                    "files => ARRAY['$importedPath'])")
+            val orphan = plantOrphan(dir, "ducklake-orphan-aged.parquet", ageDays = 8)
+            for (dryRun in listOf(true, false)) {
+                assertThatThrownBy {
+                    computeActual("CALL system.remove_orphan_files(schema_name => 'test_schema', " +
+                            "table_name => 'orphan_mixed_paths', dry_run => $dryRun)")
+                }.hasMessageContaining("mixed Hadoop/unqualified").hasMessageContaining("no files were deleted")
+                assertThat(live).exists()
+                assertThat(orphan).exists()
+            }
+            assertThat(computeScalar("SELECT id FROM $table")).isEqualTo(42)
+            assertThat(computeScalar("SELECT path FROM \"orphan_mixed_paths\$files\"")).isEqualTo(importedPath)
         }
         finally {
             tryDrop(table)
+            // Retained references must not leave the shared fixture permanently mixed-namespace.
+            val pg = checkNotNull(pgServer)
+            DriverManager.getConnection(pg.getJdbcUrl(dbName), pg.getUser(), pg.getPassword()).use { connection ->
+                connection.prepareStatement("UPDATE ducklake_data_file SET path = ?, path_is_relative = false WHERE path = ?").use { statement ->
+                    val path = tableDataDir("orphan_mixed_paths").resolve("ducklake-imported.parquet")
+                    statement.setString(1, path.toString())
+                    statement.setString(2, path.toUri().toString())
+                    statement.executeUpdate()
+                }
+            }
         }
     }
 

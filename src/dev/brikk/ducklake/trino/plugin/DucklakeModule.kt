@@ -63,6 +63,7 @@ class DucklakeModule(catalogConfig: Map<String, String>) : Module {
 
         // Path resolver
         binder.bind(DucklakePathResolver::class.java).`in`(Scopes.SINGLETON)
+        binder.bind(DucklakeFilePathIdentity::class.java).`in`(Scopes.SINGLETON)
 
         // Always-on split affinity. FileSystemModule's setDefault() binds Noop; when
         // fs.cache.enabled=true the Alluxio module's setBinding() supersedes both. We

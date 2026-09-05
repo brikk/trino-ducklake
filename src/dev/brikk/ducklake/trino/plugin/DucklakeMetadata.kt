@@ -55,6 +55,7 @@ import io.trino.spi.connector.ConnectorMergeTableHandle
 import io.trino.spi.connector.ConnectorMetadata
 import io.trino.spi.connector.ConnectorOutputMetadata
 import io.trino.spi.connector.ConnectorOutputTableHandle
+import io.trino.spi.connector.ConnectorPartitioningHandle
 import io.trino.spi.connector.ConnectorSession
 import io.trino.spi.connector.ConnectorTableHandle
 import io.trino.spi.connector.ConnectorTableLayout
@@ -1285,6 +1286,29 @@ class DucklakeMetadata(
 
     override fun getMergeRowIdColumnHandle(session: ConnectorSession, tableHandle: ConnectorTableHandle): ColumnHandle =
             DucklakeColumnHandle.rowIdColumnHandle()
+
+    /**
+     * Route every source data file's row changes to one writer. Without this, Trino distributes
+     * merge rows across writer sinks and several sinks can each emit a delete file for the same
+     * data_file_id; upstream's file-list LEFT JOIN then scans surviving rows once per delete file.
+     */
+    override fun getUpdateLayout(
+            session: ConnectorSession,
+            tableHandle: ConnectorTableHandle): Optional<ConnectorPartitioningHandle> {
+        val table = tableHandle as DucklakeTableHandle
+        val ranges = catalog.getDataFiles(table.tableId, table.snapshotId)
+                .associateBy { it.dataFileId } // catalog join can repeat a file for legacy duplicate deletes
+                .values
+                .filter { it.recordCount > 0 }
+                .sortedBy { it.rowIdStart }
+                .map { file ->
+                    DucklakeUpdatePartitioningHandle.RowIdRange(
+                            file.dataFileId,
+                            file.rowIdStart,
+                            file.recordCount)
+                }
+        return Optional.of(DucklakeUpdatePartitioningHandle(ranges))
+    }
 
     override fun beginMerge(
             session: ConnectorSession,

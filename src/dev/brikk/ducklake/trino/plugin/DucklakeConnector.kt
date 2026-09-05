@@ -20,6 +20,7 @@ import io.trino.plugin.base.classloader.ClassLoaderSafeConnectorMetadata
 import io.trino.plugin.base.classloader.ClassLoaderSafeConnectorTableFunction
 import io.trino.spi.connector.Connector
 import io.trino.spi.connector.ConnectorMetadata
+import io.trino.spi.connector.ConnectorNodePartitioningProvider
 import io.trino.spi.connector.ConnectorPageSinkProvider
 import io.trino.spi.connector.ConnectorPageSourceProviderFactory
 import io.trino.spi.connector.ConnectorSession
@@ -44,6 +45,7 @@ class DucklakeConnector @Inject constructor(
     private val splitManager: ConnectorSplitManager,
     private val pageSourceProviderFactory: ConnectorPageSourceProviderFactory,
     private val pageSinkProvider: ConnectorPageSinkProvider,
+    private val nodePartitioningProvider: DucklakeNodePartitioningProvider,
     ducklakeSessionProperties: DucklakeSessionProperties,
     ducklakeTableProperties: DucklakeTableProperties,
     procedures: Set<Procedure>,
@@ -84,6 +86,8 @@ class DucklakeConnector @Inject constructor(
     override fun getPageSinkProvider(): ConnectorPageSinkProvider {
         return pageSinkProvider
     }
+
+    override fun getNodePartitioningProvider(): ConnectorNodePartitioningProvider = nodePartitioningProvider
 
     override fun getSessionProperties(): List<PropertyMetadata<*>> {
         return sessionProperties

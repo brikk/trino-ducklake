@@ -502,7 +502,7 @@ of work. Order = suggested order.
   DONE 2026-09-04 `0841dc7`: cumulative positions use `TreeSet`; DuckDB oracle deletes file-local
   position 4 then position 1 and reads the survivors successfully.
 
-- [ ] **W-C2 — One data file can receive multiple delete files in one commit → DuckDB reads
+- [x] **W-C2 — One data file can receive multiple delete files in one commit → DuckDB reads
   surviving rows twice.** Each `DucklakeMergeSink` has its own `deletesByDataFile` (`:85`) and emits
   one fragment per data file *it* saw (`:235-250`); `finishMerge` (`DucklakeMetadata.kt:1389-1424`)
   forwards without grouping by `dataFileId`; catalog inserts one `ducklake_delete_file` row per
@@ -519,6 +519,13 @@ of work. Order = suggested order.
   `TestDucklakeMerge.testMergeDeleteOnly`, so this is a normal distributed MERGE path, not merely
   theoretical. Guard-only was removed because it regressed supported MERGE. Real fix needs
   `getUpdateLayout` + a `ConnectorNodePartitioningProvider` keyed by source `data_file_id`.
+  DONE 2026-09-05: `getUpdateLayout` returns immutable row-id ranges; the node partitioning
+  provider maps each global merge row ID to its owning data-file id and hashes that id, routing all
+  changes for one file to one writer. NOT MATCHED inserts (null source id) share bucket 0. UPDATE
+  lineage is order-independent: Trino 483 copies source row ID onto UPDATE_INSERT, so the sink reads
+  it directly instead of assuming its UPDATE_DELETE is adjacent after the exchange. Unit tests pin
+  range/bucket behavior; the distributed DuckDB oracle verifies exactly one active delete file per
+  data file and 994/994 unique survivors after six spread deletes from one 1,000-row file.
 
 ### High
 

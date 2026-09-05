@@ -109,10 +109,11 @@ open class DucklakeMergeSink(
     /**
      * Splits insert rows by kind on the RAW merge page (data channels…, TINYINT
      * operation, INT case number, rowId last): Trino's merge processor emits an
-     * UPDATE as an update-delete row (op 5, carries the old rowId) immediately
-     * followed by its update-insert row (op 4, new values) — pair them to
-     * attach lineage. Plain not-matched inserts (op 1) carry no old rowid and
-     * go to the ordinary insert sink.
+     * UPDATE as delete + insert rows. Trino 483 copies the source row ID onto BOTH rows
+     * (`DeleteAndInsertMergeProcessor.addInsertRow`), precisely so connector sinks can preserve
+     * lineage after an update-layout exchange reorders/splits pages. Read it from each
+     * UPDATE_INSERT directly; never rely on adjacency. Plain not-matched inserts carry a null row
+     * ID and go to the ordinary insert sink.
      */
     private fun routeInsertsWithLineage(page: Page, lineageSink: ConnectorPageSink) {
         val opBlock: Block = page.getBlock(dataColumnCount)
@@ -120,15 +121,12 @@ open class DucklakeMergeSink(
         val plainPositions = mutableListOf<Int>()
         val updatePositions = mutableListOf<Int>()
         val lineage = mutableListOf<Long>()
-        var pendingUpdateRowId: Long? = null
         for (position in 0 until page.positionCount) {
             when (TINYINT.getByte(opBlock, position).toInt()) {
                 ConnectorMergeSink.INSERT_OPERATION_NUMBER -> plainPositions.add(position)
-                ConnectorMergeSink.UPDATE_DELETE_OPERATION_NUMBER ->
-                    pendingUpdateRowId = BIGINT.getLong(rowIdBlock, position)
                 ConnectorMergeSink.UPDATE_INSERT_OPERATION_NUMBER -> {
-                    val oldRowId = pendingUpdateRowId
-                            ?: throw IllegalStateException("update-insert row without a preceding update-delete row")
+                    check(!rowIdBlock.isNull(position)) { "update-insert row has no source row ID" }
+                    val oldRowId = BIGINT.getLong(rowIdBlock, position)
                     updatePositions.add(position)
                     // The MERGE channel is POSITIONAL (rowIdStart + file position). If the
                     // source file itself carries embedded lineage (a prior lineage UPDATE or
@@ -136,9 +134,8 @@ open class DucklakeMergeSink(
                     // position — chaining updates must preserve the ORIGINAL id forever,
                     // matching DuckDB.
                     lineage.add(resolveTrueRowId(oldRowId))
-                    pendingUpdateRowId = null
                 }
-                else -> Unit // plain DELETE rows: tombstones only, handled via processDeletes
+                else -> Unit // DELETE / UPDATE_DELETE rows: tombstones only, handled via processDeletes
             }
         }
         if (plainPositions.isNotEmpty()) {

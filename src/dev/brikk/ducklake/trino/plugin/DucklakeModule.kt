@@ -53,6 +53,7 @@ class DucklakeModule(catalogConfig: Map<String, String>) : Module {
         binder.bind(DucklakeMetadataFactory::class.java).`in`(Scopes.SINGLETON)
         binder.bind(DucklakeSnapshotResolver::class.java).`in`(Scopes.SINGLETON)
         binder.bind(DucklakeSessionProperties::class.java).`in`(Scopes.SINGLETON)
+        binder.bind(DucklakeNodePartitioningProvider::class.java).`in`(Scopes.SINGLETON)
 
         // Catalog
         binder.bind(DucklakeCatalog::class.java).toProvider(DucklakeCatalogProvider::class.java).`in`(Scopes.SINGLETON)

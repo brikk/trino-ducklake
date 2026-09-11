@@ -1,4 +1,5 @@
 import java.security.MessageDigest
+import org.gradle.jvm.toolchain.JavaLanguageVersion
 
 plugins {
     id("buildlogic.kotlin.library")
@@ -135,6 +136,14 @@ tasks.withType<JavaCompile> {
 }
 
 tasks.test {
+    // Compile against the repository's JDK 25 toolchain, but allow CI to execute the resulting
+    // Java 25 bytecode on a newer VM for compatibility/stability checks.
+    providers.gradleProperty("testJavaVersion").orNull?.let { version ->
+        javaLauncher.set(javaToolchains.launcherFor {
+            languageVersion.set(JavaLanguageVersion.of(version))
+        })
+    }
+
     useJUnitPlatform {
         // Optional JUnit tag exclusion, e.g. `-PexcludeTags=some-tag,another-tag` (comma-separated).
         // A generic escape hatch for skipping heavy/environment-specific integration tests on the

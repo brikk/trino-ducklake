@@ -43,14 +43,14 @@ jobs:
           #   - ducklake-web (duckdb/ducklake-web).
           submodules: recursive
 
-      - name: Set up JDK 25 (Temurin)
+      - name: Set up JDK 26 (Temurin)
         uses: actions/setup-java@v5
         with:
-          # Java 25 is mandatory: mise.toml pins java = "25" and the build sets
-          # jvmToolchain(25) in build-logic. The Gradle daemon (which also runs detekt)
-          # must be a JDK 25 — Java 21 fails configuration. Temurin 25 is GA.
+          # Compile targeting the repository's JDK 25 toolchain, but run Gradle/detekt and the
+          # full JUnit suite on JDK 26 as a CI-05 native-crash experiment. The test command below
+          # explicitly selects 26; without that property Gradle would use its JDK 25 toolchain.
           distribution: temurin
-          java-version: '25'
+          java-version: '26'
 
       - name: Set up Gradle (with caching)
         # gradle/actions/setup-gradle handles Gradle user-home caching (dependencies,
@@ -79,7 +79,7 @@ jobs:
         # (INSTALL ducklake/postgres). On a fully air-gapped runner these self-skip via
         # JUnit assumeTrue; ubuntu-latest has outbound network, so they execute. No secrets
         # or external services are required.
-        run: ./gradlew test --stacktrace
+        run: ./gradlew test -PtestJavaVersion=26 --stacktrace
 
       - name: Upload test & detekt reports
         # Only on failure — the reports are the useful artifact when something breaks.

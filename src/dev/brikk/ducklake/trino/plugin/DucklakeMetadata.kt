@@ -474,21 +474,18 @@ class DucklakeMetadata(
                 continue
             }
 
-            val colBuilder: ColumnStatistics.Builder = ColumnStatistics.builder()
+            // Null counts also mean coverage cannot be established (catalog 0.9.0). Omit the
+            // entire column entry, just as for known incomplete coverage after schema evolution.
+            val totalValueCount = colStats.totalValueCount ?: continue
+            val totalNullCount = colStats.totalNullCount ?: continue
+            val totalCount = totalValueCount + totalNullCount
+            if (activeDataFileRowCount > 0 && totalCount != activeDataFileRowCount) {
+                continue
+            }
 
-            // Counts are null when any active file lacks them (upstream MergeStats: unknown, not 0).
-            val totalValueCount: Long? = colStats.totalValueCount
-            val totalNullCount: Long? = colStats.totalNullCount
-            if (totalValueCount != null && totalNullCount != null) {
-                val totalCount = totalValueCount + totalNullCount
-                if (activeDataFileRowCount > 0 && totalCount != activeDataFileRowCount) {
-                    // If file-level stats for this column do not cover all active data-file rows
-                    // (e.g., column added via schema evolution), expose unknown instead of wrong.
-                    continue
-                }
-                if (totalCount > 0) {
-                    colBuilder.setNullsFraction(Estimate.of(totalNullCount.toDouble() / totalCount.toDouble()))
-                }
+            val colBuilder: ColumnStatistics.Builder = ColumnStatistics.builder()
+            if (totalCount > 0) {
+                colBuilder.setNullsFraction(Estimate.of(totalNullCount.toDouble() / totalCount.toDouble()))
             }
 
             if (colStats.totalSizeBytes > 0) {

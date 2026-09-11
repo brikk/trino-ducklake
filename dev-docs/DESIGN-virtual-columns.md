@@ -51,7 +51,7 @@ deferred.
 | `$path` | `VARCHAR` | `DucklakeDataFile.path()` via `DucklakePathResolver` | constant per split |
 | `$snapshot_id` | `BIGINT` | `DucklakeDataFile.beginSnapshot()` | constant per split |
 | `$file_row_number` | `BIGINT` | Parquet's positional metadata column | per row, 0-based |
-| `$row_id` | `BIGINT` | `DucklakeSplit.rowIdStart() + $file_row_number` | per row, globally unique within the table |
+| `$row_id` | `BIGINT` | embedded Parquet row ID first; otherwise present `rowIdStart + $file_row_number` | logical identity, preserved across rewrites |
 
 **Also shipped:** `$file_size_bytes` (`BIGINT`, the data file's size from
 `DucklakeSplit.fileSizeBytes`, constant per split, NULL on inlined data).
@@ -72,17 +72,15 @@ direction.
 
 ### 3.2 `$row_id` is a scalar `BIGINT`, not Iceberg-style ROW
 
-DuckLake's internal row-id contract is already
-`rowIdStart + file_row_number` — that's how the parquet-delete merge
-path matches rows today. So:
+**CI-02 correction, 2026-09-11:** logical row identity comes from reserved
+Parquet field ID `2147483540` when present, even if the catalog also supplies
+a start. Otherwise it is `rowIdStart + physical_file_position`. Catalog
+`0.10.0` preserves valid NULL starts on rewritten files; absence is never zero.
+If neither identity source exists, requesting `$row_id` fails explicitly.
+An ordinary data/physical-position read does not require logical identity.
 
-- Encoding matches upstream's semantic contract
-- Cheap to compute (one add)
-- Globally unique within the table
-- Plain `BIGINT` is friendlier in `WHERE` clauses than a ROW
-
-Iceberg uses `ROW(file_path, pos)` because their row ids aren't
-globally meaningful across files. Ours are.
+The queryable value remains a scalar `BIGINT`. Physical mutation identity is
+separate, just as in upstream DuckLake's delete/update operators — see § 3.6.
 
 ### 3.3 SPI mechanism: hidden columns
 
@@ -141,10 +139,10 @@ causes real bugs later, promote virtuals to a separate
 refactor we can take then rather than pay for now.
 
 The queryable `$row_id` (id `-104`, via `getColumnHandles`) and the MERGE
-channel's `$row_id` (id `-100`, via `getMergeRowIdColumnHandle`) share the
-name and the `rowIdStart + position` encoding but flow through different SPI
-hooks; distinct ids keep them separate handles, honoring § 3.6's
-"don't conflate."
+channel's `$row_id` (id `-100`, via `getMergeRowIdColumnHandle`) share only the
+name. The queryable value is logical `BIGINT`; the mutation value is
+`ROW(data_file_id BIGINT, position BIGINT)`. Distinct ids and types preserve
+the distinction across planner and worker serialization.
 
 ### 3.5 Inlined-data behavior: NULL for file-bound virtuals
 
@@ -162,10 +160,16 @@ So on inlined splits: `$path` = NULL, `$file_row_number` = NULL,
 
 ### 3.6 Don't conflate with MERGE row identity
 
-The MERGE rewrite already builds an internal `RowIdHandle` at planner
-time for matching. Exposing `$row_id` as a queryable hidden column does
-NOT replace that — they're separate code paths and we should keep them
-that way in v1. Unifying them could happen later as a cleanup.
+**CI-02, user-approved implementation:** the internal MERGE channel carries
+`DucklakeMergeRowId.TYPE`, a file-ID/physical-position locator. `DucklakeSplit`
+supplies the catalog data-file ID. Routing uses that ID to keep a file's
+mutations on one writer; the sink validates file bounds and writes standard
+physical-position deletes. It does not infer ownership from logical ID ranges.
+
+For UPDATE reinserts, the sink resolves the logical ID separately from the
+source file's embedded lineage or present start. NULL starts, ID gaps, and
+overlapping catalog starts therefore do not compromise physical routing.
+This follows upstream `DuckLakeDelete` and `DuckLakeUpdate` at `c23aca43`.
 
 ## 4. Plumbing sketch
 
@@ -188,13 +192,15 @@ that way in v1. Unifying them could happen later as a cleanup.
 - Inspect the requested column list. Partition into
   `(parquetSourceColumns, virtualColumns)`
 - Build the inner parquet page source with only `parquetSourceColumns`
-- If `$file_row_number` or `$row_id` is requested, ALSO request
-  Parquet's positional-metadata column from the inner reader
-- Wrap with a `VirtualColumnInjectingPageSource` that, per page:
+- Current file-position injection counts rows from zero over a whole-file
+  split, before deletion filtering; predicate/row-group pruning is disabled
+  when positions are required. A future sub-file split/pruning implementation
+  must supply authoritative physical positions instead.
+- The positional injector and outer constant wrapper produce:
   - For `$path`, `$snapshot_id` → `RunLengthEncodedBlock(constant, positionCount)`
-  - For `$file_row_number` → forward the Parquet positional block
-  - For `$row_id` → add `split.rowIdStart()` to each position in the
-    positional block
+  - For `$file_row_number` → physical position
+  - For `$row_id` → embedded lineage first, then a present start plus position
+  - For the MERGE channel → `ROW(split.dataFileId, physical_position)`
 
 ### 4.3 Inlined path
 
@@ -225,8 +231,9 @@ at the entry points, not deep in the page sink.
 - Insert a known set of rows; assert `$path` is the resolved file path
   and ends with `.parquet`
 - Assert `$file_row_number` runs `0..N-1` per file
-- Assert `$row_id` is unique and dense across the table; values match
-  `rowIdStart + file_row_number` per split
+- For fresh insert files without lineage, assert `$row_id` matches a present
+  `rowIdStart + file_row_number` per split. For rewritten files, assert ID gaps
+  survive and embedded lineage wins over both NULL and present catalog starts.
 - Assert `$snapshot_id` equals the snapshot that ran the INSERT
 - DELETE half the rows → query `$row_id`; assert the remaining set is
   the original minus the deleted ones (no stale rows leak through)

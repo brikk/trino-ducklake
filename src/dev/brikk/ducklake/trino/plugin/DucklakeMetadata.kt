@@ -1282,11 +1282,10 @@ class DucklakeMetadata(
                 .associateBy { it.dataFileId } // catalog join can repeat a file for legacy duplicate deletes
                 .values
                 .filter { it.recordCount > 0 }
-                .sortedBy { it.rowIdStart }
+                .sortedBy { it.dataFileId }
                 .map { file ->
-                    DucklakeUpdatePartitioningHandle.RowIdRange(
+                    DucklakeUpdatePartitioningHandle.FilePositions(
                             file.dataFileId,
-                            file.rowIdStart,
                             file.recordCount)
                 }
         return Optional.of(DucklakeUpdatePartitioningHandle(ranges))
@@ -1345,7 +1344,7 @@ class DucklakeMetadata(
                 temporalPartitionEncoding,
                 resolveWriteFormat(session, handle.tableId, handle.snapshotId))
 
-        // Build data file ranges for row ID → data file resolution. getDataFiles LEFT-JOINs
+        // Capture source file bounds, optional logical starts, and paths. getDataFiles LEFT-JOINs
         // ducklake_delete_file, returning one row per (data_file, active delete_file) pair —
         // group by data_file_id to deduplicate and collect resolved delete-file paths. The
         // merge sink uses these paths to read prior-active positions and union them with
@@ -1917,7 +1916,7 @@ class DucklakeMetadata(
                         column("file_format", VARCHAR, false),
                         column("record_count", BIGINT, false),
                         column("file_size_bytes", BIGINT, false),
-                        column("row_id_start", BIGINT, false),
+                        column("row_id_start", BIGINT, true),
                         column("partition_id", BIGINT, true),
                         column("delete_file_path", VARCHAR, true))
                 DucklakeMetadataTableType.SNAPSHOTS -> snapshotColumns()

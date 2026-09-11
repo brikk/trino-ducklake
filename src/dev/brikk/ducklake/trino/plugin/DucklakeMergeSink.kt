@@ -40,8 +40,6 @@ import org.apache.parquet.format.CompressionCodec
 import java.io.IOException
 import java.io.OutputStream
 import java.io.UncheckedIOException
-import java.util.NavigableMap
-import java.util.TreeMap
 import java.util.TreeSet
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
@@ -73,27 +71,20 @@ open class DucklakeMergeSink(
          * sink embeds as `_ducklake_internal_row_id` (field-id 2147483540).
          * MERGE-inserted (not-matched) rows keep going to [insertSink] — the
          * lineage column must be non-null for EVERY row of a carrying file
-         * (readers discard the whole array otherwise), so the two row kinds
-         * cannot share a file. Null = lineage disabled (default behavior).
+         * (readers reject malformed lineage), so the two row kinds
+         * cannot share a file. Null = lineage disabled by the legacy opt-out.
          */
         private val lineageInsertSink: ConnectorPageSink? = null)
     : ConnectorMergeSink
 {
     private val dataColumnCount: Int = mergeHandle.insertHandle.columns.size
 
-    // Accumulated delete row IDs grouped by data file ID
+    // Accumulated physical delete positions grouped by data file ID.
     private val deletesByDataFile: MutableMap<Long, MutableList<Long>> = mutableMapOf()
 
-    // Data-file ranges keyed by their (unique, non-overlapping) rowIdStart so resolveDataFileId
-    // can resolve a global rowId in O(log F) via floorEntry instead of an O(F) linear scan per
-    // deleted row. Built once here; ranges never change for the life of the sink.
-    private val rangeByRowIdStart: NavigableMap<Long, DataFileRange> = TreeMap()
-
-    init {
-        for (range in mergeHandle.dataFileRanges) {
-            rangeByRowIdStart[range.rowIdStart] = range
-        }
-    }
+    // Logical row IDs can be non-contiguous or overlap across versions. Mutation ownership is
+    // physical and resolves directly by data_file_id, without synthesizing catalog row-ID ranges.
+    private val filesById: Map<Long, DataFileRange> = mergeHandle.dataFileRanges.associateBy { it.dataFileId }
 
     override fun storeMergedRows(page: Page) {
         val mergePage: MergePage = MergePage.createDeleteAndInsertPages(page, dataColumnCount)
@@ -126,14 +117,10 @@ open class DucklakeMergeSink(
                 ConnectorMergeSink.INSERT_OPERATION_NUMBER -> plainPositions.add(position)
                 ConnectorMergeSink.UPDATE_INSERT_OPERATION_NUMBER -> {
                     check(!rowIdBlock.isNull(position)) { "update-insert row has no source row ID" }
-                    val oldRowId = BIGINT.getLong(rowIdBlock, position)
+                    val locator = DucklakeMergeRowId.read(rowIdBlock, position)
                     updatePositions.add(position)
-                    // The MERGE channel is POSITIONAL (rowIdStart + file position). If the
-                    // source file itself carries embedded lineage (a prior lineage UPDATE or
-                    // compaction wrote it), the row's TRUE id is the lineage value at that
-                    // position — chaining updates must preserve the ORIGINAL id forever,
-                    // matching DuckDB.
-                    lineage.add(resolveTrueRowId(oldRowId))
+                    // Resolve the logical identity separately so chained updates preserve it.
+                    lineage.add(resolveTrueRowId(locator))
                 }
                 else -> Unit // DELETE / UPDATE_DELETE rows: tombstones only, handled via processDeletes
             }
@@ -150,35 +137,24 @@ open class DucklakeMergeSink(
     private val lineageBySourceFile = mutableMapOf<Long, LongArray?>()
 
     /**
-     * Translates a POSITIONAL merge-channel rowid into the row's TRUE DuckLake id:
+     * Resolves the physical mutation locator to the row's logical DuckLake id:
      * when the source data file carries the embedded lineage column (written by a
      * prior lineage UPDATE or compaction), the value at that file position wins —
      * so chained updates keep the ORIGINAL id forever, matching DuckDB.
      */
-    private fun resolveTrueRowId(positionalRowId: Long): Long {
-        val entry = rangeByRowIdStart.floorEntry(positionalRowId) ?: return positionalRowId
-        val range = entry.value
-        if (!range.containsRowId(positionalRowId)) {
-            return positionalRowId
-        }
-        val lineage: LongArray? = lineageBySourceFile.getOrPut(range.dataFileId) {
-            if (!range.dataFilePath.endsWith(".parquet", ignoreCase = true)) {
-                null // non-parquet sources never carry the embedded column
-            } else {
-                try {
-                    DucklakeDeleteFileReader.readInternalRowIds(
-                            fileSystem, range.dataFilePath, 0L, parquetReaderOptions, fileFormatDataSourceStats)
-                }
-                catch (e: IOException) {
-                    throw UncheckedIOException("Failed to read row lineage from ${range.dataFilePath}", e)
-                }
+    private fun resolveTrueRowId(locator: DucklakeMergeRowId.Locator): Long {
+        val file = sourceFile(locator)
+        // Cache absence too: nullable getOrPut would reopen a file with no lineage for every row.
+        if (!lineageBySourceFile.containsKey(file.dataFileId)) {
+            lineageBySourceFile[file.dataFileId] = try {
+                DucklakeDeleteFileReader.readInternalRowIds(
+                        fileSystem, file.dataFilePath, 0L, parquetReaderOptions, fileFormatDataSourceStats)
+            }
+            catch (e: IOException) {
+                throw UncheckedIOException("Failed to read row lineage from ${file.dataFilePath}", e)
             }
         }
-        if (lineage == null) {
-            return positionalRowId
-        }
-        val position = positionalRowId - range.rowIdStart
-        return if (position < lineage.size) lineage[position.toInt()] else positionalRowId
+        return DucklakeRowIdentity.rowId(lineageBySourceFile[file.dataFileId], file.rowIdStart, locator.position)
     }
 
     private fun dataOnlyPage(page: Page, positions: List<Int>): Page {
@@ -206,23 +182,20 @@ open class DucklakeMergeSink(
 
         var position = 0
         while (position < deletePage.positionCount) {
-            val rowId = BIGINT.getLong(rowIdBlock, position)
-            val dataFileId = resolveDataFileId(rowId)
-            deletesByDataFile.getOrPut(dataFileId) { mutableListOf() }.add(rowId)
+            val locator = DucklakeMergeRowId.read(rowIdBlock, position)
+            sourceFile(locator) // Reject unknown files or out-of-file positions before writing.
+            deletesByDataFile.getOrPut(locator.dataFileId) { mutableListOf() }.add(locator.position)
             position++
         }
     }
 
-    private fun resolveDataFileId(rowId: Long): Long {
-        // Ranges are contiguous [rowIdStart, rowIdStart + recordCount) and non-overlapping, so
-        // the range owning rowId is the one with the greatest rowIdStart <= rowId — a single
-        // floorEntry lookup, then a containment guard for the case rowId falls past the end of
-        // that range (no file covers it).
-        val entry = rangeByRowIdStart.floorEntry(rowId)
-        if (entry != null && entry.value.containsRowId(rowId)) {
-            return entry.value.dataFileId
+    private fun sourceFile(locator: DucklakeMergeRowId.Locator): DataFileRange {
+        val file = filesById[locator.dataFileId]
+                ?: throw IllegalStateException("Unknown DuckLake mutation data file: ${locator.dataFileId}")
+        if (locator.position >= file.recordCount) {
+            throw IllegalStateException("DuckLake mutation position outside data file: $locator")
         }
-        throw IllegalStateException("No data file found for row ID: $rowId")
+        return file
     }
 
     override fun finish(): CompletableFuture<Collection<Slice>> {
@@ -299,7 +272,7 @@ open class DucklakeMergeSink(
         // still go through a set to defend against pathological input rather than relying on
         // engine semantics for correctness of the size math.
         val preNewSize: Long = unionPositions.size.toLong()
-        rowIds.forEach { rowId -> unionPositions.add(rowId - range.rowIdStart) }
+        unionPositions.addAll(rowIds)
         val totalPositions: Long = unionPositions.size.toLong()
         val newDeleteCount: Long = totalPositions - preNewSize
 
@@ -320,7 +293,10 @@ open class DucklakeMergeSink(
         val prior = DucklakeDeleteFileReader.readPositions(
                 fileSystem, existingPath, 0L, parquetReaderOptions, fileFormatDataSourceStats)
         // Legacy `row_id` files carry GLOBAL ids → rebase to file-local; spec/puffin are already local.
-        return if (prior.global) prior.values.mapTo(TreeSet()) { it - range.rowIdStart } else prior.values
+        return if (prior.global) {
+            val start = DucklakeRowIdentity.requireStart(range.rowIdStart)
+            prior.values.mapTo(TreeSet()) { it - start }
+        } else prior.values
     }
 
     /** Write the union positions as a DuckLake puffin deletion-vector (bare blob) delete file. */
@@ -430,7 +406,7 @@ open class DucklakeMergeSink(
     }
 
     private fun findDataFileRange(dataFileId: Long): DataFileRange? =
-            mergeHandle.dataFileRanges.firstOrNull { it.dataFileId == dataFileId }
+            filesById[dataFileId]
 
     override fun abort() {
         lineageInsertSink?.abort()

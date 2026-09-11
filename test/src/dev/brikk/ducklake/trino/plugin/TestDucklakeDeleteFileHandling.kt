@@ -76,7 +76,7 @@ class TestDucklakeDeleteFileHandling {
             assertThat(baselineRows).isGreaterThan(1)
 
             val dataFile = findDataFileForSplit(catalog, table.tableId, snapshotId, splitBeforeDelete)
-            val deleteFilePath = writeDeleteParquetFile(splitBeforeDelete.dataFilePath, dataFile.rowIdStart)
+            val deleteFilePath = writeDeleteParquetFile(splitBeforeDelete.dataFilePath, checkNotNull(dataFile.rowIdStart))
             insertDeleteFileMetadata(
                 isolated.jdbcUrl,
                 isolated.user!!,

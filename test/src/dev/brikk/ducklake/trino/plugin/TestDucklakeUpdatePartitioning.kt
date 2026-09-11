@@ -25,14 +25,16 @@ class TestDucklakeUpdatePartitioning {
     fun rowIdsFromOneDataFileAlwaysShareABucket()
     {
         val handle = DucklakeUpdatePartitioningHandle(listOf(
-                DucklakeUpdatePartitioningHandle.RowIdRange(11L, 100L, 10L),
-                DucklakeUpdatePartitioningHandle.RowIdRange(22L, 200L, 5L)))
+                DucklakeUpdatePartitioningHandle.FilePositions(11L, 10L),
+                DucklakeUpdatePartitioningHandle.FilePositions(22L, 5L)))
         val buckets = DucklakeNodePartitioningProvider.UpdateBucketFunction(handle, 97)
-        val block = BIGINT.createBlockBuilder(null, 5)
-        BIGINT.writeLong(block, 100L)
-        BIGINT.writeLong(block, 109L)
-        BIGINT.writeLong(block, 200L)
-        BIGINT.writeLong(block, 204L)
+        val block = DucklakeMergeRowId.TYPE.createBlockBuilder(null, 5)
+        for ((file, position) in listOf(11L to 0L, 11L to 9L, 22L to 0L, 22L to 4L)) {
+            block.buildEntry<RuntimeException> { fields ->
+                BIGINT.writeLong(fields[0], file)
+                BIGINT.writeLong(fields[1], position)
+            }
+        }
         block.appendNull() // NOT MATCHED INSERT: no source file
         val page = Page(block.build())
 
@@ -46,25 +48,25 @@ class TestDucklakeUpdatePartitioning {
     fun rowIdOutsideEveryFileFailsLoud()
     {
         val handle = DucklakeUpdatePartitioningHandle(listOf(
-                DucklakeUpdatePartitioningHandle.RowIdRange(11L, 100L, 10L)))
+                DucklakeUpdatePartitioningHandle.FilePositions(11L, 10L)))
         val buckets = DucklakeNodePartitioningProvider.UpdateBucketFunction(handle, 8)
         val block = BIGINT.createBlockBuilder(null, 1)
-        BIGINT.writeLong(block, 110L) // half-open end: not owned
+        BIGINT.writeLong(block, 10L) // half-open end: not owned
 
-        assertThatThrownBy { buckets.getBucket(Page(block.build()), 0) }
+        assertThatThrownBy { buckets.getBucket(Page(DucklakeMergeRowId.block(11L, block.build())), 0) }
                 .isInstanceOf(IllegalArgumentException::class.java)
-                .hasMessageContaining("No DuckLake data file owns merge row ID 110")
+                .hasMessageContaining("position outside data file")
     }
 
     @Test
-    fun overlappingRangesAreRejected()
+    fun duplicateFileIdsAreRejected()
     {
         assertThatThrownBy {
             DucklakeUpdatePartitioningHandle(listOf(
-                    DucklakeUpdatePartitioningHandle.RowIdRange(11L, 100L, 10L),
-                    DucklakeUpdatePartitioningHandle.RowIdRange(22L, 109L, 5L)))
+                    DucklakeUpdatePartitioningHandle.FilePositions(11L, 10L),
+                    DucklakeUpdatePartitioningHandle.FilePositions(11L, 5L)))
         }
                 .isInstanceOf(IllegalArgumentException::class.java)
-                .hasMessageContaining("overlap")
+                .hasMessageContaining("Duplicate DuckLake data file IDs")
     }
 }

@@ -641,7 +641,8 @@ class DucklakeSplitManager @Inject constructor(
                 affinityKey,
                 primary.beginSnapshot,
                 snapshotFilterMax,
-                deleteFileSnapshotFilters)
+                deleteFileSnapshotFilters,
+                primary.dataFileId)
     }
 
     /**

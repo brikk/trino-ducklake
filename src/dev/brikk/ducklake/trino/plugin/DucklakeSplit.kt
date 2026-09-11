@@ -35,7 +35,7 @@ data class DucklakeSplit @JsonCreator constructor(
         @get:JvmName("deleteFilePaths")
         @param:JsonProperty("deleteFilePaths") val deleteFilePaths: List<String>,
         @get:JvmName("rowIdStart")
-        @param:JsonProperty("rowIdStart") val rowIdStart: Long,
+        @param:JsonProperty("rowIdStart") val rowIdStart: Long?,
         @get:JvmName("recordCount")
         @param:JsonProperty("recordCount") val recordCount: Long,
         @get:JvmName("fileSizeBytes")
@@ -98,7 +98,11 @@ data class DucklakeSplit @JsonCreator constructor(
         // snapshot: resolved delete-file path -> the query snapshot S. The delete reader keeps only
         // the deletions whose _ducklake_internal_snapshot_id <= S. Empty for ordinary delete files.
         @get:JvmName("deleteFileSnapshotFilters")
-        @param:JsonProperty("deleteFileSnapshotFilters") val deleteFileSnapshotFilters: Map<String, Long> = mapOf())
+        @param:JsonProperty("deleteFileSnapshotFilters") val deleteFileSnapshotFilters: Map<String, Long> = mapOf(),
+        // Physical file identity for DELETE/UPDATE/MERGE. Ordinary read-only synthetic splits
+        // need not carry it; mutation scans require it rather than inventing an identity.
+        @get:JvmName("dataFileId")
+        @param:JsonProperty("dataFileId") val dataFileId: Long? = null)
         : ConnectorSplit
 {
     // Convenience constructor without footer-size hints / partition values — used by
@@ -107,7 +111,7 @@ data class DucklakeSplit @JsonCreator constructor(
     constructor(
             dataFilePath: String,
             deleteFilePaths: List<String>,
-            rowIdStart: Long,
+            rowIdStart: Long?,
             recordCount: Long,
             fileSizeBytes: Long,
             fileFormat: String,
@@ -119,7 +123,7 @@ data class DucklakeSplit @JsonCreator constructor(
     constructor(
             dataFilePath: String,
             deleteFilePaths: List<String>,
-            rowIdStart: Long,
+            rowIdStart: Long?,
             recordCount: Long,
             fileSizeBytes: Long,
             fileFormat: String,
@@ -133,7 +137,7 @@ data class DucklakeSplit @JsonCreator constructor(
     constructor(
             dataFilePath: String,
             deleteFilePaths: List<String>,
-            rowIdStart: Long,
+            rowIdStart: Long?,
             recordCount: Long,
             fileSizeBytes: Long,
             fileFormat: String,
@@ -147,7 +151,7 @@ data class DucklakeSplit @JsonCreator constructor(
     constructor(
             dataFilePath: String,
             deleteFilePaths: List<String>,
-            rowIdStart: Long,
+            rowIdStart: Long?,
             recordCount: Long,
             fileSizeBytes: Long,
             fileFormat: String,
@@ -162,7 +166,7 @@ data class DucklakeSplit @JsonCreator constructor(
     constructor(
             dataFilePath: String,
             deleteFilePaths: List<String>,
-            rowIdStart: Long,
+            rowIdStart: Long?,
             recordCount: Long,
             fileSizeBytes: Long,
             fileFormat: String,
@@ -203,9 +207,11 @@ data class DucklakeSplit @JsonCreator constructor(
                 .mapToLong { entry -> SIZE_OF_LONG + estimatedSizeOf(entry.value) }
                 .sum()
         val inlinedDeletesRetained: Long = inlinedDeletedRowPositions.size.toLong() * SIZE_OF_LONG
-        // INSTANCE_SIZE accounts for the primitive long fields (rowIdStart, recordCount,
+        // INSTANCE_SIZE accounts for the primitive long fields (recordCount,
         // fileSizeBytes, footerSize), so no extra SIZE_OF_LONG additions are needed for them.
         return (INSTANCE_SIZE
+                + sizeOf(rowIdStart)
+                + sizeOf(dataFileId)
                 + estimatedSizeOf(dataFilePath)
                 + deleteFilePaths.stream().mapToLong { s -> estimatedSizeOf(s) }.sum()
                 + estimatedSizeOf(fileFormat)

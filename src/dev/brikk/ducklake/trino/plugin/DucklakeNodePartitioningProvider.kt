@@ -20,10 +20,6 @@ import io.trino.spi.connector.ConnectorPartitioningHandle
 import io.trino.spi.connector.ConnectorSession
 import io.trino.spi.connector.ConnectorTransactionHandle
 import io.trino.spi.type.Type
-import java.util.NavigableMap
-import java.util.TreeMap
-
-import io.trino.spi.type.BigintType.BIGINT
 
 /** Node partitioning used only by row-level DELETE/UPDATE/MERGE. */
 class DucklakeNodePartitioningProvider : ConnectorNodePartitioningProvider {
@@ -36,8 +32,8 @@ class DucklakeNodePartitioningProvider : ConnectorNodePartitioningProvider {
         require(partitioningHandle is DucklakeUpdatePartitioningHandle) {
             "Unsupported DuckLake partitioning handle: ${partitioningHandle.javaClass.name}"
         }
-        require(partitionChannelTypes == listOf(BIGINT)) {
-            "DuckLake update partitioning requires one BIGINT row-id channel: $partitionChannelTypes"
+        require(partitionChannelTypes == listOf(DucklakeMergeRowId.TYPE)) {
+            "DuckLake update partitioning requires one file-position locator channel: $partitionChannelTypes"
         }
         return UpdateBucketFunction(partitioningHandle, bucketCount)
     }
@@ -45,11 +41,10 @@ class DucklakeNodePartitioningProvider : ConnectorNodePartitioningProvider {
     internal class UpdateBucketFunction(
             handle: DucklakeUpdatePartitioningHandle,
             private val bucketCount: Int) : BucketFunction {
-        private val rangesByStart: NavigableMap<Long, DucklakeUpdatePartitioningHandle.RowIdRange> = TreeMap()
+        private val filesById = handle.files.associateBy { it.dataFileId }
 
         init {
             require(bucketCount > 0) { "bucketCount must be positive" }
-            handle.ranges.forEach { range -> rangesByStart[range.rowIdStart] = range }
         }
 
         override fun getBucket(page: Page, position: Int): Int {
@@ -59,13 +54,13 @@ class DucklakeNodePartitioningProvider : ConnectorNodePartitioningProvider {
             if (rowIdBlock.isNull(position)) {
                 return 0
             }
-            val rowId = BIGINT.getLong(rowIdBlock, position)
-            val range = rangesByStart.floorEntry(rowId)?.value
-                ?: throw IllegalArgumentException("No DuckLake data file owns merge row ID $rowId")
-            if (rowId - range.rowIdStart >= range.recordCount) {
-                throw IllegalArgumentException("No DuckLake data file owns merge row ID $rowId")
+            val locator = DucklakeMergeRowId.read(rowIdBlock, position)
+            val file = filesById[locator.dataFileId]
+                ?: throw IllegalArgumentException("Unknown DuckLake mutation data file: ${locator.dataFileId}")
+            if (locator.position >= file.recordCount) {
+                throw IllegalArgumentException("DuckLake mutation position outside data file: $locator")
             }
-            return (range.dataFileId.hashCode() and Int.MAX_VALUE) % bucketCount
+            return (file.dataFileId.hashCode() and Int.MAX_VALUE) % bucketCount
         }
     }
 }

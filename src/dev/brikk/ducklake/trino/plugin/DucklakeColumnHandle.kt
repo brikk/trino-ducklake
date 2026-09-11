@@ -82,7 +82,7 @@ data class DucklakeColumnHandle @JsonCreator constructor(
 
         fun rowIdColumnHandle(): DucklakeColumnHandle
         {
-            return DucklakeColumnHandle(ROW_ID_COLUMN_ID, ROW_ID_COLUMN_NAME, BIGINT, false)
+            return DucklakeColumnHandle(ROW_ID_COLUMN_ID, ROW_ID_COLUMN_NAME, DucklakeMergeRowId.TYPE, false)
         }
     }
 }
@@ -97,8 +97,8 @@ data class DucklakeColumnHandle @JsonCreator constructor(
  * collision-free. The MERGE row-id channel keeps its own distinct id
  * ([DucklakeColumnHandle.ROW_ID_COLUMN_ID] = -100) and flows through
  * `getMergeRowIdColumnHandle`, not `getColumnHandles`; these queryable virtuals start
- * at -101. The `$row_id` virtual (-104) shares the name and `rowIdStart + position`
- * encoding with the MERGE channel but is a distinct handle — see
+ * at -101. The `$row_id` virtual (-104) is a logical BIGINT identity, whereas the
+ * MERGE channel carries a ROW(data_file_id, position) physical locator — see
  * dev-docs/DESIGN-virtual-columns.md § 3.4 / § 3.6.
  */
 enum class VirtualKind(

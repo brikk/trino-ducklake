@@ -183,14 +183,22 @@ object DucklakeDeleteFileReader {
             val schema: MessageType = parquetMetadata.fileMetaData.schema
             // The lineage column is matched by its reserved FIELD-ID (its name is not guaranteed).
             val lineageField = schema.fields.firstOrNull { it.id?.intValue() == ROW_ID_PARQUET_FIELD_ID }
-                    ?: return null
+            if (lineageField == null) {
+                dataSource.close()
+                memoryContext.close()
+                return null
+            }
             val messageColumnIO = getColumnIO(schema, schema)
-            val columnIO: ColumnIO = messageColumnIO.getChild(lineageField.name) ?: return null
-            val field: Field = DucklakeParquetTypeUtils.constructField(BIGINT, columnIO).orElse(null) ?: return null
+            val columnIO: ColumnIO = checkNotNull(messageColumnIO.getChild(lineageField.name)) {
+                "Embedded DuckLake row-ID column is not readable: $dataFilePath"
+            }
+            val field: Field = DucklakeParquetTypeUtils.constructField(BIGINT, columnIO).orElseThrow {
+                TrinoException(GENERIC_INTERNAL_ERROR, "Embedded DuckLake row-ID column is not a BIGINT: $dataFilePath")
+            }
             val parquetReader = createParquetReader(
                     dataSource, inputFile.length(), parquetMetadata,
                     Column(lineageField.name, field), memoryContext, parquetReaderOptions)
-            return collectRowIdsInOrder(ParquetPageSource(parquetReader))
+            return collectRowIdsInOrder(ParquetPageSource(parquetReader), "Embedded DuckLake row-ID column contains NULL: $dataFilePath")
         }
         catch (e: IOException) {
             throw closeAndWrap(dataSource, dataFilePath, e)
@@ -200,8 +208,8 @@ object DucklakeDeleteFileReader {
         }
     }
 
-    /** Collects every BIGINT value in file order; null if any value is null (untrusted → fall back). */
-    private fun collectRowIdsInOrder(pageSource: ConnectorPageSource): LongArray? {
+    /** A present lineage column is authoritative; malformed values must not become positional IDs. */
+    private fun collectRowIdsInOrder(pageSource: ConnectorPageSource, nullMessage: String): LongArray {
         val values = ArrayList<Long>()
         pageSource.use { source ->
             while (!source.isFinished) {
@@ -209,7 +217,7 @@ object DucklakeDeleteFileReader {
                 val block = page.getBlock(0)
                 for (i in 0 until block.positionCount) {
                     if (block.isNull(i)) {
-                        return null
+                        throw TrinoException(GENERIC_INTERNAL_ERROR, nullMessage)
                     }
                     values.add(BIGINT.getLong(block, i))
                 }
@@ -318,10 +326,8 @@ object DucklakeDeleteFileReader {
             val parquetReader = createParquetReader(
                     dataSource, inputFile.length(), parquetMetadata,
                     Column(INTERNAL_SNAPSHOT_ID_COLUMN, field), memoryContext, parquetReaderOptions)
-            return collectRowIdsInOrder(ParquetPageSource(parquetReader))
-                    ?: throw TrinoException(
-                            GENERIC_INTERNAL_ERROR,
-                            "Partial data file has a null value in $INTERNAL_SNAPSHOT_ID_COLUMN: $dataFilePath")
+            return collectRowIdsInOrder(ParquetPageSource(parquetReader),
+                    "Partial data file has a null value in $INTERNAL_SNAPSHOT_ID_COLUMN: $dataFilePath")
         }
         catch (e: TrinoException) {
             dataSource?.let { runCatching { it.close() } }

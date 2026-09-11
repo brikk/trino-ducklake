@@ -18,30 +18,26 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import io.trino.spi.connector.ConnectorPartitioningHandle
 
 /**
- * Update/MERGE distribution by the source data file owning a global DuckLake row ID.
+ * Update/MERGE distribution by the physical source data file.
  *
- * Every row in `[rowIdStart, rowIdStart + recordCount)` belongs to [dataFileId]. The engine
- * serializes this handle into the fragment plan; workers use it through
+ * The engine serializes the file bounds into the fragment plan; workers use them through
  * [DucklakeNodePartitioningProvider]. Routing all rows of one data file to one writer preserves
  * DuckLake's invariant of at most one active delete file per data file and snapshot.
  */
 @JvmRecord
 data class DucklakeUpdatePartitioningHandle @JsonCreator constructor(
-        @param:JsonProperty("ranges") val ranges: List<RowIdRange>)
+        @param:JsonProperty("files") val files: List<FilePositions>)
         : ConnectorPartitioningHandle
 {
     init {
-        var previousEnd = Long.MIN_VALUE
-        for (range in ranges) {
-            require(range.recordCount >= 0) { "recordCount is negative for data_file_id ${range.dataFileId}" }
-            require(range.rowIdStart >= previousEnd) { "DuckLake row-id ranges overlap or are not ordered" }
-            previousEnd = Math.addExact(range.rowIdStart, range.recordCount)
+        require(files.map { it.dataFileId }.distinct().size == files.size) { "Duplicate DuckLake data file IDs" }
+        for (file in files) {
+            require(file.dataFileId >= 0 && file.recordCount >= 0) { "Invalid DuckLake mutation file bounds: $file" }
         }
     }
 
     @JvmRecord
-    data class RowIdRange @JsonCreator constructor(
+    data class FilePositions @JsonCreator constructor(
             @param:JsonProperty("dataFileId") val dataFileId: Long,
-            @param:JsonProperty("rowIdStart") val rowIdStart: Long,
             @param:JsonProperty("recordCount") val recordCount: Long)
 }

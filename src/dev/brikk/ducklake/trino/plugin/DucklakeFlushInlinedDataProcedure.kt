@@ -328,7 +328,7 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
                 parquetReaderOptions,
                 fileFormatDataSourceStats)
         return positions.values.associate { value ->
-            (if (positions.global) value - file.rowIdStart else value) to beginSnapshot
+            (if (positions.global) value - DucklakeRowIdentity.requireStart(file.rowIdStart) else value) to beginSnapshot
         }
     }
 

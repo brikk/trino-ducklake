@@ -108,3 +108,32 @@ become safe brackets, emitted as `element_at`; missing keys therefore return NUL
 **Removal criterion:** a released, schema-aware transpilation path handles these MAP accesses
 and their value-type propagation directly. Do not replace this with a global text replacement
 of dotted names; those names can denote table aliases or ROW fields instead.
+
+## CI-02: Row-Identity Reader Limits
+
+**Catalog 0.10.0 integration, 2026-09-11:** the old contiguous-range mutation locator was
+replaced with the user-approved, upstream-aligned `ROW(data_file_id, physical_position)`.
+Valid NULL starts do not trigger a mutation restriction or an invented start. Logical IDs use
+embedded lineage first, then a present start; missing/malformed required identity fails loudly.
+
+Existing reader costs remain relevant: lineage is materialized as a per-file `LongArray`, and
+physical positions are counted over whole-file splits with predicate/row-group pruning disabled
+when positions are needed. Removal requires a streaming lineage/physical-position read path;
+never enable pruning or split-by-row-group while retaining a zero-seeded cumulative counter.
+The legacy nonstandard global-ID delete-file reader requires a real catalog start for rebasing;
+it cannot infer one from a NULL start. Standard positional deletes do not require that start.
+
+## CI-03 / RV-28: Geometry Mirror Coverage
+
+**Typed normalization adopted from corpus-replay 0.10.0, 2026-09-11.** The four local WKB/WKT
+file skips were removed. The original three nested-geometry fixtures use bare table names after
+`USE ducklake`; the adapter's existing alias gate excludes bare names because they may identify
+oracle-local temporary tables. A passing original fixture therefore proves golden validation,
+not execution of its nested SELECT through Trino.
+
+`TestTrinoGeometryReplay` preserves the upstream fixtures' setup and goldens in test-local copies,
+explicitly qualifies only their known lake SELECTs, and asserts each SELECT actually returned
+Trino rows before the shared mirror comparison passed. These copies are regression fixtures,
+not a relaxation of the production adapter gate or a claim that every original corpus query ran.
+Removing the general coverage limitation requires trustworthy oracle namespace/temp-table
+binding information; blindly accepting or qualifying arbitrary bare names is not a fix.

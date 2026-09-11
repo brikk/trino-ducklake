@@ -451,7 +451,7 @@ class DucklakePageSourceProvider @Inject constructor(
             emptyList()
 
         // Read DuckLake's embedded row-lineage column (parquet field-id 2147483540) for each file
-        // that carries it (UPDATE/compaction output); null files use `row_id_start + position`.
+        // that carries it (UPDATE/compaction output); otherwise a present start supplies identity.
         // This is what lets an UPDATE's delete + re-insert land on the SAME rowid and pair.
         val insertLineage: Map<Long, LongArray?> = readInsertLineage(fileSystem, tableDataPath, insertFiles)
 
@@ -705,12 +705,8 @@ class DucklakePageSourceProvider @Inject constructor(
     }
 
     /** The DuckLake rowid of a file-local [position]: the embedded lineage value when present. */
-    private fun rowIdForPosition(lineage: LongArray?, rowIdStart: Long, position: Long): Long {
-        if (lineage != null && position in 0 until lineage.size.toLong()) {
-            return lineage[position.toInt()]
-        }
-        return rowIdStart + position
-    }
+    private fun rowIdForPosition(lineage: LongArray?, rowIdStart: Long?, position: Long): Long =
+            DucklakeRowIdentity.rowId(lineage, rowIdStart, position)
 
     /** Resolves each deletion to its newly-deleted positions + lineage, dropping no-op events and
      * recording the deleted rowids by snapshot (for update pairing).
@@ -803,6 +799,7 @@ class DucklakePageSourceProvider @Inject constructor(
         for (file in insertFiles) {
             val lineage: LongArray? = insertLineage[file.dataFileId]
             val origins: LongArray? = insertOriginSnapshots[file.dataFileId]
+            if (file.recordCount == 0L) continue
             if (origins != null && lineage != null) {
                 // Partial file: attribute each row's rowid to its own origin snapshot. (Compaction
                 // output always embeds BOTH the lineage rowid and the origin-snapshot columns, so
@@ -816,8 +813,9 @@ class DucklakePageSourceProvider @Inject constructor(
                 lineageSetBySnapshot.getOrPut(file.beginSnapshot) { mutableSetOf() }.addAll(lineage.asList())
             }
             else {
+                val start = DucklakeRowIdentity.rowId(null, file.rowIdStart, 0)
                 rangesBySnapshot.getOrPut(file.beginSnapshot) { mutableListOf() }
-                        .add(file.rowIdStart until (file.rowIdStart + file.recordCount))
+                        .add(start until Math.addExact(start, file.recordCount))
             }
         }
         return deletedRowidsBySnapshot.mapNotNull { (snapshot, deletedRowids) ->
@@ -927,7 +925,7 @@ class DucklakePageSourceProvider @Inject constructor(
             fileFormat: String,
             footerSize: Long,
             fileSizeBytes: Long,
-            rowIdStart: Long,
+            rowIdStart: Long?,
             recordCount: Long,
             beginSnapshot: Long,
             table: ChangeFeedTableHandle,
@@ -991,7 +989,7 @@ class DucklakePageSourceProvider @Inject constructor(
             pathIsRelative: Boolean?,
             format: String?,
             footerSize: Long?,
-            rowIdStart: Long): Set<Long>
+            rowIdStart: Long?): Set<Long>
     {
         if (path == null) {
             return emptySet()
@@ -1003,7 +1001,10 @@ class DucklakePageSourceProvider @Inject constructor(
         val positions = DucklakeDeleteFileReader.readPositions(
                 fileSystem, resolved, footerSize ?: 0L, parquetReaderOptions, fileFormatDataSourceStats)
         // Legacy Trino delete files store GLOBAL row ids (rowIdStart + pos); normalize to file-local.
-        return if (positions.global) positions.values.mapTo(mutableSetOf()) { it - rowIdStart } else positions.values
+        return if (positions.global) {
+            val start = DucklakeRowIdentity.requireStart(rowIdStart)
+            positions.values.mapTo(mutableSetOf()) { it - start }
+        } else positions.values
     }
 
     private fun applyDeleteFile(fileSystem: TrinoFileSystem, split: DucklakeSplit, dataSource: ConnectorPageSource): ConnectorPageSource
@@ -1210,11 +1211,11 @@ class DucklakePageSourceProvider @Inject constructor(
             val positionalInjections: MutableList<PositionalInjection> = mutableListOf()
             val fileColumns: MutableList<DucklakeColumnHandle> = mutableListOf()
             for (i in columns.indices) {
-                val addRowIdStart: Boolean? = positionalColumnKind(columns[i])
-                if (addRowIdStart != null) {
+                if (positionalColumnKind(columns[i]) != null) {
                     positionalInjections.add(PositionalInjection(
-                            i, addRowIdStart,
-                            resolveLineage = columns[i].virtualKind() == VirtualKind.ROW_ID))
+                            i,
+                            resolveLineage = columns[i].virtualKind() == VirtualKind.ROW_ID,
+                            mutationLocator = columns[i].isRowIdColumn()))
                 }
                 else {
                     fileColumns.add(columns[i])
@@ -1293,7 +1294,7 @@ class DucklakePageSourceProvider @Inject constructor(
                         }
                 pageSource = PositionalVirtualInjectingPageSource(
                         pageSource, fileColumns.size + positionalInjections.size, positionalInjections,
-                        split.rowIdStart, lineage)
+                        split.rowIdStart, lineage, split.dataFileId)
             }
 
             pageSource = applyDeleteFile(fileSystem, split, pageSource)
@@ -1565,8 +1566,7 @@ class DucklakePageSourceProvider @Inject constructor(
 
         /**
          * Classify a requested column as a positional injection, or not.
-         * Returns true  -> $row_id semantics (value = rowIdStart + file position): the MERGE
-         *                  row-id channel (-100) and the queryable $row_id virtual (-104).
+         * Returns true  -> row identity: the MERGE locator (-100) or logical $row_id (-104).
          * Returns false -> $file_row_number (value = file position, 0-based): the -103 virtual.
          * Returns null  -> not positional (real column, or a constant virtual).
          */
@@ -1631,7 +1631,7 @@ class DucklakePageSourceProvider @Inject constructor(
     class DeleteRowFilterTransform(
             globalRowIds: Set<Long>,
             localOffsets: Set<Long>,
-            private val rowIdStart: Long) : Function<SourcePage, SourcePage>
+            private val rowIdStart: Long?) : Function<SourcePage, SourcePage>
     {
         private val globalRowIds: Set<Long> = globalRowIds.toSet()
         private val localOffsets: Set<Long> = localOffsets.toSet()
@@ -1645,9 +1645,9 @@ class DucklakePageSourceProvider @Inject constructor(
 
             for (position in 0 until positionCount) {
                 val rowOffset: Long = nextRowOffset + position
-                val rowId: Long = rowIdStart + rowOffset
-
-                if (!globalRowIds.contains(rowId) && !localOffsets.contains(rowOffset)) {
+                val globallyDeleted = globalRowIds.isNotEmpty() &&
+                        globalRowIds.contains(Math.addExact(DucklakeRowIdentity.requireStart(rowIdStart), rowOffset))
+                if (!globallyDeleted && !localOffsets.contains(rowOffset)) {
                     retainedPositions[retainedCount] = position
                     retainedCount++
                 }
@@ -1662,25 +1662,21 @@ class DucklakePageSourceProvider @Inject constructor(
         }
     }
 
-    /** One positional column to inject: its output channel index and whether to add rowIdStart. */
+    /** One positional column to inject and its physical/logical identity semantics. */
     private class PositionalInjection(
         val outputPosition: Int,
-        val addRowIdStart: Boolean,
         /**
          * True only for the queryable `$row_id` virtual (-104): when the file
          * carries the embedded lineage column, the injected value is the row's
-         * PRESERVED rowid instead of `rowIdStart + position`. The MERGE channel
-         * (-100) must stay positional — DucklakeMergeSink resolves data files by
-         * contiguous `[rowIdStart, +count)` ranges (lineage translation for
-         * chained updates happens in the sink itself).
+         * PRESERVED rowid instead of `rowIdStart + position`.
          */
-        val resolveLineage: Boolean = false)
+        val resolveLineage: Boolean = false,
+        /** The MERGE channel (-100) is a ROW(data_file_id, physical position). */
+        val mutationLocator: Boolean = false)
 
     /**
-     * Wraps a ConnectorPageSource and injects one or more synthetic positional BIGINT columns
-     * derived from the cumulative file position: the MERGE $row_id and the queryable $row_id
-     * (value = rowIdStart + position, or the file's embedded lineage value when present and
-     * [PositionalInjection.resolveLineage]) and $file_row_number (value = position, 0-based).
+     * Injects the physical MERGE locator, logical $row_id, and $file_row_number. The logical
+     * identity uses embedded lineage first; only absent lineage uses a present catalog start.
      * All share the same per-page running offset. Must be applied BEFORE delete-file filtering
      * so the values match original file positions.
      */
@@ -1688,9 +1684,10 @@ class DucklakePageSourceProvider @Inject constructor(
         private val delegate: ConnectorPageSource,
         private val totalChannels: Int,
         injections: List<PositionalInjection>,
-        private val rowIdStart: Long,
+        private val rowIdStart: Long?,
         /** Embedded lineage values by file position (null = file carries none). */
-        private val lineage: LongArray? = null) : ConnectorPageSource
+        private val lineage: LongArray? = null,
+        private val dataFileId: Long? = null) : ConnectorPageSource
     {
         private val injections: List<PositionalInjection> = injections.toList()
         private var nextRowOffset: Long = 0
@@ -1713,18 +1710,9 @@ class DucklakePageSourceProvider @Inject constructor(
             val injectedBlocks: HashMap<Int, Block> = HashMap(injections.size * 2)
             for (injection in injections) {
                 val blockBuilder: io.trino.spi.block.BlockBuilder = BIGINT.createBlockBuilder(null, positionCount)
-                if (injection.resolveLineage && lineage != null) {
+                if (injection.resolveLineage) {
                     for (i in 0 until positionCount) {
-                        val filePosition = nextRowOffset + i
-                        val value =
-                                if (filePosition < lineage.size) lineage[filePosition.toInt()]
-                                else rowIdStart + filePosition
-                        BIGINT.writeLong(blockBuilder, value)
-                    }
-                }
-                else if (injection.addRowIdStart) {
-                    for (i in 0 until positionCount) {
-                        BIGINT.writeLong(blockBuilder, rowIdStart + nextRowOffset + i)
+                        BIGINT.writeLong(blockBuilder, DucklakeRowIdentity.rowId(lineage, rowIdStart, nextRowOffset + i))
                     }
                 }
                 else {
@@ -1732,7 +1720,10 @@ class DucklakePageSourceProvider @Inject constructor(
                         BIGINT.writeLong(blockBuilder, nextRowOffset + i)
                     }
                 }
-                injectedBlocks[injection.outputPosition] = blockBuilder.build()
+                val positions = blockBuilder.build()
+                injectedBlocks[injection.outputPosition] = if (injection.mutationLocator) {
+                    DucklakeMergeRowId.block(checkNotNull(dataFileId) { "Missing data file ID for DuckLake mutation scan" }, positions)
+                } else positions
             }
             nextRowOffset += positionCount
 

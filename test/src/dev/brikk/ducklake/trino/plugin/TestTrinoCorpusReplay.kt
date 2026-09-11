@@ -63,10 +63,6 @@ class TestTrinoCorpusReplay {
             "data_inlining/data_inlining_encryption.test" to ENCRYPTED_LAKE,
             "encryption/encryption.test" to ENCRYPTED_LAKE,
             "compaction/compaction_encrypted.test" to ENCRYPTED_LAKE,
-            "geo/ducklake_geometry.test" to GEO_WKB,
-            "geo/ducklake_geometry_add_files.test" to GEO_WKB,
-            "geo/ducklake_geometry_inlining.test" to GEO_WKB,
-            "geo/ducklake_geometry_merge.test" to GEO_WKB,
             // (2026-07-07: the round-2 add_files bugs were FIXED — hive-partition columns are
             // parsed from the file path via is_partition name-map entries, and unmapped
             // dead-column resurrection is blocked by era-aware column existence. All four
@@ -144,9 +140,6 @@ class TestTrinoCorpusReplay {
         private const val ENCRYPTED_LAKE =
             "encrypted lake: parquet encryption keys not threaded to the Trino reader on the " +
                 "mirror axis (footer unreadable)"
-        private const val GEO_WKB =
-            "GEOMETRY renders WKB blob text vs DuckDB's WKT (degraded type; same skip as the " +
-                "identity-control list)"
         private const val VIRTUAL_COLUMN_ALIAS =
             "DuckLake exposes virtual columns unprefixed (snapshot_id/rowid); the connector exposes " +
                 "them \$-prefixed (\$snapshot_id), so the verbatim replay can't resolve the bare name. " +

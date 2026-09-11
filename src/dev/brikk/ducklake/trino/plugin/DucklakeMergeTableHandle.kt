@@ -35,7 +35,7 @@ data class DucklakeMergeTableHandle @JsonCreator constructor(
             @get:JvmName("dataFileId")
             @param:JsonProperty("dataFileId") val dataFileId: Long,
             @get:JvmName("rowIdStart")
-            @param:JsonProperty("rowIdStart") val rowIdStart: Long,
+            @param:JsonProperty("rowIdStart") val rowIdStart: Long?,
             @get:JvmName("recordCount")
             @param:JsonProperty("recordCount") val recordCount: Long,
             @get:JvmName("existingDeleteFilePaths")
@@ -44,7 +44,4 @@ data class DucklakeMergeTableHandle @JsonCreator constructor(
             // spec-shaped delete files this merge produces (what upstream's writer records).
             @get:JvmName("dataFilePath")
             @param:JsonProperty("dataFilePath") val dataFilePath: String)
-    {
-        fun containsRowId(rowId: Long): Boolean = rowId >= rowIdStart && rowId < rowIdStart + recordCount
-    }
 }

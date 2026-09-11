@@ -27,7 +27,7 @@ import java.io.IOException
 /**
  * One data file to read for the change feed. [baseSource] lazily opens the connector's normal
  * data-file read pipeline projecting exactly [ChangeFeedPageSource]'s requested data columns
- * followed by the positional `$row_id` virtual (`rowIdStart + file position`), reading as of the
+ * followed by `$file_row_number` (or the actual row ID for an inlined source), reading as of the
  * feed's END-snapshot schema (so schema evolution / all file formats are handled for free).
  *
  * - [snapshotId] is the snapshot to report for every row of this unit (the file's `begin_snapshot`
@@ -49,7 +49,7 @@ import java.io.IOException
 class ChangeFeedUnit(
         val baseSource: () -> ConnectorPageSource,
         val snapshotId: Long,
-        val rowIdStart: Long,
+        val rowIdStart: Long?,
         val lineageRowIds: LongArray?,
         val keepPositions: Set<Long>?,
         val updatedRowids: Set<Long>,
@@ -59,12 +59,12 @@ class ChangeFeedUnit(
  * Streams the DuckLake change feed as `snapshot_id, rowid[, change_type]` + table columns.
  * Reads each [ChangeFeedUnit]'s data file through the connector's ordinary read pipeline (reused
  * for schema evolution + every file format), then per page: derives each row's FILE position from
- * the positional `$row_id`, filters to the deleted positions (delete units), computes the true
+ * `$file_row_number`, filters to the deleted positions (delete units), computes the true
  * `rowid` (embedded lineage column when present, else positional), stamps `snapshot_id`, and
  * classifies `change_type` (pairing an UPDATE's delete + re-insert of the same rowid in one
  * snapshot into update pre/post-image).
  *
- * The data columns are read in [dataColumns] order followed by `$row_id`, so `$row_id` sits at
+ * The data columns are read in [dataColumns] order followed by the physical-position column at
  * channel `dataColumns.size`; output blocks are projected in [requestedColumns] order.
  */
 class ChangeFeedPageSource(
@@ -137,7 +137,7 @@ class ChangeFeedPageSource(
                 continue
             }
             keptIdx[keptCount] = i
-            keptRowIds[keptCount] = rowIdFor(unit, filePosition, unit.rowIdStart + filePosition)
+            keptRowIds[keptCount] = DucklakeRowIdentity.rowId(unit.lineageRowIds, unit.rowIdStart, filePosition)
             keptCount++
         }
         if (keptCount == 0) {
@@ -163,12 +163,6 @@ class ChangeFeedPageSource(
         }
         @Suppress("UNCHECKED_CAST")
         return SourcePage.create(Page(keptCount, *(blocks as Array<Block>)))
-    }
-
-    /** The row's DuckLake rowid: preserved lineage value when the file embeds it, else positional. */
-    private fun rowIdFor(unit: ChangeFeedUnit, filePosition: Long, positional: Long): Long {
-        val lineage: LongArray = unit.lineageRowIds ?: return positional
-        return if (filePosition in 0 until lineage.size.toLong()) lineage[filePosition.toInt()] else positional
     }
 
     private fun rowIdBlock(keptRowIds: LongArray, keptCount: Int): Block {

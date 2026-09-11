@@ -99,7 +99,7 @@ open class DucklakeSessionProperties @Inject constructor() {
 
         const val WRITE_ROW_LINEAGE: String = "write_row_lineage"
 
-        /** @return true iff UPDATE/MERGE rewrites embed the original rowid (lineage). Default false. */
+        /** @return true iff UPDATE/MERGE rewrites embed the original rowid (lineage). Default true. */
         fun isWriteRowLineage(session: ConnectorSession): Boolean {
             val v = session.getProperty(WRITE_ROW_LINEAGE, Boolean::class.javaObjectType)
             return v != null && v

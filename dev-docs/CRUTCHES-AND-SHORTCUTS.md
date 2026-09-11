@@ -81,3 +81,30 @@ cleanup, last-owner reclamation, and MinIO with an S3 scheme alias. Initial cata
 verification covered PostgreSQL, MySQL, local DuckDB, and Quack, including hostile path collations
 and bounded projections; `RV-V11` records this connector's checks against the official release.
 The old orphan-sweep full-reference materialization remains the separate RV-25g item.
+
+## CI-04: Test-Only MAP Access Adaptation
+
+**Status: local corpus-adapter bridge, 2026-09-11.** The ordinary transpilation gate accepts
+DuckDB string-key MAP access such as `s.i`, but Trino interprets that syntax as ROW access.
+`TrinoMapAccessRewriter` uses the existing brikk-sql parser, qualifier, and type annotator with
+table schemas obtained through `SELECT * FROM <table> LIMIT 0`. Proven string-key MAP accesses
+become safe brackets, emitted as `element_at`; missing keys therefore return NULL.
+
+- This code is under `test/src`, not in the production plugin or the shared catalog library.
+- Metadata probes are deduplicated within one query only. DDL and lake reconnects must refresh
+  the types. Explicit table snapshot clauses remain on the metadata probes.
+- brikk-sql 0.8.0 does not infer MAP-column bracket result types, so the adapter supplies the
+  known MAP value type and re-annotates dependent expressions. Passes are bounded by the
+  qualified AST's initial Dot count plus one; key spelling/case is preserved separately from
+  identifier normalization.
+- Non-text MAP keys receive no guessed implicit casts. If one query references different
+  historical schemas/orderings of the same table, the name-keyed schema resolver is not used
+  to guess a single type. In either case the original SQL still executes normally: this is not
+  a new skip rule or a claim of support for those additional forms.
+- ROW access, table aliases, nested MAP/ROW values, CTEs, missing keys, key case/punctuation,
+  and type refresh after DDL/reconnect have focused regressions, including real DuckDB/Trino
+  comparisons. The normal starter corpus plus `types` also passes in focused runs.
+
+**Removal criterion:** a released, schema-aware transpilation path handles these MAP accesses
+and their value-type propagation directly. Do not replace this with a global text replacement
+of dotted names; those names can denote table aliases or ROW fields instead.

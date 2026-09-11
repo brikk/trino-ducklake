@@ -142,8 +142,8 @@ class TrinoReplayEngine : ReplayReadEngine {
         val catalog = currentCatalog!!
         val alias = currentAlias!!
         // The transpiled Trino SQL (DuckDB-isms translated, time travel mapped, ORDER BY ALL
-        // handled) — accepts() already confirmed this is a Run. The only rewrite left is the
-        // corpus alias→catalog step (brikk-sql passes table identifiers through unquoted):
+        // handled) — accepts() already confirmed this is a Run. First resolve the corpus
+        // alias→catalog names, then apply the schema-aware MAP access rewrite below:
         // <alias>.<schema>.<t> → <catalog>.<schema>.<t>; then <alias>.<t> (no further dot) →
         // <catalog>.main.<t>.
         val run = gateFor(sql) as? TrinoCorpusDialect.Run
@@ -153,7 +153,13 @@ class TrinoReplayEngine : ReplayReadEngine {
         s = s.replace(Regex("\\b${Regex.escape(alias)}\\.(\\w+)\\b(?!\\.)"), "$catalog.main.$1")
         val result =
             try {
-                runner.execute(session, s)
+                val typedSql = TrinoMapAccessRewriter.rewrite(s, catalog, session.schema.orElse(null)) { table ->
+                    // LIMIT 0 binds the current (or explicitly versioned) table schema without
+                    // reading its rows. Do not cache it across corpus DDL or lake re-attachments.
+                    val schema = runner.execute(session, "SELECT * FROM $table LIMIT 0")
+                    schema.columnNames.zip(schema.types.map { it.displayName }).toMap()
+                }
+                runner.execute(session, typedSql)
             } catch (e: RuntimeException) {
                 throw classifyEngineError(e)
             }

@@ -11,7 +11,7 @@ plugins {
 group = "dev.brikk.ducklake"
 // <trino-version>-<our-release>: the leading 483 is the compatible Trino version (see
 // libs.versions.toml `trino`), so the plugin archive name tells you which Trino it targets.
-version = "483-0.2.0"
+version = "483-0.3.0"
 
 // Idiomatic-Kotlin quality gate (detekt 2.0 runs on the JDK 25 daemon; jvmTarget is read
 // from the Kotlin compilerOptions). Custom src/test layout, so point detekt at it explicitly.
@@ -224,7 +224,9 @@ val pluginDistZip by tasks.registering(Zip::class) {
     archiveBaseName.set("trino-ducklake")
     archiveVersion.set(project.version.toString())
     destinationDirectory.set(layout.buildDirectory.dir("distributions"))
-    from(layout.buildDirectory.dir("trino-plugin"))
+    from(layout.buildDirectory.dir("trino-plugin/trino-ducklake-$version")) {
+        into("trino-ducklake-$version")
+    }
 }
 
 val pluginDistTar by tasks.registering(Tar::class) {
@@ -234,7 +236,9 @@ val pluginDistTar by tasks.registering(Tar::class) {
     compression = Compression.GZIP
     archiveExtension.set("tar.gz")
     destinationDirectory.set(layout.buildDirectory.dir("distributions"))
-    from(layout.buildDirectory.dir("trino-plugin"))
+    from(layout.buildDirectory.dir("trino-plugin/trino-ducklake-$version")) {
+        into("trino-ducklake-$version")
+    }
 }
 
 val pluginDist by tasks.registering {

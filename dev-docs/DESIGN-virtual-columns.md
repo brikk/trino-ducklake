@@ -1,6 +1,6 @@
 # DESIGN: Virtual Columns (`$path`, `$row_id`, `$snapshot_id`, `$file_row_number`)
 
-**Status:** IMPLEMENTED — all four columns ship on the read path (parquet, duckdb, inlined).
+**Status:** IMPLEMENTED — all four columns ship on the read path (Parquet and inlined data).
 **Scope:** trino-ducklake connector. Read path only.
 **Companion to:** [TODO-READ-MODE.md § Virtual Columns](TODO-READ-MODE.md#virtual-columns).
 
@@ -17,8 +17,8 @@
 >   filtering by `PositionalVirtualInjectingPageSource` (a generalization of
 >   the old single-column row-id injector), so they reflect true file
 >   positions — § 4.2.
-> - `$snapshot_id` source is a new `beginSnapshot` field on `DucklakeSplit`
->   (parquet/duckdb). When a positional virtual is requested, predicate
+> - `$snapshot_id` source is the `beginSnapshot` field on `DucklakeSplit`
+>   (Parquet). When a positional virtual is requested, predicate
 >   pushdown is disabled (like the active-deletes case) so cumulative-offset
 >   positions stay aligned with the file.
 >

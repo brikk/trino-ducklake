@@ -25,8 +25,9 @@ docs in this same directory:
   worries, protection tests, unplaceable ideas). **Glance at it on every refresh
   run** — re-verify its "Watch" items against the new diff (e.g. server-side
   commit trajectory, orphan-sweep `*.parquet` filter still in place).
-- Comparison audits: `COMPARE-datafusion-ducklake.md`,
-  `COMPARE-pg_ducklake.md`.
+- Historical comparison audits:
+  [`archive/COMPARE-datafusion-ducklake.md`](archive/COMPARE-datafusion-ducklake.md) and
+  [`archive/COMPARE-pg_ducklake.md`](archive/COMPARE-pg_ducklake.md).
 - Archived historical context:
   [`archive/RESEARCH-LOG.md`](archive/RESEARCH-LOG.md) (full append-only
   log of prior refresh runs — what was surveyed, what was found, and the

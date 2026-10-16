@@ -331,7 +331,7 @@ are intentionally not exposed (see [DESIGN-virtual-columns.md](dev-docs/DESIGN-v
 | COMMENT ON COLUMN | Yes | Stored in `ducklake_column_tag`; visible to DuckDB |
 | DELETE/UPDATE/MERGE over inlined rows | No | Rejected with guidance — the merge sink writes parquet positional delete files, which can't tombstone a row held inline in the catalog. Run `CALL system.flush_inlined_data(schema, table)` first (or `data_inlining_row_limit = 0`) to make the rows file-resident, then DELETE/UPDATE/MERGE work. Reads over inlined+file mixes work. |
 | ALTER TABLE SET TYPE | Yes | Widening type promotions only (`ALTER COLUMN c SET DATA TYPE …`): the signed-integer chain (TINYINT→SMALLINT→INTEGER→BIGINT), integer→REAL/DOUBLE, REAL→DOUBLE, and TIMESTAMP→TIMESTAMP WITH TIME ZONE; a same-type change is a no-op. Narrowing / incompatible changes are rejected at DDL time so files written under the old physical type stay readable. Files written before the change read at the widened type: parquet self-heals via the reader's type coercion, and inlined values convert under the current type. Nested struct-field promotions (`ALTER COLUMN s.child SET DATA TYPE …`, any nesting depth) are supported too. List-element / map-value type changes are out of scope. |
-| ALTER TABLE ADD/DROP FIELD | Yes | Nested struct field add/drop (`ADD COLUMN s.child …` / `DROP COLUMN s.child`). Files written before the change are reconciled per file: parquet self-heals (struct fields bind by name/field-id, missing subfields read NULL). See dev-docs/DESIGN-nested-field-evolution.md. |
+| ALTER TABLE ADD/DROP FIELD | Yes | Nested struct field add/drop (`ADD COLUMN s.child …` / `DROP COLUMN s.child`). Files written before the change are reconciled per file: parquet self-heals (struct fields bind by name/field-id, missing subfields read NULL). See the [historical design](dev-docs/archive/DESIGN-nested-field-evolution.md). |
 | ANALYZE | Yes | Refreshes the cached table-level stats (`ducklake_table_stats` + `ducklake_table_column_stats`). The engine scans for an authoritative live row count; the per-column aggregates are rebuilt from the authoritative per-file stats, tightening any min/max that incremental maintenance left stale after a delete. Stats are otherwise maintained on every write, so ANALYZE is a no-op on a never-drifted table. A non-versioned side-table refresh: no new snapshot, `next_row_id` preserved. |
 | Sorted writes | Yes | When a table carries a DuckLake sort spec (set via DuckDB `ALTER TABLE … SET SORTED BY (…)` — there is no Trino `sorted_by` property yet), a Trino INSERT physically orders the rows it writes into each parquet data file by the spec's honored leading prefix (same prefix the read side advertises as a `SortingProperty`). Gated to parquet + unpartitioned tables with a resolvable spec; partitioned / non-parquet / no-spec writes are unchanged. In-memory sort (buffers the INSERT's pages), so it targets the bounded gated scope. |
 
@@ -755,14 +755,15 @@ the `ducklake.test.catalog-backend` system property:
 
 ### Releasing
 
-Push a `v<version>` tag (e.g. `v0.1.0`); the [`release.yml`](.github/workflows/release.yml)
+Push a `v<version>` tag (e.g. `v483-0.5.0`); the [`release.yml`](.github/workflows/release.yml)
 workflow builds `pluginDist` and attaches the archives + checksums to the GitHub Release for
 that tag.
 
 ## Additional Documentation
 
 - [SAMPLES.md](SAMPLES.md) — SQL examples for DDL, DML, time travel, metadata tables, and DuckDB interop
-- [TODO for READ side](dev-docs/TODO-READ-MODE.md) — Read mode open items + research notes
-- [TODO for WRITE side](dev-docs/TODO-WRITE-MODE.md) — Write mode open items + design rationale
+- [Developer documentation index](dev-docs/README.md) — current contracts, backlogs, reviews, releases, and archive policy
+- [TODO for READ side](dev-docs/TODO-READ-MODE.md) — concise read-path open items
+- [TODO for WRITE side](dev-docs/TODO-WRITE-MODE.md) — concise write-path open items
 - [duckbridge](https://github.com/brikk/duckbridge) — the standalone Trino → DuckDB connector that now owns the DuckDB-engine pushdown, executors, and lance/vortex surfaces
 - [dev-docs/archive/](dev-docs/archive/) — Historical context: closed work, archived plans, the DuckLake 1.0 spec impact reference, the reuse audit, and the date/time pushdown program design + empirical TZ findings (incl. the tombstoned duckdb-format trackers)

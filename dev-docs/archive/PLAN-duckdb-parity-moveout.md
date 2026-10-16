@@ -1,6 +1,7 @@
-# PLAN — DuckDB-format moveout: `trino-duckdb-parity` connector
+# PLAN — DuckDB-format moveout: `trino-duckdb-parity` connector (completed historical plan)
 
-**Status: APPROVED — P0 resolved 2026-07-19. P1/P2/P3/P5 SHIPPED and TRANSPLANTED.**
+**Status: ARCHIVED.** The DuckDB-engine data plane moved to `brikk/duckbridge`; this repository's
+non-Parquet paths were removed. Retained only for transplant history and decision rationale.
 The new connector was built in-tree as `jvm/trino-duckbridge` (naming evolved from the
 draft's `trino-duckdb-parity`: module `trino-duckbridge`, connector name `duckbridge`,
 package `dev.brikk.duckbridge.trino.plugin`) and then moved to its permanent home:

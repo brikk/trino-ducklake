@@ -1,4 +1,7 @@
-# Note to the trino-ducklake agent: transpile-first corpus dialect gate
+# Transpile-first corpus dialect gate (implemented historical handoff)
+
+**Archived:** the transpile-first gate shipped. API examples below document the adoption path and
+include obsolete brikk-sql versions; current code and dependency pins are authoritative.
 
 From: the doris-ducklake side. This is a **suggestion + a worked reference**, not
 a spec — decide your own specifics. You know the Trino surface better than I do.

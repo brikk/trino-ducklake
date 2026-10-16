@@ -1,4 +1,4 @@
-# DESIGN — nested struct field evolution on non-parquet reads (step 2)
+# DESIGN — nested struct field evolution on non-parquet reads (historical)
 
 **Status:** archived historical design. The non-Parquet DuckDB-engine path moved out of this repo.
 The remaining Parquet path now resolves nested fields by catalog column identity (field ID first,

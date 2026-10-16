@@ -1,6 +1,7 @@
-# Design thoughts — managed Parquet soft-scan materialization
+# Design thoughts — managed Parquet soft-scan materialization (historical)
 
-Status: planning input. This is deliberately a proposed direction, not an
+**Status: archived here.** DuckDB scan/materialization work moved to `brikk/duckbridge`; this is
+planning history, not an active trino-ducklake design. It was deliberately a proposed direction, not an
 implementation design that has already been accepted.
 
 ## The narrow first problem worth solving

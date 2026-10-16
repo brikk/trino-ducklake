@@ -56,8 +56,8 @@ classpath; no other config change is needed.
 
 **Why cross-engine is deferred (verified upstream blocker).** DuckLake itself supports MySQL as a
 metadata backend — a one-shot DuckDB `ATTACH 'ducklake:mysql:...'` reliably bootstraps all 28
-`ducklake_*` tables + the initial snapshot (5/5 clean runs). But DuckDB 1.5.4's `mysql` extension
-(the latest release as of 2026-06-17) is **unstable reading a DuckLake-on-MySQL catalog**: clean
+`ducklake_*` tables + the initial snapshot (5/5 clean runs). DuckDB 1.5.6 remains the maintained
+connector test lane, but its `mysql` extension is **unstable reading a DuckLake-on-MySQL catalog**: clean
 single-shot round-trips failed 5/5 with `Server has gone away` / `Got packets out of order`, and it
 SIGSEGVs the JVM inside `mysql_scanner.duckdb_extension` at `ssl3_write_bytes`. Reproduced on MySQL
 8.0 and 8.4, with and without `ssl_mode=disabled`. This is an upstream DuckDB `mysql`-extension bug,

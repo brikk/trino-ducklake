@@ -1,4 +1,7 @@
-# Possible Terra Issues — Review Notes
+# Possible Terra Issues — Review Notes (archived)
+
+**Archived:** each finding was triaged into the live read/write trackers or explicitly marked as
+known/deferred. This file preserves reproduction evidence; it is not a second active backlog.
 
 Review notes from 2026-07-12 onward. These are deliberately not fixes or
 workarounds. The original entries below remain reproduction candidates; the
@@ -223,7 +226,7 @@ can therefore prune a connector-written file that holds qualifying rows.
 > Trino's own NaN comparison semantics differ from DuckDB's (Trino: `NaN > 5` is
 > false; DuckDB: true), so the Trino read side is a lesser/separate concern; the
 > confirmed impact is DuckDB reading connector-written files. Copied to
-> [TODO-WRITE-MODE.md § Floating-point `contains_nan`](TODO-WRITE-MODE.md#floating-point-contains_nan-stats--review-2026-07-13).
+> [historical write tracker § Floating-point `contains_nan`](TODO-WRITE-MODE-2026-07.md#floating-point-contains_nan-stats--review-2026-07-13).
 >
 > **✅ FIXED 2026-07-13 (write side).** All connector writers now record
 > `contains_nan = TRUE` when a REAL/DOUBLE file actually holds NaN:
@@ -303,7 +306,7 @@ storage move.
 > - Note our own docstring claims this procedure "Row count and values are
 >   preserved … Mirrors upstream DuckLake's flush_inlined_data" — the code
 >   contradicts that, so this is a genuine defect, not an accepted v1 limitation.
-> Copied to [TODO-WRITE-MODE.md § flush_inlined_data row identity](TODO-WRITE-MODE.md#flush_inlined_data-must-preserve-row-identity--count--review-2026-07-13).
+> Copied to [historical write tracker § flush_inlined_data row identity](TODO-WRITE-MODE-2026-07.md#flush_inlined_data-must-preserve-row-identity--count--review-2026-07-13).
 >
 > **✅ FIXED 2026-07-13.** The flush now embeds each row's original global row_id as
 > `_ducklake_internal_row_id` (field id 2147483540 — new `readInlinedRowIds` +
@@ -352,7 +355,7 @@ for `/`, structurally different path.
 > `__HIVE_DEFAULT_PARTITION__` collides with the NULL sentinel — plus it
 > diverges from DuckDB, which URL-encodes. **✅ FIXED 2026-07-13** —
 > `DucklakeHivePartitionCodec` (encode+decode, key & value), see
-> [TODO-WRITE-MODE.md § Hive Partition Path Encoding](TODO-WRITE-MODE.md#hive-partition-path-encoding-on-writes--done-2026-07-13).
+> [historical write tracker § Hive Partition Path Encoding](TODO-WRITE-MODE-2026-07.md#hive-partition-path-encoding-on-writes--done-2026-07-13).
 
 ## P1 — Do not turn present-but-unreadable data into NULL
 
@@ -389,7 +392,7 @@ and returns NULL.
 > justifies it by analogy to the pruning path — but pruning-tolerance keeps the
 > file (safe/conservative), whereas here it emits a *wrong value*. This violates
 > AGENTS.md "prefer failing loud over silently wrong". Copied (site 2 only) to
-> [TODO-READ-MODE.md § Robustness Follow-ups](TODO-READ-MODE.md#robustness--performance-follow-ups-review-2026-07-12).
+> [historical read tracker § Robustness Follow-ups](TODO-READ-MODE-2026-07.md#robustness--performance-follow-ups-review-2026-07-12).
 
 ## P2 — Sorted writes have unbounded per-writer heap usage
 
@@ -411,7 +414,7 @@ number but does not impose a limit, spill, or backpressure path.
 > **VERDICT: KNOWN — already tracked, not new.** The unbounded buffer is an
 > explicitly documented, accepted v1 trade-off in code
 > (`DucklakePageSink.kt:102-110`) and in the backlog
-> ([TODO-WRITE-MODE.md § Sorted Table Writes](TODO-WRITE-MODE.md#sorted-table-writes---done-2026-07-08-recommended-gated-scope),
+> ([historical write tracker § Sorted Table Writes](TODO-WRITE-MODE-2026-07.md#sorted-table-writes---done-2026-07-08-recommended-gated-scope),
 > DONE 2026-07-08), whose follow-ups already list *"spill-based sort for large
 > unpartitioned inserts"*. One correction to the note: `getMemoryUsage()` is not
 > mere reporting — Trino feeds it into query memory accounting and CAN abort the
@@ -448,7 +451,7 @@ file/stats row and filters it in JVM code for each invocation.
 > constrained. The cheap, safe win is to fetch stats for all predicate columns in
 > a single query and pivot in the JVM (C→1 scans), keeping the "unknown stats →
 > keep" LEFT-JOIN semantics. Copied to
-> [TODO-READ-MODE.md § Performance Follow-ups](TODO-READ-MODE.md#robustness--performance-follow-ups-review-2026-07-12).
+> [historical read tracker § Performance Follow-ups](TODO-READ-MODE-2026-07.md#robustness--performance-follow-ups-review-2026-07-12).
 
 ## P2 — Puffin delete vectors expand into several large boxed sets
 
@@ -475,7 +478,7 @@ the delete transform copies those sets again.
 > (`:121-122`) and corruption fails the split loudly. This is an optimization
 > (retain RoaringBitmap through the membership test) plus a possible explicit
 > resource cap, not a correctness bug. Copied to
-> [TODO-READ-MODE.md § Puffin Deletion Vector Reads](TODO-READ-MODE.md#puffin-deletion-vector-reads) follow-ups.
+> [historical read tracker § Puffin Deletion Vector Reads](TODO-READ-MODE-2026-07.md#puffin-deletion-vector-reads) follow-ups.
 
 ## P2 — Change-feed setup is fully eager and row-proportional
 
@@ -503,7 +506,7 @@ window.
 > not the page. Correct, but eager. Note the update-pairing (delete+reinsert on
 > the same rowid) inherently needs cross-window state, so a lazy/batched rewrite
 > is non-trivial and must not drop pair semantics. Copied to
-> [TODO-READ-MODE.md § R6: Change Feed](TODO-READ-MODE.md#r6-change-feed-and-extended-metadata-parity) follow-ups.
+> [historical read tracker § R6: Change Feed](TODO-READ-MODE-2026-07.md#r6-change-feed-and-extended-metadata-parity) follow-ups.
 
 ## Lower-priority follow-up — materialized DuckDB read cache
 
@@ -533,4 +536,4 @@ name directly under the OS temp directory. Its locks are JVM-local.
 > full-size `.db` could be moved into place and handed to DuckDB `ATTACH`. Cheap
 > fix: process-unique partial name (`<key>.<pid>-<uuid>.partial`) before the
 > atomic move. **✅ FIXED 2026-07-13** (eviction still a documented deferral), see
-> [TODO-READ-MODE.md § Robustness Follow-ups](TODO-READ-MODE.md#robustness--performance-follow-ups-review-2026-07-12).
+> [historical read tracker § Robustness Follow-ups](TODO-READ-MODE-2026-07.md#robustness--performance-follow-ups-review-2026-07-12).

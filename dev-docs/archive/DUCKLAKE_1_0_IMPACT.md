@@ -4,8 +4,8 @@ DuckLake 1.0 was released on 2026-04-13 alongside DuckDB 1.5.2. The spec version
 jumped from 0.3 to 1.0 with backward-compatibility guarantees. This document is the
 **spec/state reference** for what 1.0 changed and what each change means for our
 connector. Actionable work items have moved into
-[TODO-READ-MODE.md](TODO-READ-MODE.md) and
-[TODO-WRITE-MODE.md](TODO-WRITE-MODE.md); link back here from those when spec
+[TODO-READ-MODE.md](../TODO-READ-MODE.md) and
+[TODO-WRITE-MODE.md](../TODO-WRITE-MODE.md); link back here from those when spec
 context is useful.
 
 The connector compiles and passes the test suite against DuckDB 1.5.2 with zero
@@ -92,7 +92,7 @@ ALTER TABLE events SET PARTITIONED BY (bucket(8, user_name));
 
 **Impact**: a DuckDB-created bucket-partitioned table fails to parse on our side
 today (unknown transform). Tracked under
-[TODO-WRITE-MODE § Bucket Partitioning](TODO-WRITE-MODE.md#bucket-partitioning).
+[historical write tracker § Bucket Partitioning](TODO-WRITE-MODE-2026-07.md#bucket-partitioning).
 
 ### 2. Sorted Tables — read-awareness shipped
 
@@ -111,7 +111,7 @@ dialect, non-column expression, column dropped at the snapshot)
 truncates the result to the safe prefix rather than misreporting an
 order. Writes still don't apply the sort — Trino-emitted Parquet is
 unsorted; DuckDB compaction can re-sort later. Write side tracked under
-[TODO-WRITE-MODE § Sorted Table Writes](TODO-WRITE-MODE.md#sorted-table-writes).
+[historical write tracker § Sorted Table Writes](TODO-WRITE-MODE-2026-07.md#sorted-table-writes).
 
 ### 3. Variant Type
 
@@ -120,14 +120,14 @@ statistics.
 
 **Impact**: variant maps to VARCHAR (degraded). Data accessible as a string but
 without variant-specific operators, shredded field access, or pushdown. Tracked under
-[TODO-READ-MODE § Type-Support Improvements](TODO-READ-MODE.md#type-support-improvements).
+[TODO-READ-MODE § Type-Support Improvements](../TODO-READ-MODE.md#type-support-improvements).
 
 ### 4. Geometry Type
 
 **Spec**: geometry with bounding-box statistics per file.
 
 **Impact**: geometry types map to VARBINARY (degraded). No spatial pruning. Tracked
-under [TODO-READ-MODE § Type-Support Improvements](TODO-READ-MODE.md#type-support-improvements).
+under [TODO-READ-MODE § Type-Support Improvements](../TODO-READ-MODE.md#type-support-improvements).
 
 ### 5. Deletion Vectors (Experimental) — shipped (read path)
 

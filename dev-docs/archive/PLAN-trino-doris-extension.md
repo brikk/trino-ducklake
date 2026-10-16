@@ -1,6 +1,8 @@
-# PLAN - `trino-doris`: read-only Doris connector with verified pushdown
+# PLAN - `trino-doris`: read-only Doris connector with verified pushdown (historical)
 
-**Status: DRAFT for review.** The decision gates in section 3 require sign-off before
+**Status: ARCHIVED IN THIS REPOSITORY.** Doris connector work moved to
+`github.com/brikk/doris-ducklake`; this draft is retained only as historical input. The original
+decision gates below required sign-off before
 implementation. This plan intentionally starts read-only and treats every pushdown as a
 correctness claim, not merely a SQL-rendering convenience.
 

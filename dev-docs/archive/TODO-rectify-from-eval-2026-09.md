@@ -1,4 +1,8 @@
-# TODO — Rectify findings from the 2026-09-02 correctness eval
+# TODO — Rectify findings from the 2026-09-02 correctness eval (archived)
+
+**Archived:** this evaluation was superseded by the stable-ID
+[`../REVIEW-2026-09-05.md`](../REVIEW-2026-09-05.md) and later implementation records. Preserve it
+for evidence and original labels, not as a second current backlog.
 
 Source: a spec-conformance review of (a) the catalog layer
 (`../ducklake-catalog/ducklake-catalog/src/dev/brikk/ducklake/catalog/*.kt`, consumed here as

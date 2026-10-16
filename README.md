@@ -1,6 +1,6 @@
 # Trino DuckLake Connector — Feature Support
 
-Connector for the [DuckLake](https://ducklake.select) open table format (spec v1.0).
+Connector for the [DuckLake](https://ducklake.select) open table format.
 Supports PostgreSQL and MySQL 8+ (shared, multi-process) and a local DuckDB `.db`
 file (single-process; ideal for dev, local interactive use, and single-node Trino
 deployments) as catalog metadata backends. SQLite/Turso, and a remote-DuckDB backend
@@ -9,7 +9,16 @@ DuckDB-as-catalog without filesystem mounting, are planned next. (For a catalog
 shared with DuckDB itself, use PostgreSQL — DuckDB's own MySQL reader is not yet
 stable; see [dev-docs/CATALOG-BACKENDS.md](dev-docs/CATALOG-BACKENDS.md).)
 
-Tested with DuckDB 1.5.4 for cross-engine compatibility.
+Tested with DuckDB 1.5.6 for cross-engine compatibility.
+
+| DuckLake catalog version | Read | Write | Support level |
+|--------------------------|:----:|:-----:|---------------|
+| `1.0` | Yes | Yes | Fully supported and cross-engine tested |
+| `1.1-dev*` | Yes | No | Read-only while upstream's version remains a development format; catalog and data mutations are rejected |
+
+The `1.1-dev*` read-only boundary remains in place until upstream flips the format version to
+final `1.1`, at which point the compatibility contract will be requalified and this matrix updated.
+The feature tables below describe full DuckLake 1.0 support unless they explicitly say otherwise.
 
 The [DuckLake spec](ducklake-web/docs/stable/specification/) is included as a submodule.
 All documentation and feature tables in this module are current against that version of the spec.
@@ -106,7 +115,7 @@ duckdb -c "INSTALL ducklake; LOAD ducklake; INSTALL mysql; LOAD mysql; \
 
 > **Cross-engine note.** Trino read/write against a MySQL-backed catalog is
 > supported and tested. However, *DuckDB itself* currently cannot reliably read
-> a DuckLake-on-MySQL catalog — DuckDB 1.5.4's `mysql` extension is unstable on
+> a DuckLake-on-MySQL catalog — DuckDB 1.5.6's `mysql` extension is unstable on
 > that path (upstream issue, not this connector). If you need DuckDB and Trino to
 > share one catalog today, use PostgreSQL. See
 > [dev-docs/CATALOG-BACKENDS.md](dev-docs/CATALOG-BACKENDS.md).
@@ -574,7 +583,7 @@ parquet-delete, puffin-delete) is now read correctly — no gate remains.
 
 ## Cross-Engine Compatibility
 
-The connector is tested for bidirectional compatibility with DuckDB:
+The connector is tested for bidirectional compatibility with DuckDB 1.5.6:
 
 | Direction | Tested | Notes |
 |-----------|:------:|-------|
@@ -664,7 +673,7 @@ Cross-dialect transpilation (e.g., DuckDB SQL to Trino SQL) is a research item.
 | Backend | Status | Notes |
 |---------|--------|-------|
 | PostgreSQL | Supported | Multi-process; preferred for shared / clustered deployments (incl. sharing with DuckDB) |
-| MySQL 8+ | Supported (Trino) | Multi-process. Connector read/write is tested; **cross-engine with DuckDB is deferred** — DuckDB 1.5.4's `mysql` extension is unstable reading a DuckLake-on-MySQL catalog (upstream). See `dev-docs/CATALOG-BACKENDS.md` |
+| MySQL 8+ | Supported (Trino) | Multi-process. Connector read/write is tested; **cross-engine with DuckDB is deferred** — DuckDB 1.5.6's `mysql` extension is unstable reading a DuckLake-on-MySQL catalog (upstream). See `dev-docs/CATALOG-BACKENDS.md` |
 | Local DuckDB `.db` file | Supported | Single-process; dev, single-node Trino, interactive use |
 | SQLite | Planned | Single-process; lighter-weight alternative to local DuckDB |
 | Turso (libSQL) | Planned | Distributed SQLite-wire; blocked on a formal JDBC driver in Maven Central |

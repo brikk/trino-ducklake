@@ -31,6 +31,64 @@ repositories {
     mavenCentral()
 }
 
+// Qualification only: absent this property, released dependencies and repositories are unchanged.
+// Point at the candidate bundle (README.md + SHA256SUMS + maven-repository), not ~/.m2.
+val r07CatalogCandidate = providers.gradleProperty("r07CatalogCandidate").orNull?.let(::file)
+val r07Modules = setOf("ducklake-catalog", "slt-format", "ducklake-test-corpus-replay")
+if (r07CatalogCandidate != null) {
+    repositories.exclusiveContent {
+        forRepository {
+            repositories.maven {
+                name = "r07CatalogCandidate"
+                url = uri(r07CatalogCandidate.resolve("maven-repository"))
+                metadataSources { gradleMetadata(); mavenPom() }
+            }
+        }
+        filter {
+            r07Modules.forEach { includeVersion("dev.brikk.ducklake", it, "0.13.0-SNAPSHOT") }
+        }
+    }
+    configurations.configureEach {
+        resolutionStrategy.eachDependency {
+            if (requested.group == "dev.brikk.ducklake" && requested.name in r07Modules) {
+                useVersion("0.13.0-SNAPSHOT")
+            }
+            // The disposable native producer must match the candidate's qualified lane.
+            if (requested.group == "org.duckdb" && requested.name == "duckdb_jdbc") {
+                useVersion("2.0.0.0")
+            }
+        }
+    }
+}
+
+val verifyR07Candidate by tasks.registering {
+    group = "verification"
+    description = "Attests the explicitly selected local R07 runtime and fixture jars."
+    doLast {
+        val bundle = requireNotNull(r07CatalogCandidate) { "Set -Pr07CatalogCandidate=<candidate bundle>" }
+        val hashes = bundle.resolve("SHA256SUMS").readLines().associate { line ->
+            val (hash, path) = line.split(Regex("\\s+"), limit = 2)
+            path.substringAfterLast('/') to hash
+        }
+        val artifacts = configurations.testRuntimeClasspath.get().resolvedConfiguration.resolvedArtifacts
+            .filter { it.moduleVersion.id.group == "dev.brikk.ducklake" && it.name in r07Modules }
+        check(artifacts.size == 4) { "Expected catalog, catalog fixtures, SLT and replay jars: $artifacts" }
+        artifacts.forEach { artifact ->
+            check(artifact.moduleVersion.id.version == "0.13.0-SNAPSHOT")
+            val jar = artifact.file
+            val actual = MessageDigest.getInstance("SHA-256").digest(jar.readBytes())
+                .joinToString("") { "%02x".format(it) }
+            check(actual == hashes[jar.name]) { "Candidate SHA256 mismatch: $jar ($actual)" }
+            println("R07 SHA256 $actual  ${jar.absolutePath}")
+        }
+    }
+}
+if (r07CatalogCandidate != null) {
+    kotlin.sourceSets.test { kotlin.srcDir("qualification/src") }
+    dependencies.add("testRuntimeOnly", "dev.brikk.duckdb:quack-jdbc:0.8.0")
+    tasks.test { dependsOn(verifyR07Candidate) }
+}
+
 // Use Trino BOM for all managed dependency versions
 dependencies {
     // BOM import — controls versions for io.trino, io.airlift, jackson, opentelemetry, etc.

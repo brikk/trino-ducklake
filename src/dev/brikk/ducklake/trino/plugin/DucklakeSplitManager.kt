@@ -71,8 +71,9 @@ class DucklakeSplitManager @Inject constructor(
             session: ConnectorSession?,
             table: ConnectorTableHandle,
             dynamicFilterColumns: MutableSet<ColumnHandle>,
-            constraint: Constraint): ConnectorSplitSource {
-        specialSplitSource(table)?.let { return it }
+            constraint: Constraint): ConnectorSplitSource = catalog.readSession {
+        // All descriptors, paths, partition/name maps and inline deletes share one owned view.
+        specialSplitSource(table)?.let { return@readSession it }
 
         val tableHandle: DucklakeTableHandle = table as DucklakeTableHandle
 
@@ -181,7 +182,7 @@ class DucklakeSplitManager @Inject constructor(
 
         if (parquetSplits.isEmpty() && inlinedSplits.isEmpty()) {
             log.debug("No data files or inlined data found for table %s", tableHandle.tableName)
-            return FixedSplitSource(listOf<ConnectorSplit>())
+            return@readSession FixedSplitSource(listOf<ConnectorSplit>())
         }
 
         val allSplits: MutableList<ConnectorSplit> = ArrayList(parquetSplits.size + inlinedSplits.size)
@@ -194,7 +195,7 @@ class DucklakeSplitManager @Inject constructor(
                 parquetSplits.size,
                 inlinedSplits.size)
 
-        return FixedSplitSource(allSplits)
+        FixedSplitSource(allSplits)
     }
 
     /**

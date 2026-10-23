@@ -417,6 +417,13 @@ class DucklakeMetadata(
 
         val table = tableHandle as DucklakeTableHandle
         val dataFiles: List<DucklakeDataFile> = catalog.getDataFiles(table.tableId, table.snapshotId)
+        // Cross-snapshot native merges can put later rows in a historical physical file.
+        // Its gross record_count is neither an exact historical count nor a safe bound.
+        // Do not invoke the opt-in live-count API's intentional refusal, or replace it with
+        // a gross/zero estimate. The query must scan; unknown statistics are sufficient.
+        if (dataFiles.isNotEmpty() && table.snapshotId < catalog.currentSnapshotId) {
+            return TableStatistics.empty()
+        }
         val hasDeleteFiles = dataFiles.stream().anyMatch { dataFile -> dataFile.deleteFilePath != null }
         if (hasDeleteFiles) {
             // Conservative mode: delete-file snapshots can make row-level table stats stale across engines.

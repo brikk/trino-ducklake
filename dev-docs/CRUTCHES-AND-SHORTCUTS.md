@@ -3,6 +3,27 @@
 This inventory records the safety restrictions introduced for RV-03 and RV-04. It is not an audit
 claim that all older debt is listed here; see [the review](REVIEW-2026-09-05.md) for that assessment.
 
+## R07: Temporary Candidate Qualification, Not SQL Enablement
+
+`-Pr07CatalogCandidate=<bundle>` exclusively selects the local catalog/SLT/replay
+0.13.0-SNAPSHOT candidate, checks the four resolved runtime/fixture jar hashes and
+adds `qualification/src` to tests. It also selects test-only DuckDB JDBC 2.0.0.0
+and Java Quack JDBC 0.8.0. Omitting the property restores released 0.12.0 dependencies
+and the existing producer lane. This is not a release pin or supported plugin distribution.
+
+The qualification harness explicitly supplies owned read sessions to real Trino
+split/page-source/CDC implementations. Serialized splits scan on a separate catalog
+instance in the same test JVM. **This is not a positive multi-process/distributed SQL
+qualification.** The ordinary plugin still has no final-1.1 flag/session integration;
+the two-node SQL control verifies refusal, not success. Split planning now owns a
+single session, but legacy per-table descriptor/name-map/CDC lists remain materialized;
+bounded companion enumeration in the harness does not impose production-wide budgets.
+
+Do not enable 1.1 SQL reads on the strength of these tests. Removal requires complete
+metadata and worker session ownership, bounded production planning, matched-peer SQL
+scan/CDC and cancellation/network/retention qualification. A path/session is not a
+file lease. See [the qualification report](R07-TRINO-CANDIDATE-QUALIFICATION.md).
+
 ## RV-03: Path Comparison Boundary
 
 **Status: user-approved fail-closed restriction, 2026-09-05.** The alternative was to defer the

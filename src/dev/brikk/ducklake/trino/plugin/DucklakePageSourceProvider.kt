@@ -252,6 +252,14 @@ class DucklakePageSourceProvider @Inject constructor(
             realTypes: List<Type>,
             rawRows: List<List<Any?>>): List<List<Any?>>
     {
+        if (catalog.getSpecVersion() == "1.1") {
+            // The opt-in catalog tier already validates and projects to the TARGET stable-ID
+            // schema, including initial defaults and decoded nested/temporal values. Reapplying
+            // the legacy source-era name/default adapter would project the same evolution twice.
+            return rawRows.map { row -> row.mapIndexed { i, value ->
+                DucklakeDecodedValueConverter.convert(value, realTypes[i])
+            } }
+        }
         val nestedMappings: Map<Long, InlinedTextFieldMapping> =
                 resolveInlinedNestedMappings(inlinedSplit, realColumns)
         val eraDefaults: Map<Int, Any?> = resolveInlinedEraDefaults(inlinedSplit, realColumns)
@@ -336,8 +344,9 @@ class DucklakePageSourceProvider @Inject constructor(
         val convertedRealRows: List<List<Any?>>
         val rowCount: Int
         if (realQueryColumns.isNotEmpty()) {
-            val rawRows: List<List<Any?>> = catalog.readInlinedData(
-                    inlinedSplit.tableId, inlinedSplit.schemaVersion, inlinedSplit.snapshotId, realQueryColumns)
+            val rawRows: List<List<Any?>> = if (catalog.getSpecVersion() == "1.1")
+                catalog.readInlinedDataDecoded(inlinedSplit.tableId, inlinedSplit.schemaVersion, inlinedSplit.snapshotId, realQueryColumns)
+            else catalog.readInlinedData(inlinedSplit.tableId, inlinedSplit.schemaVersion, inlinedSplit.snapshotId, realQueryColumns)
             val realTypes: List<Type> = realColumns.map { it.columnType }
             convertedRealRows = convertInlinedRows(inlinedSplit, realColumns, realTypes, rawRows)
             rowCount = convertedRealRows.size
@@ -529,7 +538,9 @@ class DucklakePageSourceProvider @Inject constructor(
         val window: LongRange = table.startSnapshot..table.endSnapshot
         val columnIds: List<Long> = dataColumns.map { it.columnId }
         for (info in catalog.getInlinedDataInfos(table.tableId, table.endSnapshot)) {
-            val rows = catalog.getInlinedChangesBetween(
+            val rows = if (catalog.getSpecVersion() == "1.1") catalog.getInlinedChangesBetweenDecoded(
+                    table.tableId, info.schemaVersion, table.startSnapshot, table.endSnapshot, columnIds)
+                else catalog.getInlinedChangesBetween(
                     table.tableId, info.schemaVersion, table.startSnapshot, table.endSnapshot, columnIds)
             for (row in rows) {
                 if (wantInserts && row.beginSnapshot in window) {
@@ -617,10 +628,12 @@ class DucklakePageSourceProvider @Inject constructor(
     private fun inlinedRecordPageSource(events: List<InlinedEvent>, dataColumns: List<DucklakeColumnHandle>): ConnectorPageSource {
         val dataTypes: List<Type> = dataColumns.map { it.columnType }
         val types: List<Type> = dataTypes + BIGINT
+        val decoded = catalog.getSpecVersion() == "1.1"
         val rows: List<List<Any?>> = events.map { event ->
             val row: MutableList<Any?> = ArrayList(dataTypes.size + 1)
             for (i in dataTypes.indices) {
-                row.add(DucklakeInlinedValueConverter.convertJdbcValue(event.values[i], dataTypes[i]))
+                row.add(if (decoded) DucklakeDecodedValueConverter.convert(event.values[i], dataTypes[i])
+                    else DucklakeInlinedValueConverter.convertJdbcValue(event.values[i], dataTypes[i]))
             }
             row.add(event.rowId)
             row
@@ -757,6 +770,10 @@ class DucklakePageSourceProvider @Inject constructor(
             table: ChangeFeedTableHandle,
             deletion: DucklakeChangeFeedDeletion): Map<Long, Set<Long>> {
         val currentDeletePath = deletion.currentDeletePath
+        puffinDeletionSnapshots(fileSystem, tableDataPath, deletion)?.let { snapshots ->
+            return snapshots.entries.filter { it.value in table.startSnapshot..table.endSnapshot }
+                    .groupBy({ it.value }, { it.key }).mapValues { it.value.toSet() }
+        }
         if (!deletion.fullFileDelete && currentDeletePath != null &&
                 deletion.currentDeleteFormat.equals("parquet", ignoreCase = true)) {
             val currentPath: String = pathResolver.resolveFilePath(
@@ -781,6 +798,17 @@ class DucklakePageSourceProvider @Inject constructor(
             }
         }
         return mapOf(deletion.snapshotId to newlyDeletedPositions(fileSystem, tableDataPath, deletion))
+    }
+
+    private fun puffinDeletionSnapshots(
+            fileSystem: TrinoFileSystem,
+            tableDataPath: String,
+            deletion: DucklakeChangeFeedDeletion): Map<Long, Long>? {
+        if (deletion.fullFileDelete) return null
+        val currentPath = deletion.currentDeletePath ?: return null
+        if (!deletion.currentDeleteFormat.equals("puffin", ignoreCase = true) && !isPuffinPath(currentPath)) return null
+        val path = pathResolver.resolveFilePath(currentPath, deletion.currentDeletePathIsRelative ?: false, tableDataPath)
+        return DucklakePuffinDeleteReader.readDeletionSnapshotsIfPresent(fileSystem.newInputFile(toLocation(path)))
     }
 
     /** rowids that were BOTH deleted and inserted in the same snapshot (update pairing). Inserted

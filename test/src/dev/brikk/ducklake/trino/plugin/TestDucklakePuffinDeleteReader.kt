@@ -178,6 +178,33 @@ class TestDucklakePuffinDeleteReader {
     }
 
     @Test
+    fun cumulativeContainersReportEarliestDeletionNotTheContainerSnapshot() {
+        // Deliberately reversed footer order; cumulative repeats are not new events.
+        val container = buildContainer(listOf(
+            20L to mapOf(0 to longArrayOf(1L, 2L)),
+            10L to mapOf(0 to longArrayOf(1L))))
+        assertThat(DucklakePuffinDeleteReader.decodeDeletionSnapshotsIfPresent(container, "test.puffin"))
+            .isEqualTo(mapOf(1L to 10L, 2L to 20L))
+    }
+
+    @Test
+    fun bareAndUntaggedVectorsHaveNoInventedDeletionSnapshots() {
+        assertThat(DucklakePuffinDeleteReader.decodeDeletionSnapshotsIfPresent(
+            buildBlob(mapOf(0 to longArrayOf(7L))), "bare.puffin")).isNull()
+        assertThat(DucklakePuffinDeleteReader.decodeDeletionSnapshotsIfPresent(
+            buildContainer(listOf(null to mapOf(0 to longArrayOf(7L)))), "untagged.puffin")).isNull()
+    }
+
+    @Test
+    fun malformedSnapshotPropertyCannotBecomeAnUntaggedVector() {
+        val container = buildContainer(listOf(-1L to mapOf(0 to longArrayOf(1L))))
+        assertThatThrownBy { DucklakePuffinDeleteReader.decodeFile(container, "bad.puffin", 10) }
+            .isInstanceOf(IOException::class.java).hasMessageContaining("invalid ducklake-snapshot-id")
+        assertThatThrownBy { DucklakePuffinDeleteReader.decodeDeletionSnapshotsIfPresent(container, "bad.puffin") }
+            .isInstanceOf(IOException::class.java).hasMessageContaining("invalid ducklake-snapshot-id")
+    }
+
+    @Test
     fun containerWithoutSnapshotsReturnsFullUnionEvenWhenFiltered() {
         // A container whose blobs carry NO ducklake-snapshot-id (has_embedded_snapshots = false):
         // every deletion already applied, so a filter is a no-op.

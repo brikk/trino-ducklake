@@ -92,6 +92,30 @@ object DucklakePuffinDeleteReader {
     fun readDeletedPositions(inputFile: TrinoInputFile, snapshotFilterMax: Long): Set<Long> =
         decodeFile(readAllBytes(inputFile), inputFile.location().toString(), snapshotFilterMax)
 
+    /** Earliest deletion snapshot per position, or null for a bare/untagged legacy vector. */
+    @Throws(IOException::class)
+    fun readDeletionSnapshotsIfPresent(inputFile: TrinoInputFile): Map<Long, Long>? =
+        decodeDeletionSnapshotsIfPresent(readAllBytes(inputFile), inputFile.location().toString())
+
+    @Throws(IOException::class)
+    fun decodeDeletionSnapshotsIfPresent(data: ByteArray, path: String): Map<Long, Long>? {
+        val blobs = parseBlobs(data, path)
+        if (blobs.none { it.snapshotId != null }) return null
+        if (blobs.any { it.snapshotId == null }) {
+            fail("Puffin delete file mixes deletion vectors with and without a snapshot id: $path")
+        }
+        val result = mutableMapOf<Long, Long>()
+        // Native containers hold cumulative vectors. The earliest tag is the event, not the
+        // container's begin_snapshot, and not current-path minus an identical previous path.
+        for (blob in blobs.sortedBy { it.snapshotId }) {
+            val snapshot = checkNotNull(blob.snapshotId)
+            for (position in decodeBlobRegion(data, blob.offset, blob.length)) {
+                result.putIfAbsent(position, snapshot)
+            }
+        }
+        return result
+    }
+
     /**
      * Decode an entire puffin file (raw bytes) into deleted positions, applying [snapshotFilterMax]
      * if non-null (see [readDeletedPositions]). Visible for testing so unit tests can exercise the
@@ -200,7 +224,11 @@ object DucklakePuffinDeleteReader {
         if (offset < PUFFIN_MAGIC_SIZE || blobLen < 0 || offset > blobSectionEnd - blobLen) {
             fail("Puffin file corrupt — blob offset/length out of range: $path")
         }
-        val snapshotId: Long? = blobNode.get("properties")?.get(DUCKLAKE_SNAPSHOT_PROPERTY)?.asText()?.toLongOrNull()
+        val tag = blobNode.get("properties")?.get(DUCKLAKE_SNAPSHOT_PROPERTY)
+        val snapshotId: Long? = tag?.asText()?.toLongOrNull()
+        if (tag != null && (snapshotId == null || snapshotId < 0)) {
+            fail("Puffin file corrupt — invalid $DUCKLAKE_SNAPSHOT_PROPERTY: $path")
+        }
         return PuffinBlob(offset, blobLen, snapshotId)
     }
 

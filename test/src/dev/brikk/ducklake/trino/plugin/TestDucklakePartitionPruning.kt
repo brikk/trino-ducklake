@@ -850,9 +850,9 @@ class TestDucklakePartitionPruning {
 
     @Test
     @Throws(Exception::class)
-    fun testTimestampTzExclusiveHighPrunesToSingleDay() {
+    fun testTimestampTzExclusiveHighKeepsUnknownWriterZones() {
         // This is the exact real-world pattern: WHERE inserted_at >= TIMESTAMP '...' AND inserted_at < TIMESTAMP '...'
-        // The < produces an exclusive high bound. Without the boundary fix, day=8 would NOT be pruned.
+        // The < produces an exclusive high bound, but the writer's partition zone is unknown.
         val splitManager = DucklakeSplitManager(
             catalog, config, DucklakePathResolver(catalog, config), NoopSplitAffinityProvider()
         )
@@ -896,14 +896,15 @@ class TestDucklakePartitionPruning {
 
         val prunedSplits = getSplits(splitManager, tableHandle)
 
-        // 3 files total (Mar 7, Mar 8, Jun 15). Only Mar 7 should survive.
+        // Three files total: partition metadata alone cannot exclude any without writer provenance.
         assertThat(allSplits).hasSize(3)
-        assertThat(prunedSplits).hasSize(1)
+        // No per-file writer-zone provenance: UTC boundaries cannot exclude local partitions.
+        assertThat(prunedSplits).hasSameSizeAs(allSplits)
     }
 
     @Test
     @Throws(Exception::class)
-    fun testTimestampTzExclusiveHighNotAtBoundaryKeepsBothDays() {
+    fun testTimestampTzExclusiveHighNotAtBoundaryKeepsUnknownWriterZones() {
         // Range: [2026-03-07T00:00:00Z, 2026-03-08T12:00:00Z) — exclusive high at NOON, not a day boundary
         // Day 8 should NOT be pruned because there's data before noon
         val splitManager = DucklakeSplitManager(
@@ -941,13 +942,13 @@ class TestDucklakePartitionPruning {
 
         val prunedSplits = getSplits(splitManager, tableHandle)
 
-        // Both Mar 7 and Mar 8 should survive (not Jun 15)
-        assertThat(prunedSplits).hasSize(2)
+        // The residual predicate handles exact exclusion; keep unknown-zone partition candidates.
+        assertThat(prunedSplits).hasSize(3)
     }
 
     @Test
     @Throws(Exception::class)
-    fun testTimestampTzInclusiveHighAtBoundaryKeepsBothDays() {
+    fun testTimestampTzInclusiveHighAtBoundaryKeepsUnknownWriterZones() {
         // Range: [2026-03-07T00:00:00Z, 2026-03-08T00:00:00Z] — INCLUSIVE high at midnight
         // Day 8 should be kept because midnight of March 8 is explicitly included
         val splitManager = DucklakeSplitManager(
@@ -985,7 +986,7 @@ class TestDucklakePartitionPruning {
 
         val prunedSplits = getSplits(splitManager, tableHandle)
 
-        // Both Mar 7 and Mar 8 should survive (inclusive high includes midnight of Mar 8)
-        assertThat(prunedSplits).hasSize(2)
+        // The residual predicate handles exact exclusion; keep unknown-zone partition candidates.
+        assertThat(prunedSplits).hasSize(3)
     }
 }

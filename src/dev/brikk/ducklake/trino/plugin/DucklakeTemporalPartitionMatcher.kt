@@ -42,6 +42,14 @@ object DucklakeTemporalPartitionMatcher {
                 return true
             }
 
+            // Native legacy TIMESTAMPTZ calendar transforms used the writer's session zone.
+            // Migration and new UTC writes do not rewrite old partitions. Neither the format,
+            // predicate zone nor calendar/epoch setting attests a file's writer zone. Keep
+            // candidates (including mixed encodings); the exact residual still filters rows.
+            if (columnType is TimestampWithTimeZoneType) {
+                return true
+            }
+
             val transformedValue = partitionValue.toLong()
             if (!readLeniency) {
                 return partitionValueMatchesDomainForEncoding(columnType, transformedValue, domain, transform, configuredEncoding)

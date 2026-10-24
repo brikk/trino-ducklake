@@ -5,6 +5,16 @@ claim that all older debt is listed here; see [the review](REVIEW-2026-09-05.md)
 
 ## R07: Temporary Candidate Qualification, Not SQL Enablement
 
+### Legacy TIMESTAMPTZ partition safety
+
+Transformed TIMESTAMPTZ partitions are not used to exclude non-NULL candidates:
+legacy native calendar transforms use the writer's timezone, and migrated/mixed
+catalogs retain those values. Neither catalog version, query timezone nor the
+calendar/epoch leniency option proves file-specific UTC provenance. Exact residual
+predicates remain in Trino; DATE/unzoned timestamp and identity pruning are unchanged.
+Cost: extra files may be scanned. Removal requires a real file-specific transform/
+writer-zone attestation, not a version check or a future native upgrade.
+
 `-Pr07CatalogCandidate=<bundle>` exclusively selects the local catalog/SLT/replay
 0.13.0-SNAPSHOT candidate, checks the four resolved runtime/fixture jar hashes and
 adds `qualification/src` to tests. It also selects test-only DuckDB JDBC 2.0.0.0

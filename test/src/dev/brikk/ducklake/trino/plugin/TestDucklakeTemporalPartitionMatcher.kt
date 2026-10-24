@@ -33,6 +33,25 @@ import java.time.LocalDate
 
 class TestDucklakeTemporalPartitionMatcher {
     @Test
+    fun legacyWriterLocalCalendarValuesAreCandidatesForTheSameInstant() {
+        val millis = java.time.Instant.parse("2021-01-01T05:00:00Z").toEpochMilli()
+        val stored = mapOf(DucklakePartitionTransform.YEAR to "2020", DucklakePartitionTransform.MONTH to "12",
+            DucklakePartitionTransform.DAY to "31", DucklakePartitionTransform.HOUR to "17")
+        for (type in listOf(TIMESTAMP_TZ_MILLIS, TIMESTAMP_TZ_MICROS)) {
+            val value: Any = if (type.isShort) packDateTimeWithZone(millis, UTC_KEY)
+                else LongTimestampWithTimeZone.fromEpochMillisAndFraction(millis, 0, UTC_KEY)
+            for (encoding in listOf(CALENDAR, EPOCH)) for (leniency in listOf(true, false)) {
+                for ((transform, partition) in stored) {
+                    assertThat(DucklakeTemporalPartitionMatcher.partitionValueMatchesDomain(
+                        type, partition, Domain.singleValue(type, value), transform, encoding, leniency)).isTrue()
+                    assertThat(DucklakeTemporalPartitionMatcher.partitionValueMatchesDomain(
+                        type, partition, Domain.none(type), transform, encoding, leniency)).isFalse()
+                }
+            }
+        }
+    }
+
+    @Test
     fun testStrictCalendarMatchesCalendarYearValue() {
         val domain = singleDate(LocalDate.of(2023, 6, 10))
 
@@ -239,10 +258,10 @@ class TestDucklakeTemporalPartitionMatcher {
         assertThat(DucklakeTemporalPartitionMatcher.partitionValueMatchesDomain(
             TIMESTAMP_TZ_MICROS, "7", domain, DucklakePartitionTransform.DAY, CALENDAR, false))
             .isTrue()
-        // Wrong day should not match
+        // Without writer-zone provenance even another day must remain a candidate.
         assertThat(DucklakeTemporalPartitionMatcher.partitionValueMatchesDomain(
             TIMESTAMP_TZ_MICROS, "8", domain, DucklakePartitionTransform.DAY, CALENDAR, false))
-            .isFalse()
+            .isTrue()
     }
 
     @Test
@@ -257,10 +276,10 @@ class TestDucklakeTemporalPartitionMatcher {
         assertThat(DucklakeTemporalPartitionMatcher.partitionValueMatchesDomain(
             TIMESTAMP_TZ_MICROS, epochDay.toString(), domain, DucklakePartitionTransform.DAY, EPOCH, false))
             .isTrue()
-        // Wrong epoch day
+        // An encoding preference is not writer-timezone provenance.
         assertThat(DucklakeTemporalPartitionMatcher.partitionValueMatchesDomain(
             TIMESTAMP_TZ_MICROS, (epochDay + 1).toString(), domain, DucklakePartitionTransform.DAY, EPOCH, false))
-            .isFalse()
+            .isTrue()
     }
 
     @Test
@@ -282,10 +301,10 @@ class TestDucklakeTemporalPartitionMatcher {
         assertThat(DucklakeTemporalPartitionMatcher.partitionValueMatchesDomain(
             TIMESTAMP_TZ_MILLIS, "12", domain, DucklakePartitionTransform.HOUR, CALENDAR, false))
             .isTrue()
-        // Wrong month
+        // A UTC predicate cannot exclude another writer-local month.
         assertThat(DucklakeTemporalPartitionMatcher.partitionValueMatchesDomain(
             TIMESTAMP_TZ_MILLIS, "4", domain, DucklakePartitionTransform.MONTH, CALENDAR, false))
-            .isFalse()
+            .isTrue()
     }
 
     @Test
@@ -305,18 +324,18 @@ class TestDucklakeTemporalPartitionMatcher {
         assertThat(DucklakeTemporalPartitionMatcher.partitionValueMatchesDomain(
             TIMESTAMP_TZ_MICROS, "7", domain, DucklakePartitionTransform.DAY, CALENDAR, false))
             .isTrue()
-        // Day 8 should NOT match — exclusive high at midnight means no data in day 8 qualifies
+        // Writer-local days need not have UTC midnight boundaries; retain candidates.
         assertThat(DucklakeTemporalPartitionMatcher.partitionValueMatchesDomain(
             TIMESTAMP_TZ_MICROS, "8", domain, DucklakePartitionTransform.DAY, CALENDAR, false))
-            .isFalse()
-        // Day 6 should not match
+            .isTrue()
+        // The exact predicate, not unknown-zone partition metadata, excludes rows.
         assertThat(DucklakeTemporalPartitionMatcher.partitionValueMatchesDomain(
             TIMESTAMP_TZ_MICROS, "6", domain, DucklakePartitionTransform.DAY, CALENDAR, false))
-            .isFalse()
-        // Year 2025 should not match
+            .isTrue()
+        // No historical writer-zone attestation is available.
         assertThat(DucklakeTemporalPartitionMatcher.partitionValueMatchesDomain(
             TIMESTAMP_TZ_MICROS, "2025", domain, DucklakePartitionTransform.YEAR, CALENDAR, false))
-            .isFalse()
+            .isTrue()
     }
 
     @Test
@@ -338,10 +357,10 @@ class TestDucklakeTemporalPartitionMatcher {
         assertThat(DucklakeTemporalPartitionMatcher.partitionValueMatchesDomain(
             TIMESTAMP_TZ_MICROS, epochDay7.toString(), domain, DucklakePartitionTransform.DAY, EPOCH, false))
             .isTrue()
-        // Epoch day 8 should NOT match — exclusive high at midnight boundary
+        // Calendar/epoch selection does not attest the writer's timezone.
         assertThat(DucklakeTemporalPartitionMatcher.partitionValueMatchesDomain(
             TIMESTAMP_TZ_MICROS, epochDay8.toString(), domain, DucklakePartitionTransform.DAY, EPOCH, false))
-            .isFalse()
+            .isTrue()
     }
 
     @Test
@@ -365,10 +384,10 @@ class TestDucklakeTemporalPartitionMatcher {
         assertThat(DucklakeTemporalPartitionMatcher.partitionValueMatchesDomain(
             TIMESTAMP_TZ_MICROS, "8", domain, DucklakePartitionTransform.DAY, CALENDAR, false))
             .isTrue()
-        // Day 9 should not match
+        // Unknown writer zone: keep candidate, retain exact residual.
         assertThat(DucklakeTemporalPartitionMatcher.partitionValueMatchesDomain(
             TIMESTAMP_TZ_MICROS, "9", domain, DucklakePartitionTransform.DAY, CALENDAR, false))
-            .isFalse()
+            .isTrue()
     }
 
     @Test
@@ -423,7 +442,7 @@ class TestDucklakeTemporalPartitionMatcher {
             .isTrue()
         assertThat(DucklakeTemporalPartitionMatcher.partitionValueMatchesDomain(
             TIMESTAMP_TZ_MILLIS, "8", domain, DucklakePartitionTransform.DAY, CALENDAR, false))
-            .isFalse()
+            .isTrue()
     }
 
     @Test
@@ -443,10 +462,10 @@ class TestDucklakeTemporalPartitionMatcher {
         assertThat(DucklakeTemporalPartitionMatcher.partitionValueMatchesDomain(
             TIMESTAMP_TZ_MICROS, "14", domain, DucklakePartitionTransform.HOUR, CALENDAR, false))
             .isTrue()
-        // Hour 15 should NOT match — exclusive high at hour boundary
+        // Writer-local hour boundaries may differ from UTC; retain candidate.
         assertThat(DucklakeTemporalPartitionMatcher.partitionValueMatchesDomain(
             TIMESTAMP_TZ_MICROS, "15", domain, DucklakePartitionTransform.HOUR, CALENDAR, false))
-            .isFalse()
+            .isTrue()
     }
 
     @Test
@@ -466,10 +485,10 @@ class TestDucklakeTemporalPartitionMatcher {
         assertThat(DucklakeTemporalPartitionMatcher.partitionValueMatchesDomain(
             TIMESTAMP_TZ_MICROS, "3", domain, DucklakePartitionTransform.MONTH, CALENDAR, false))
             .isTrue()
-        // Month 4 (April) should NOT match — exclusive high at month boundary
+        // No writer-zone provenance: month boundaries cannot justify exclusion.
         assertThat(DucklakeTemporalPartitionMatcher.partitionValueMatchesDomain(
             TIMESTAMP_TZ_MICROS, "4", domain, DucklakePartitionTransform.MONTH, CALENDAR, false))
-            .isFalse()
+            .isTrue()
     }
 
     @Test

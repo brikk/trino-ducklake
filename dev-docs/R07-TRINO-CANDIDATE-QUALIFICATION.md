@@ -1,5 +1,30 @@
 # R07 Trino candidate qualification — 2026-10-23
 
+## October 24 priority correction: legacy TIMESTAMPTZ partition pruning
+
+Reproduced the upstream review's finding through **real matched coordinator/worker
+SQL**, not only the matcher: equality at `2021-01-01T05:00Z` returned `[2]` instead
+of independently expected `[1,2]`, losing the GMT-12-written row while keeping the
+UTC-written row. Actual split planning also discarded legacy file IDs in ordinary
+1.0 and natively migrated/mixed 1.1 catalogs (three failing regression tests, zero
+skips). Native producer pins remain core `d54cbbe3df` / signed DuckLake `417a9117f5`.
+
+Fix: unknown-writer-zone TIMESTAMPTZ temporal partitions cannot exclude candidates,
+regardless of calendar/epoch preference or encoding leniency. Preserve stored values,
+exact residual predicates and NULL handling; DATE/unzoned/identity logic is unchanged.
+This intentionally narrows unsafe pruning assertions, not semantic goldens. Native
+migration/format 1.1 and future UTC writers do not attest old file provenance.
+
+The regression covers native YEAR/MONTH/DAY/HOUR partitions, GMT-12/UTC/Kiritimati
+writers, Trino UTC/Kiritimati/Los Angeles sessions, strict/lenient encoding, equality
+and exclusive ranges, and a nonmatching row inside the same partition to verify
+the residual. Migrated/mixed 1.1 is additionally checked through actual split planning.
+Evidence: `/tmp/opencode/trino-r07-next/timezone-red-xml/` and
+`timezone-candidate-final.log`; candidate regression + matcher: **33 tests pass**.
+The released-lane pruning/residual/time-travel controls pass **80 tests**, with
+lint and zero failures/errors/skips (`timezone-legacy-final-2.log`); no legacy
+writer control is retagged to bypass the candidate's intentional 1.1 write refusal.
+
 ## Decision and boundary
 
 **NO-GO for enabling final-1.1 Trino SQL consumers.** The exact candidate passes the

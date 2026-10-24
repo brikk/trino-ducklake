@@ -46,7 +46,8 @@ class DucklakePageSinkProvider @Inject constructor(
     private val fileFormatDataSourceStats: FileFormatDataSourceStats,
     nodeVersion: NodeVersion,
     private val pageIndexerFactory: PageIndexerFactory,
-    private val pageSorter: PageSorter
+    private val pageSorter: PageSorter,
+    private val config: DucklakeConfig
 )
         : ConnectorPageSinkProvider {
     private val parquetReaderOptions: ParquetReaderOptions = parquetReaderConfig.toParquetReaderOptions()
@@ -74,6 +75,7 @@ class DucklakePageSinkProvider @Inject constructor(
             mergeHandle: ConnectorMergeTableHandle,
             tableCredentials: Optional<ConnectorTableCredentials>,
             pageSinkId: ConnectorPageSinkId): ConnectorMergeSink {
+        requireWritesAllowed()
         val ducklakeMergeHandle = mergeHandle as DucklakeMergeTableHandle
 
         val writerOptions = ParquetWriterOptions.builder()
@@ -113,8 +115,9 @@ class DucklakePageSinkProvider @Inject constructor(
     private fun createPageSink(
             handle: DucklakeWritableTableHandle,
             session: ConnectorSession,
-            writeRowLineage: Boolean = false): DucklakePageSink =
-            DucklakePageSink(
+            writeRowLineage: Boolean = false): DucklakePageSink {
+        requireWritesAllowed()
+        return DucklakePageSink(
                     handle,
                     fileSystemFactory.create(session),
                     fragmentCodec,
@@ -123,4 +126,10 @@ class DucklakePageSinkProvider @Inject constructor(
                     pageIndexerFactory,
                     pageSorter,
                     writeRowLineage)
+    }
+
+    private fun requireWritesAllowed() {
+        if (config.isEnableFinal11Reads()) throw io.trino.spi.TrinoException(
+            io.trino.spi.StandardErrorCode.NOT_SUPPORTED, "Experimental final-1.1 consumer is read-only")
+    }
 }

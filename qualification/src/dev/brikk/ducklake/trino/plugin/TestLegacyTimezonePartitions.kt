@@ -72,6 +72,20 @@ class TestLegacyTimezonePartitions {
         f.assertSplits(final11 = true)
     }
 
+    @Test
+    fun migratedMixedTimezoneCatalogAlsoScansThroughReadOnlySql(): Unit = Fixture().use { f ->
+        f.prepare()
+        f.native("1.1", "SET TimeZone='Pacific/Kiritimati'; INSERT INTO lake.t VALUES(4,TIMESTAMPTZ '2021-01-01 05:00:00+00')", migrate = true)
+        DistributedQueryRunner.builder(testSessionBuilder().setCatalog("ducklake").setSchema("main").build())
+            .setWorkerCount(2).addCoordinatorProperty("node-scheduler.include-coordinator", "false").build().use { runner ->
+                runner.installPlugin(DucklakePlugin())
+                runner.createCatalog("ducklake", "ducklake", mapOf("ducklake.catalog.database-url" to "jdbc:duckdb:${f.db}",
+                    "ducklake.data-path" to f.data.toString(), "ducklake.experimental.enable-final-1.1-reads" to "true", "fs.hadoop.enabled" to "true"))
+                assertThat(runner.execute("SELECT id FROM t WHERE ts=TIMESTAMP '2021-01-01 05:00:00 UTC' ORDER BY id")
+                    .materializedRows.map { it.getField(0) }).containsExactly(1, 2, 4)
+            }
+    }
+
     private class Fixture : AutoCloseable {
         val root = Files.createTempDirectory(Path.of("/tmp/opencode"), "trino-tz-")
         val db = root.resolve("meta.db")

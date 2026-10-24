@@ -26,6 +26,18 @@ import org.junit.jupiter.api.Test
 
 class TestDucklakeConfig {
     @Test
+    fun final11IsExplicitAndNeverEmulatedOnTheReleasedLibrary() {
+        assertThat(DucklakeConfig().isEnableFinal11Reads()).isFalse()
+        val config = DucklakeConfig().setEnableFinal11Reads(true)
+        val api = dev.brikk.ducklake.catalog.DucklakeCatalogConfig::class.java.methods
+            .singleOrNull { it.name == "getEnableFinal11Reads" }
+        if (api == null) {
+            assertThatThrownBy { config.toCatalogConfig() }.hasMessageContaining("no opt-in API")
+        } else {
+            assertThat(api.invoke(config.toCatalogConfig())).isEqualTo(true)
+        }
+    }
+    @Test
     fun testCatalogPasswordIsRedactedInConfigurationInspection() {
         val password = "synthetic-catalog-password"
         ConfigurationFactory(mapOf(

@@ -112,6 +112,8 @@ class DucklakePageSourceProvider @Inject constructor(
     // which reads files the way the split manager does. Built from the same inputs the split
     // manager's injected resolver uses; the provider isn't handed one directly.
     private val pathResolver: DucklakePathResolver = DucklakePathResolver(catalog, ducklakeConfig)
+    private val final11Reads = ducklakeConfig.isEnableFinal11Reads()
+    private val readWorkLimits = DucklakeReadWorkLimits(ducklakeConfig)
 
     // Full identity-bearing column tree per (tableId, snapshot), shared by Parquet field-id
     // resolution and inlined nested-field mapping. Bounded + cleared wholesale on overflow.
@@ -139,8 +141,9 @@ class DucklakePageSourceProvider @Inject constructor(
             tableCredentials: Optional<ConnectorTableCredentials>,
             columns: List<ColumnHandle>,
             dynamicFilter: DynamicFilter): ConnectorPageSource
-    {
-        specialSplitPageSource(session, split, table, columns)?.let { return it }
+    = catalog.readSession {
+        if (final11Reads) catalog.currentSnapshotId
+        specialSplitPageSource(session, split, table, columns)?.let { return@readSession it }
 
         val ducklakeSplit = split as DucklakeSplit
 
@@ -151,7 +154,7 @@ class DucklakePageSourceProvider @Inject constructor(
                 .intersect(dynamicFilterPredicate)
 
         if (effectivePredicate.isNone) {
-            return EmptyPageSource()
+            return@readSession EmptyPageSource()
         }
 
         // Extract column information
@@ -175,7 +178,7 @@ class DucklakePageSourceProvider @Inject constructor(
             val fileSystem: TrinoFileSystem = fileSystemFactory.create(session)
             val delegate: ConnectorPageSource = createDataFilePageSource(
                     ducklakeSplit, table, sourceColumns, effectivePredicate, fileSystem)
-            return injectConstantVirtuals(delegate, ducklakeColumns, { !it.perRow }) { kind -> dataFileVirtualBlock(kind, ducklakeSplit) }
+            injectConstantVirtuals(delegate, ducklakeColumns, { !it.perRow }) { kind -> dataFileVirtualBlock(kind, ducklakeSplit) }
         }
         catch (e: IOException) {
             throw RuntimeException("Failed to create page source for file: ${ducklakeSplit.dataFilePath}", e)
@@ -198,7 +201,8 @@ class DucklakePageSourceProvider @Inject constructor(
             sourceColumns: List<DucklakeColumnHandle>,
             effectivePredicate: TupleDomain<DucklakeColumnHandle>,
             fileSystem: TrinoFileSystem): ConnectorPageSource
-    {
+    = catalog.readSession {
+        if (final11Reads) catalog.currentSnapshotId
         val format = ducklakeSplit.fileFormat
         if (!DucklakeSessionProperties.FORMAT_PARQUET.equals(format, ignoreCase = true)) {
             throw TrinoException(NOT_SUPPORTED,
@@ -208,11 +212,12 @@ class DucklakePageSourceProvider @Inject constructor(
         val dataFileLocation: Location = toLocation(ducklakeSplit.dataFilePath)
         val inputFile: TrinoInputFile = fileSystem.newInputFile(dataFileLocation)
         val currentTree = if (table is DucklakeTableHandle) columnTree(table.tableId, table.snapshotId) else emptyList()
+        if (final11Reads) rejectVariantFilePayload(sourceColumns, currentTree)
         val eraTree = if (table is DucklakeTableHandle && ducklakeSplit.beginSnapshot > 0L)
             columnTree(table.tableId, ducklakeSplit.beginSnapshot)
         else
             emptyList()
-        return createParquetPageSource(
+        createParquetPageSource(
                 inputFile, sourceColumns, ducklakeSplit, effectivePredicate, fileSystem, currentTree, eraTree)
     }
 
@@ -326,6 +331,8 @@ class DucklakePageSourceProvider @Inject constructor(
         // catalog rows, each with its own begin_snapshot — so this is genuinely per-row).
         val realColumns: List<DucklakeColumnHandle> = ducklakeColumns.filterNot { it.isVirtual() }
         val needSnapshot: Boolean = ducklakeColumns.any { it.virtualKind() == VirtualKind.SNAPSHOT_ID }
+        val inlineCount = if (final11Reads) catalog.countInlinedRows(
+            inlinedSplit.tableId, inlinedSplit.schemaVersion, inlinedSplit.snapshotId).also { readWorkLimits.rows(it) } else null
 
         val beginSnapshots: List<Long>? = if (needSnapshot)
                 catalog.readInlinedBeginSnapshots(inlinedSplit.tableId, inlinedSplit.schemaVersion, inlinedSplit.snapshotId)
@@ -355,6 +362,11 @@ class DucklakePageSourceProvider @Inject constructor(
             // No real columns, but $snapshot_id was requested → its row count + values suffice.
             convertedRealRows = emptyList()
             rowCount = beginSnapshots.size
+        }
+        else if (inlineCount != null) {
+            // A true inline-row count, never a gross file/table estimate or a payload projection.
+            convertedRealRows = emptyList()
+            rowCount = Math.toIntExact(inlineCount)
         }
         else {
             // Only NULL virtuals (e.g. SELECT $path) or pure COUNT(*): query one column for the count.
@@ -458,6 +470,15 @@ class DucklakePageSourceProvider @Inject constructor(
             catalog.getDeletionsBetween(table.tableId, table.startSnapshot, table.endSnapshot)
         else
             emptyList()
+        readWorkLimits.files(insertFiles)
+        readWorkLimits.descriptors(insertFiles.size.toLong() + deletions.size)
+        val physicalCandidates = if (final11Reads) {
+            val deleteRows = deletions.fold(0L) { n, deletion -> Math.addExact(n, deletion.recordCount) }
+            val insertRows = insertFiles.distinctBy { it.dataFileId }.fold(0L) { n, file -> Math.addExact(n, file.recordCount) }
+            readWorkLimits.rows(Math.addExact(deleteRows, insertRows))
+            readWorkLimits.events(Math.addExact(deleteRows, insertRows))
+            Math.addExact(deleteRows, insertRows)
+        } else 0L
 
         // Read DuckLake's embedded row-lineage column (parquet field-id 2147483540) for each file
         // that carries it (UPDATE/compaction output); otherwise a present start supplies identity.
@@ -479,7 +500,7 @@ class DucklakePageSourceProvider @Inject constructor(
         // Inlined data: small writes DuckDB keeps in ducklake_inlined_* tables. Inlined-row
         // insert/delete events (case 1/2) + inline file-position deletes (case 3), all folded into
         // the same rowid space so pairing spans file + inlined sources. See ChangeFeedPageSource.
-        val inlined = InlinedChangeCollector()
+        val inlined = InlinedChangeCollector(physicalCandidates)
         collectInlinedDataEvents(table, requestedDataColumns, inlined, deletedRowidsBySnapshot)
         val inlineFileDeleteGroups: List<InlineFileDeleteGroup> =
                 collectInlineFileDeleteGroups(fileSystem, tableDataPath, table, deletedRowidsBySnapshot)
@@ -507,6 +528,8 @@ class DucklakePageSourceProvider @Inject constructor(
             units.add(inlinedDataUnit(snapshotId, events, requestedDataColumns, isDelete = true, updatedBySnapshot))
         }
 
+        readWorkLimits.events(units.size.toLong())
+        if (final11Reads) readWorkLimits.rows(units.fold(physicalCandidates) { n, unit -> Math.addExact(n, unit.physicalRows) })
         return ChangeFeedPageSource(units, requestedColumns, requestedDataColumns, table.feedType.hasChangeType)
     }
 
@@ -514,7 +537,7 @@ class DucklakePageSourceProvider @Inject constructor(
     private class InlinedEvent(val rowId: Long, val values: List<Any?>)
 
     /** Accumulates inlined-data change events by snapshot + the inlined inserted rowids (pairing). */
-    private class InlinedChangeCollector {
+    private class InlinedChangeCollector(var candidateCount: Long = 0) {
         val insertEventsBySnapshot: MutableMap<Long, MutableList<InlinedEvent>> = mutableMapOf()
         val deleteEventsBySnapshot: MutableMap<Long, MutableList<InlinedEvent>> = mutableMapOf()
         val insertedRowidsBySnapshot: MutableMap<Long, MutableSet<Long>> = mutableMapOf()
@@ -542,6 +565,8 @@ class DucklakePageSourceProvider @Inject constructor(
                     table.tableId, info.schemaVersion, table.startSnapshot, table.endSnapshot, columnIds)
                 else catalog.getInlinedChangesBetween(
                     table.tableId, info.schemaVersion, table.startSnapshot, table.endSnapshot, columnIds)
+            collector.candidateCount = Math.addExact(collector.candidateCount, Math.multiplyExact(rows.size.toLong(), 2L))
+            readWorkLimits.events(collector.candidateCount)
             for (row in rows) {
                 if (wantInserts && row.beginSnapshot in window) {
                     collector.insertEventsBySnapshot.getOrPut(row.beginSnapshot) { mutableListOf() }
@@ -605,7 +630,8 @@ class DucklakePageSourceProvider @Inject constructor(
                 lineageRowIds = group.lineage,
                 keepPositions = group.positions,
                 updatedRowids = updatedBySnapshot[group.snapshotId] ?: emptySet(),
-                isDelete = true)
+                isDelete = true,
+                physicalRows = df.recordCount)
     }
 
     /** A change-feed unit backed by IN-MEMORY inlined rows (no data file): the base source yields
@@ -623,9 +649,10 @@ class DucklakePageSourceProvider @Inject constructor(
                 lineageRowIds = null,
                 keepPositions = null,
                 updatedRowids = updatedBySnapshot[snapshotId] ?: emptySet(),
-                isDelete = isDelete)
+                isDelete = isDelete,
+                physicalRows = events.size.toLong())
 
-    private fun inlinedRecordPageSource(events: List<InlinedEvent>, dataColumns: List<DucklakeColumnHandle>): ConnectorPageSource {
+    private fun inlinedRecordPageSource(events: List<InlinedEvent>, dataColumns: List<DucklakeColumnHandle>): ConnectorPageSource = catalog.readSession {
         val dataTypes: List<Type> = dataColumns.map { it.columnType }
         val types: List<Type> = dataTypes + BIGINT
         val decoded = catalog.getSpecVersion() == "1.1"
@@ -638,7 +665,7 @@ class DucklakePageSourceProvider @Inject constructor(
             row.add(event.rowId)
             row
         }
-        return RecordPageSource(InMemoryRecordSet(types, rows))
+        RecordPageSource(InMemoryRecordSet(types, rows))
     }
 
     private class ResolvedChangeFeedDeletion(
@@ -895,7 +922,8 @@ class DucklakePageSourceProvider @Inject constructor(
                     lineageRowIds = lineage,
                     keepPositions = null,
                     updatedRowids = updatedBySnapshot[file.beginSnapshot] ?: emptySet(),
-                    isDelete = false))
+                    isDelete = false,
+                    physicalRows = file.recordCount))
         }
 
         // Partial file: bucket file positions by their per-row origin snapshot, then keep only the
@@ -919,7 +947,8 @@ class DucklakePageSourceProvider @Inject constructor(
                             lineageRowIds = lineage,
                             keepPositions = positions,
                             updatedRowids = updatedBySnapshot[snapshotId] ?: emptySet(),
-                            isDelete = false)
+                            isDelete = false,
+                            physicalRows = file.recordCount)
                 }
     }
 
@@ -941,7 +970,8 @@ class DucklakePageSourceProvider @Inject constructor(
                 lineageRowIds = resolved.lineage,
                 keepPositions = resolved.deletedPositions,
                 updatedRowids = updatedBySnapshot[resolved.snapshotId] ?: emptySet(),
-                isDelete = true)
+                isDelete = true,
+                physicalRows = deletion.recordCount)
     }
 
     /** Opens one change-feed data file through the ordinary read pipeline, projecting the data
@@ -1159,6 +1189,7 @@ class DucklakePageSourceProvider @Inject constructor(
                     parquetReaderOptions,
                     Optional.empty(),
                     Optional.empty())
+            if (final11Reads) readWorkLimits.rows(parquetMetadata.blocks.fold(0L) { n, block -> Math.addExact(n, block.rowCount) })
             val fileMetadata: FileMetadata = parquetMetadata.fileMetaData
             val fileSchema: MessageType = fileMetadata.schema
             val dataSourceId: ParquetDataSourceId = dataSource.id
@@ -1265,7 +1296,8 @@ class DucklakePageSourceProvider @Inject constructor(
                     //       but the catalog has a value for it via ducklake_file_partition_value.
                     //       Project that value as a constant block.
                     //   (2) schema evolution / genuinely missing: return NULL.
-                    transforms.constantValue(buildMissingColumnBlock(column, split))
+                    transforms.constantValue(
+                        if (final11Reads) buildQualifiedMissingColumnBlock(column, split) else buildMissingColumnBlock(column, split))
                     continue
                 }
 
@@ -1278,8 +1310,10 @@ class DucklakePageSourceProvider @Inject constructor(
                         split.fieldIdToParquetSourceName,
                         hasNameMap)
                 if (field.isEmpty) {
+                    rejectUnsupportedPhysicalField(column.columnName)
                     // Could not construct field — return nulls (or partition constant if available)
-                    transforms.constantValue(buildMissingColumnBlock(column, split))
+                    transforms.constantValue(
+                        if (final11Reads) buildQualifiedMissingColumnBlock(column, split) else buildMissingColumnBlock(column, split))
                     continue
                 }
 
@@ -1356,7 +1390,31 @@ class DucklakePageSourceProvider @Inject constructor(
                     }
                 }
             }
-            throw RuntimeException("Failed to create Parquet page source for file: " + split.dataFilePath, e)
+            throw pageSourceFailure(split.dataFilePath, e)
+        }
+    }
+
+    private fun pageSourceFailure(path: String, failure: RuntimeException): RuntimeException =
+        if (final11Reads && failure is TrinoException) failure
+        else RuntimeException("Failed to create Parquet page source for file: $path", failure)
+
+    private fun rejectUnsupportedPhysicalField(name: String) {
+        if (final11Reads) throw TrinoException(NOT_SUPPORTED,
+            "Unsupported physical Parquet field for final-1.1 column $name; cannot substitute NULL")
+    }
+
+    private fun rejectVariantFilePayload(columns: List<DucklakeColumnHandle>, tree: List<DucklakeColumn>) {
+        val requested = columns.map { it.columnId }.toSet()
+        val byId = tree.associateBy { it.columnId }
+        for (variant in tree.filter { it.columnType.equals("variant", ignoreCase = true) }) {
+            var node = variant
+            val seen = mutableSetOf<Long>()
+            while (seen.add(node.columnId)) {
+                if (node.columnId in requested) throw TrinoException(NOT_SUPPORTED, "Unsupported final-1.1 VARIANT Parquet payload")
+                val parent = node.parentColumn ?: break
+                node = byId[parent] ?: throw TrinoException(NOT_SUPPORTED, "Missing parent in final-1.1 Parquet column tree")
+            }
+            check(node.parentColumn == null || node.columnId !in seen) { "Cycle in final-1.1 Parquet column tree" }
         }
     }
 
@@ -1566,6 +1624,18 @@ class DucklakePageSourceProvider @Inject constructor(
                 return messageColumnIO.getChild(column.columnName)
             }
             return null
+        }
+
+        private fun buildQualifiedMissingColumnBlock(column: DucklakeColumnHandle, split: DucklakeSplit): Block {
+            if (column.initialDefault != null && column.columnId !in split.partitionValuesByColumnId) {
+                throw TrinoException(NOT_SUPPORTED,
+                    "Unqualified final-1.1 missing-file-column initial default: ${column.columnName}; " +
+                        "requires decoded catalog default projection")
+            }
+            val stored = split.partitionValuesByColumnId[column.columnId] ?: return column.columnType.createNullBlock()
+            // Opt-in parse failures propagate; never inherit the legacy NULL fallback.
+            return io.trino.spi.type.TypeUtils.writeNativeValue(
+                column.columnType, DucklakePartitionValueParser.parseIdentity(column.columnType, stored))
         }
 
         private fun buildMissingColumnBlock(column: DucklakeColumnHandle, split: DucklakeSplit): Block

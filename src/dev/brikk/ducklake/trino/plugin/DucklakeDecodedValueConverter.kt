@@ -18,6 +18,7 @@ import io.airlift.slice.Slices
 import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
 import io.trino.spi.TrinoException
 import io.trino.spi.type.ArrayType
+import io.trino.spi.type.DecimalType
 import io.trino.spi.type.DateTimeEncoding.packTimeWithTimeZone
 import io.trino.spi.type.MapType
 import io.trino.spi.type.RowType
@@ -46,6 +47,11 @@ internal object DucklakeDecodedValueConverter {
             time.toNanoOfDay() * 1_000L
         }
         type is TimeWithTimeZoneType -> offsetTime(value as OffsetTime)
+        type is DecimalType -> {
+            val decimal = java.math.BigDecimal(value.toString()).setScale(type.scale, java.math.RoundingMode.UNNECESSARY)
+            require(decimal.precision() <= type.precision) { "Decoded decimal exceeds Trino precision ${type.precision}; cannot narrow the value" }
+            DucklakeInlinedValueConverter.convertJdbcValue(decimal, type)
+        }
         value is DucklakeInterval -> Slices.utf8Slice("${value.months} months ${value.days} days ${value.micros} microseconds")
         else -> DucklakeInlinedValueConverter.convertJdbcValue(value, type)
     }

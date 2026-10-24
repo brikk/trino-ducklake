@@ -30,6 +30,13 @@ import java.time.OffsetTime
 
 class TestDucklakeDecodedValueConverter {
     @Test
+    fun decimal38DoesNotSilentlyAcceptTheLargerSignedInt128Domain() {
+        val type = io.trino.spi.type.DecimalType.createDecimalType(38, 0)
+        val huge = java.math.BigInteger.ONE.shiftLeft(127).subtract(java.math.BigInteger.ONE)
+        assertThatThrownBy { DucklakeDecodedValueConverter.convert(huge, type) }.hasMessageContaining("exceeds Trino precision")
+        assertThat(DucklakeDecodedValueConverter.convert(java.math.BigInteger.valueOf(42), type).toString()).isEqualTo("42")
+    }
+    @Test
     fun decodedContainersKeepNullLiteralNullAndOpaqueBytes() {
         val type = RowType.from(listOf(RowType.field("s", VARCHAR), RowType.field("b", VARBINARY), RowType.field("a", ArrayType(BIGINT))))
         val bytes = byteArrayOf(0, 0x5c, 0xff.toByte())

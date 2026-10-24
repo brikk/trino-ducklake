@@ -65,6 +65,7 @@ class DucklakeSplitManager @Inject constructor(
         private val splitAffinityProvider: SplitAffinityProvider) : ConnectorSplitManager {
     private val temporalPartitionEncoding: DucklakeTemporalPartitionEncoding = config.getTemporalPartitionEncoding()
     private val temporalPartitionEncodingReadLeniency: Boolean = config.isTemporalPartitionEncodingReadLeniency()
+    private val readWorkLimits = DucklakeReadWorkLimits(config)
 
     override fun getSplits(
             transaction: ConnectorTransactionHandle?,
@@ -83,6 +84,7 @@ class DucklakeSplitManager @Inject constructor(
         var dataFiles: List<DucklakeDataFile> = catalog.getDataFiles(
                 tableHandle.tableId,
                 tableHandle.snapshotId)
+        readWorkLimits.files(dataFiles)
 
         log.debug("Found %d data files for table %s", dataFiles.size, tableHandle.tableName)
 
@@ -95,6 +97,7 @@ class DucklakeSplitManager @Inject constructor(
         // snapshot (computed in the same EXISTS probe that confirms the table exists), so we filter
         // on the carried flag instead of issuing a second per-element hasInlinedRows round trip.
         val inlinedDataInfos: List<DucklakeInlinedDataInfo> = catalog.getInlinedDataInfos(tableHandle.tableId, tableHandle.snapshotId)
+        readWorkLimits.descriptors(dataFiles.size.toLong() + inlinedDataInfos.size)
         var inlinedSplits: List<DucklakeInlinedSplit> = inlinedDataInfos.stream()
                 .filter { info -> info.hasLiveRows }
                 .map { info ->

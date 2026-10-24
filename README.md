@@ -16,8 +16,9 @@ Tested with DuckDB 1.5.6 for cross-engine compatibility.
 | `1.0` | Yes | Yes | Fully supported and cross-engine tested |
 | `1.1-dev*` | Yes | No | Read-only while upstream's version remains a development format; catalog and data mutations are rejected |
 
-The `1.1-dev*` read-only boundary remains in place until upstream flips the format version to
-final `1.1`, at which point the compatibility contract will be requalified and this matrix updated.
+The `1.1-dev*` row is not qualification of final `1.1`. Final-1.1 currently has an
+explicit default-off, read-only **local candidate trial**, not a released/default-on
+rollout. See [R07 qualification and remaining gates](dev-docs/R07-TRINO-CANDIDATE-QUALIFICATION.md).
 The feature tables below describe full DuckLake 1.0 support unless they explicitly say otherwise.
 
 The [DuckLake spec](ducklake-web/docs/stable/specification/) is included as a submodule.
@@ -171,6 +172,10 @@ Catalog properties (set in `etc/catalog/<name>.properties`):
 | `ducklake.catalog.database-password` | Conditional | — | Catalog database password. Required for PostgreSQL and MySQL; omit for local DuckDB |
 | `ducklake.data-path` | Yes | — | Base path for data files |
 | `ducklake.catalog.max-connections` | No | 10 | Max JDBC connections to catalog |
+| `ducklake.experimental.enable-final-1.1-reads` | No | false | Qualification-only read-only mode; requires the checksum-attested catalog candidate. Rejects connector writes and omits maintenance procedures. The released 0.12 library cannot enable it |
+| `ducklake.read.max-files` | No | 10000 | Opt-in consumer descriptor/iterator work limit (maximum 100000); not SQL pagination of catalog list APIs |
+| `ducklake.read.max-physical-rows` | No | 1000000 | Opt-in physical/inline candidate row work limit (maximum 10000000) |
+| `ducklake.read.max-cdc-events` | No | 100000 | Opt-in CDC candidate/unit limit (maximum 1000000); unknown/delete-history catalog transfer bounds remain gated |
 | `ducklake.cleanup.batch-size` | No | 256 | Maximum queued requests selected per `cleanup_old_files` call and retained references per page; allowed 1..1024 |
 | `ducklake.cleanup.max-reference-files` | No | 1000000 | Combined retained data/delete reference scan budget per cleanup call; allowed 1..10000000. Exceeding it aborts before deletion or queue cancellation |
 | `ducklake.default-snapshot-id` | No | — | Pin all reads to a snapshot ID |

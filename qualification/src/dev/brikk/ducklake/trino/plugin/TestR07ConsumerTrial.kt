@@ -41,6 +41,8 @@ import io.trino.testing.TestingSession.testSessionBuilder
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.parallel.Execution
+import org.junit.jupiter.api.parallel.ExecutionMode
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
@@ -49,6 +51,7 @@ import java.util.Optional
 import java.util.function.Supplier
 
 /** Candidate-only SPI qualification. This is NOT production flag/session wiring or SQL rollout. */
+@Execution(ExecutionMode.SAME_THREAD)
 class TestR07ConsumerTrial {
     @Test
     fun everyTrialCaseHasAJUnitDiscoverableVoidSignature() {
@@ -172,6 +175,11 @@ class TestR07ConsumerTrial {
             assertThat(f.scan(c, latest, listOf(f.column(c, latest, "i", INTEGER))).map { it[0] as Int }.sorted())
                 .containsExactly(1, 2, 3, 4, 5, 6, 7)
         }
+        f.runner().use { runner ->
+            assertThat(runner.execute("SELECT i,\"\$row_id\" FROM t FOR VERSION AS OF $first ORDER BY i").materializedRows.map { it.fields })
+                .containsExactly(listOf<Any?>(1, 0L), listOf<Any?>(2, 1L), listOf<Any?>(3, 2L))
+            assertThat(runner.execute("SELECT count(*) FROM t").onlyValue).isEqualTo(7L)
+        }
     }
 
     @Test
@@ -244,6 +252,10 @@ class TestR07ConsumerTrial {
                 assertThat(decoded[2]).isEqualTo(java.time.LocalDate.of(2024, 2, 29))
                 assertThat(decoded[3]).isEqualTo(java.time.LocalDateTime.parse("2024-02-29T12:34:56.123456789"))
             })
+        }
+        f.runner().use { runner ->
+            assertThat(runner.execute("SELECT CAST(d AS VARCHAR),CAST(ts AS VARCHAR),added FROM t").materializedRows.single().fields)
+                .containsExactly("2024-02-29", "2024-02-29 12:34:56.123456789", "NULL")
         }
     }
 
@@ -340,6 +352,200 @@ class TestR07ConsumerTrial {
             }
     }
 
+    @Test fun localPositiveDistributedSql(): Unit = distributedMixedScan(Lane.LOCAL)
+    @Test fun postgresPositiveDistributedSql(): Unit = distributedMixedScan(Lane.POSTGRES)
+    @Test fun javaQuackPositiveDistributedSql(): Unit = distributedMixedScan(Lane.JAVA_QUACK)
+    @Test fun nativeQuackPositiveDistributedSql(): Unit = distributedMixedScan(Lane.NATIVE_QUACK)
+    @Test fun mysqlPositiveDistributedSql(): Unit = distributedMixedScan(Lane.MYSQL)
+
+    private fun distributedMixedScan(lane: Lane): Unit = Fixture(lane).use { f ->
+        f.native("CALL lake.set_option('data_inlining_row_limit',2); CREATE TABLE lake.t(i INTEGER,b BLOB,s VARCHAR); " +
+            "BEGIN; INSERT INTO lake.t VALUES(1,from_hex('005CFF'),NULL),(2,NULL,'NULL'); " +
+            "INSERT INTO lake.t VALUES(3,NULL,''),(4,NULL,'four'),(5,NULL,'five'),(6,NULL,'six'),(7,NULL,'seven'); COMMIT")
+        f.runner().use { runner ->
+            assertThat(runner.execute("SELECT i FROM t ORDER BY i").materializedRows.map { it.getField(0) })
+                .containsExactly(1, 2, 3, 4, 5, 6, 7)
+            assertThat(runner.execute("SELECT to_hex(b),s FROM t WHERE i=1").materializedRows.single().fields)
+                .containsExactly("005CFF", null)
+            assertThat(runner.execute("SELECT s FROM t WHERE i=2").onlyValue).isEqualTo("NULL")
+            assertThat(runner.execute("SELECT count(*) FROM t").onlyValue).isEqualTo(7L)
+            assertThat(runner.execute("SHOW TABLES").materializedRows.map { it.getField(0) }).contains("t")
+            assertThat(runner.execute("DESCRIBE t").materializedRows.map { it.getField(0) }).containsExactly("i", "b", "s")
+            assertThatThrownBy { runner.execute("CREATE TABLE forbidden(i INTEGER)") }.hasMessageContaining("read-only")
+            assertThatThrownBy { runner.execute("INSERT INTO t VALUES(99,NULL,NULL)") }.hasMessageContaining("read-only")
+            assertThat(runner.execute("SELECT count(*) FROM t").onlyValue).isEqualTo(7L)
+        }
+    }
+
+    @Test
+    fun distributedHistoricalPuffinAndLazyCdcScopes(): Unit = distributedHistoricalDeletes(true)
+    @Test
+    fun distributedHistoricalTaggedParquetAndLazyCdcScopes(): Unit = distributedHistoricalDeletes(false)
+
+    private fun distributedHistoricalDeletes(puffin: Boolean): Unit = Fixture().use { f ->
+        f.native("CALL lake.set_option('write_deletion_vectors',$puffin); CREATE TABLE lake.t(i INTEGER); INSERT INTO lake.t VALUES(1),(2),(3),(4)")
+        f.native("DELETE FROM lake.t WHERE i=2")
+        val a = f.snapshot()
+        f.native("DELETE FROM lake.t WHERE i=4")
+        val b = f.snapshot()
+        f.native("CALL ducklake_flush_inlined_data('lake',table_name=>'t')")
+        f.runner().use { runner ->
+            assertThat(runner.execute("SELECT i FROM t FOR VERSION AS OF $a ORDER BY i").materializedRows.map { it.getField(0) })
+                .containsExactly(1, 3, 4)
+            assertThat(runner.execute("SELECT count(*) FROM t FOR VERSION AS OF $a").onlyValue).isEqualTo(3L)
+            assertThat(runner.execute("SELECT i FROM TABLE(ducklake.system.table_deletions('main','t',$b,$b))").onlyValue).isEqualTo(4)
+            assertThat(runner.execute("SELECT i FROM t ORDER BY i").materializedRows.map { it.getField(0) }).containsExactly(1, 3)
+        }
+    }
+
+    @Test
+    fun distributedStableIdEvolutionHistoryAndDecodedCdc(): Unit = Fixture().use { f ->
+        f.native("CREATE TABLE lake.t(i INTEGER,s STRUCT(a INTEGER,b BLOB,d DATE)); " +
+            "INSERT INTO lake.t VALUES(1,{'a':10,'b':from_hex('005CFF'),'d':DATE '2024-02-29'})")
+        val old = f.snapshot()
+        f.native("ALTER TABLE lake.t RENAME s.a TO renamed; ALTER TABLE lake.t ALTER s TYPE STRUCT(renamed BIGINT,b BLOB,d DATE); " +
+            "ALTER TABLE lake.t ADD COLUMN added VARCHAR DEFAULT 'NULL'")
+        f.native("UPDATE lake.t SET s={'renamed':11,'b':from_hex('005CFF'),'d':DATE '2024-02-29'} WHERE i=1")
+        val updated = f.snapshot()
+        f.runner().use { runner ->
+            assertThat(runner.execute("SELECT s.a FROM t FOR VERSION AS OF $old").onlyValue).isEqualTo(10)
+            assertThat(runner.execute("SELECT s.renamed,to_hex(s.b),CAST(s.d AS VARCHAR),added FROM t").materializedRows.single().fields)
+                .containsExactly(11L, "005CFF", "2024-02-29", "NULL")
+            val changes = runner.execute("SELECT change_type,s.renamed,rowid FROM " +
+                "TABLE(ducklake.system.table_changes('main','t',$updated,$updated)) ORDER BY change_type").materializedRows.map { it.fields }
+            assertThat(changes).containsExactly(listOf<Any?>("update_postimage", 11L, 0L), listOf<Any?>("update_preimage", 10L, 0L))
+        }
+    }
+
+    @Test
+    fun unsupportedPhysicalVariantCannotSilentlyBecomeNull(): Unit = Fixture().use { f ->
+        f.native("CALL lake.set_option('data_inlining_row_limit',0); CREATE TABLE lake.t(i INTEGER,v VARIANT); " +
+            "INSERT INTO lake.t VALUES(1,'literal'::VARIANT)")
+        f.runner().use { runner ->
+            assertThatThrownBy { runner.execute("SELECT v FROM t") }.isInstanceOf(io.trino.testing.QueryFailedException::class.java)
+        }
+    }
+
+    @Test
+    fun unqualifiedFileInitialDefaultRefusesInsteadOfInventingValue(): Unit = Fixture().use { f ->
+        f.native("CALL lake.set_option('data_inlining_row_limit',0); CREATE TABLE lake.t(i INTEGER); INSERT INTO lake.t VALUES(1); " +
+            "ALTER TABLE lake.t ADD COLUMN added VARCHAR DEFAULT 'NULL'")
+        f.runner().use { runner ->
+            assertThat(runner.execute("SELECT i FROM t").onlyValue).isEqualTo(1)
+            assertThatThrownBy { runner.execute("SELECT added FROM t") }.hasMessageContaining("requires decoded catalog default projection")
+        }
+    }
+
+    @Test
+    fun distributedBudgetFailureDoesNotBecomePartialRowsAndNextPlanRecovers(): Unit = Fixture().use { f ->
+        f.native("CALL lake.set_option('data_inlining_row_limit',0); CREATE TABLE lake.t(i INTEGER); " +
+            "INSERT INTO lake.t VALUES(1); INSERT INTO lake.t VALUES(2); " +
+            "CREATE TABLE lake.small(i INTEGER); INSERT INTO lake.small VALUES(7)")
+        f.runner(mapOf("ducklake.read.max-files" to "1")).use { runner ->
+            assertThatThrownBy { runner.execute("SELECT * FROM t") }.hasMessageContaining("read budget exceeded")
+            assertThat(runner.execute("SELECT i FROM small").onlyValue).isEqualTo(7)
+        }
+        // All coordinator/worker pools must close: local native RW cannot coexist with RO pools.
+        f.native("INSERT INTO lake.small VALUES(8)")
+    }
+
+    @Test
+    fun distributedInlineAndCdcLimitsFailLoud(): Unit = Fixture().use { f ->
+        f.native("CREATE TABLE lake.t(i INTEGER); INSERT INTO lake.t VALUES(1),(2),(3)")
+        val head = f.snapshot()
+        f.runner(mapOf("ducklake.read.max-physical-rows" to "2")).use { runner ->
+            assertThatThrownBy { runner.execute("SELECT i FROM t") }.hasMessageContaining("physical rows")
+        }
+        f.runner(mapOf("ducklake.read.max-cdc-events" to "1")).use { runner ->
+            assertThatThrownBy { runner.execute("SELECT i FROM TABLE(ducklake.system.table_insertions('main','t',$head,$head))") }
+                .hasMessageContaining("CDC events")
+            assertThat(runner.execute("SELECT i FROM t ORDER BY i").materializedRows.map { it.getField(0) }).containsExactly(1, 2, 3)
+        }
+    }
+
+    @Test
+    fun postgresQueryFailureAndTerminatedIdleConnectionsRecover(): Unit = Fixture(Lane.POSTGRES).use { f ->
+        f.native("CALL lake.set_option('data_inlining_row_limit',0); CREATE TABLE lake.t(i INTEGER); INSERT INTO lake.t VALUES(7)")
+        f.runner().use { runner ->
+            assertThat(runner.execute("SELECT i FROM t").onlyValue).isEqualTo(7)
+            f.metadata("ALTER TABLE ducklake_data_file RENAME COLUMN file_format TO held_format")
+            assertThatThrownBy { runner.execute("SELECT i FROM t") }.hasMessageContaining("file_format")
+            f.metadata("ALTER TABLE ducklake_data_file RENAME COLUMN held_format TO file_format")
+            assertThat(runner.execute("SELECT i FROM t").onlyValue).isEqualTo(7)
+            f.metadata("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid()")
+            // Hikari may detect an idle kill on borrow, or the next statement may fail once.
+            // No connector retry is added: each attempt below is a separate user query.
+            var recovered = false
+            var failures = 0
+            repeat(4) {
+                if (!recovered) {
+                    val result = runCatching { runner.execute("SELECT i FROM t").onlyValue }
+                    if (result.isSuccess) { assertThat(result.getOrThrow()).isEqualTo(7); recovered = true }
+                    else {
+                        failures++
+                        assertThat(result.exceptionOrNull()).isInstanceOf(io.trino.testing.QueryFailedException::class.java)
+                            .hasMessageContaining("connection")
+                    }
+                }
+            }
+            assertThat(recovered).isTrue()
+            println("R07 terminated-idle connection recovery: $failures failed user queries before recovery")
+        }
+    }
+
+    @Test
+    fun metadataTransactionPinsLogicalHeadAcrossNativePublication(): Unit = Fixture(Lane.POSTGRES).use { f ->
+        f.native("CREATE TABLE lake.t(i INTEGER); INSERT INTO lake.t VALUES(7)")
+        f.config.setEnableFinal11Reads(true)
+        f.reader().use { c ->
+            val factory = DucklakeMetadataFactory(c, DucklakeTypeConverter(TESTING_TYPE_MANAGER), DucklakeSnapshotResolver(c, f.config),
+                io.airlift.json.JsonCodec.jsonCodec(dev.brikk.ducklake.catalog.DucklakeWriteFragment::class.java),
+                io.airlift.json.JsonCodec.jsonCodec(dev.brikk.ducklake.catalog.DucklakeDeleteFragment::class.java),
+                DucklakePathResolver(c, f.config), f.config)
+            val pinned = DucklakeReadOnlyMetadata.wrap(factory.create(), c, 100)
+            val session = io.trino.testing.TestingConnectorSession.builder()
+                .setPropertyMetadata(DucklakeSessionProperties().getSessionProperties()).build()
+            // The logical head pins on the first actual metadata read, never inside beginTransaction.
+            assertThat(pinned.listTables(session, Optional.of("main")).map { it.tableName }).containsExactly("t")
+            f.native("CREATE TABLE lake.later(i INTEGER)")
+            assertThat(pinned.listTables(session, Optional.of("main")).map { it.tableName }).containsExactly("t")
+            val fresh = DucklakeReadOnlyMetadata.wrap(factory.create(), c, 100)
+            assertThat(fresh.listTables(session, Optional.of("main")).map { it.tableName }).containsExactlyInAnyOrder("t", "later")
+        }
+    }
+
+    @Test
+    fun cancelledSqlWhileMetadataIsLockedReleasesAfterAbortAndRecovers(): Unit = Fixture(Lane.POSTGRES).use { f ->
+        f.native("CREATE TABLE lake.t(i INTEGER); INSERT INTO lake.t VALUES(7)")
+        f.runner().use { runner ->
+            val executor = java.util.concurrent.Executors.newFixedThreadPool(2)
+            try {
+                DriverManager.getConnection(f.url, f.config.getCatalogDatabaseUser(), f.config.getCatalogDatabasePassword()).use { lock ->
+                    lock.autoCommit = false
+                    lock.createStatement().use { it.execute("LOCK TABLE ducklake_snapshot IN ACCESS EXCLUSIVE MODE") }
+                    try {
+                        val future = executor.submit<Any> { runner.execute("SELECT i AS r07_cancel_marker FROM t") }
+                        var blocked = false
+                        for (attempt in 1..100) {
+                            if (f.blockedMetadataQueries() > 0) { blocked = true; break }
+                            java.util.concurrent.locks.LockSupport.parkNanos(50_000_000L)
+                        }
+                        check(blocked) { "metadata query never reached the controlled lock" }
+                        val query = runner.coordinator.dispatchManager.queries.single { it.query.contains("r07_cancel_marker") }
+                        // Keep the fixture controller able to release the lock even if a future
+                        // cancellation regression blocks the engine's own transaction monitor.
+                        executor.submit { runner.coordinator.dispatchManager.cancelQuery(query.queryId) }
+                            .get(10, java.util.concurrent.TimeUnit.SECONDS)
+                        assertThatThrownBy { future.get(10, java.util.concurrent.TimeUnit.SECONDS) }
+                            .hasCauseInstanceOf(io.trino.testing.QueryFailedException::class.java)
+                        println("R07 cancelled SQL: JDBC metadata still blocked before lock release = ${f.blockedMetadataQueries() > 0}")
+                    } finally { lock.rollback() }
+                }
+                assertThat(runner.execute("SELECT i FROM t").onlyValue).isEqualTo(7)
+            } finally { executor.shutdownNow() }
+        }
+    }
+
     private data class Plan(val handle: DucklakeTableHandle, val splits: List<ConnectorSplit>)
 
     private enum class Lane { LOCAL, POSTGRES, NATIVE_QUACK, JAVA_QUACK, MYSQL }
@@ -401,9 +607,30 @@ class TestR07ConsumerTrial {
 
         fun reader() = JdbcDucklakeCatalog(config.toCatalogConfig().apply { enableFinal11Reads = true })
 
-        fun metadata(sql: String) = DriverManager.getConnection("jdbc:duckdb:$db").use { c ->
+        fun runner(extra: Map<String, String> = emptyMap()): DistributedQueryRunner {
+            val runner = DistributedQueryRunner.builder(testSessionBuilder().setCatalog("ducklake").setSchema("main").build())
+                .setWorkerCount(2).addCoordinatorProperty("node-scheduler.include-coordinator", "false").build()
+            try {
+                runner.installPlugin(DucklakePlugin())
+                val properties = mutableMapOf("ducklake.catalog.database-url" to url, "ducklake.data-path" to data.toString(),
+                    "ducklake.catalog.max-connections" to "1", "ducklake.experimental.enable-final-1.1-reads" to "true", "fs.hadoop.enabled" to "true")
+                config.getCatalogDatabaseUser()?.let { properties["ducklake.catalog.database-user"] = it }
+                config.getCatalogDatabasePassword()?.let { properties["ducklake.catalog.database-password"] = it }
+                runner.createCatalog("ducklake", "ducklake", properties + extra)
+                return runner
+            } catch (e: Throwable) { runner.close(); throw e }
+        }
+
+        fun metadata(sql: String) = DriverManager.getConnection(if (pg == null) "jdbc:duckdb:$db" else url,
+            config.getCatalogDatabaseUser(), config.getCatalogDatabasePassword()).use { c ->
             c.createStatement().use { it.execute(sql) }
         }
+
+        fun blockedMetadataQueries(): Long = DriverManager.getConnection(url,
+            config.getCatalogDatabaseUser(), config.getCatalogDatabasePassword()).use { c -> c.createStatement().use { s ->
+                s.executeQuery("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' " +
+                    "AND query LIKE '%ducklake_snapshot%' AND pid<>pg_backend_pid()").use { r -> check(r.next()); r.getLong(1) }
+            } }
 
         fun plan(c: JdbcDucklakeCatalog, snapshot: Long? = null, constraint: Constraint = Constraint.alwaysTrue()): Plan = c.readSession(Supplier {
             val id = snapshot ?: c.currentSnapshotId

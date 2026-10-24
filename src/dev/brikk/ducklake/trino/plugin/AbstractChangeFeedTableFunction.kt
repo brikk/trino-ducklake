@@ -74,7 +74,7 @@ abstract class AbstractChangeFeedTableFunction(
             session: ConnectorSession,
             transaction: ConnectorTransactionHandle,
             arguments: Map<String, Argument>,
-            accessControl: ConnectorAccessControl): TableFunctionAnalysis {
+            accessControl: ConnectorAccessControl): TableFunctionAnalysis = catalog.readSession {
         val schemaName: String = stringArgument(arguments, ARG_SCHEMA_NAME)
         val tableName: String = stringArgument(arguments, ARG_TABLE_NAME)
 
@@ -107,7 +107,7 @@ abstract class AbstractChangeFeedTableFunction(
         }
         val outputColumns: List<DucklakeColumnHandle> = ChangeFeedColumns.outputColumns(feedType, dataColumns)
 
-        return TableFunctionAnalysis.builder()
+        TableFunctionAnalysis.builder()
                 .returnedType(Descriptor(outputColumns.map { Descriptor.Field(it.columnName, Optional.of(it.columnType)) }))
                 .handle(ChangeFeedFunctionHandle(
                         feedType,

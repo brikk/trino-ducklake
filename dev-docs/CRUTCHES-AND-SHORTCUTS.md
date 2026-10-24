@@ -3,7 +3,7 @@
 This inventory records the safety restrictions introduced for RV-03 and RV-04. It is not an audit
 claim that all older debt is listed here; see [the review](REVIEW-2026-09-05.md) for that assessment.
 
-## R07: Temporary Candidate Qualification, Not SQL Enablement
+## R07: Temporary Candidate, Explicit Opt-in Qualification Only
 
 ### Legacy TIMESTAMPTZ partition safety
 
@@ -21,18 +21,37 @@ adds `qualification/src` to tests. It also selects test-only DuckDB JDBC 2.0.0.0
 and Java Quack JDBC 0.8.0. Omitting the property restores released 0.12.0 dependencies
 and the existing producer lane. This is not a release pin or supported plugin distribution.
 
-The qualification harness explicitly supplies owned read sessions to real Trino
-split/page-source/CDC implementations. Serialized splits scan on a separate catalog
-instance in the same test JVM. **This is not a positive multi-process/distributed SQL
-qualification.** The ordinary plugin still has no final-1.1 flag/session integration;
-the two-node SQL control verifies refusal, not success. Split planning now owns a
-single session, but legacy per-table descriptor/name-map/CDC lists remain materialized;
-bounded companion enumeration in the harness does not impose production-wide budgets.
+October 24 adds `ducklake.experimental.enable-final-1.1-reads=false` by default.
+The opt-in calls only the candidate's actual public flag setter. A small reflective
+optional-API boundary preserves the released 0.12 compile/runtime lane: enabling it
+there fails explicitly, never emulates admission. Remove that compatibility bridge
+only after a separately approved released catalog floor includes the API.
 
-Do not enable 1.1 SQL reads on the strength of these tests. Removal requires complete
-metadata and worker session ownership, bounded production planning, matched-peer SQL
-scan/CDC and cancellation/network/retention qualification. A path/session is not a
-file lease. See [the qualification report](R07-TRINO-CANDIDATE-QUALIFICATION.md).
+Read-only SPI metadata operations own sessions, materialize deferred metadata
+iterators under a limit, and reject mutations before delegation. Worker source
+creation and lazy CDC file opens own sessions; shutdown closes each node's catalog
+pool. SQL qualification uses two actual Trino workers with coordinator scheduling
+disabled, still in the same single-host DistributedQueryRunner JVM. It is not a
+multi-process/multi-host deployment or mixed-version negotiation test.
+
+Consumer limits cap descriptors, physical row work, CDC candidates/units and deferred
+metadata iteration. Inline ordinary reads count inside their owned view before
+payload transfer; Parquet scans check actual footer row counts. **Legacy descriptor,
+hierarchy and inline CDC list APIs still materialize before their consumer check.**
+This is not a SQL-query memory bound, SQL-paged catalog enumeration, total cross-node
+work budget or file lease. The catalog owner must supply the missing bounded APIs;
+there is no whole-catalog preflight scan or direct-SQL bypass masquerading as a fix.
+
+An opt-in missing-file-column initial default also rejects until the catalog offers
+decoded, stable-ID/backend-qualified default projection. Do not reuse partition-text
+parsing or replace an unqualified default with NULL. Ordinary columns and validated
+inline defaults still work. Unconstructable physical fields/VARIANT payloads reject,
+and decoded DECIMAL values outside Trino's declared precision cannot silently narrow.
+
+No production/default-on rollout follows from these opt-in experiments. Remaining
+gates include bounded catalog transfers, in-flight JDBC cancellation/network faults,
+retention/lease coordination, broader route/type/legacy qualification and deployment
+testing. See [the qualification report](R07-TRINO-CANDIDATE-QUALIFICATION.md).
 
 ## RV-03: Path Comparison Boundary
 

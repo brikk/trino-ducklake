@@ -30,11 +30,13 @@ import java.util.OptionalLong
  * Resolves the effective snapshot for a read using precedence:
  * query override > session properties > catalog defaults > current snapshot.
  */
-open class DucklakeSnapshotResolver(
+open class DucklakeSnapshotResolver @JvmOverloads constructor(
         catalog: DucklakeCatalog,
         private val catalogDefaultSnapshotId: Long?,
-        private val catalogDefaultSnapshotTimestamp: Instant?) {
+        private val catalogDefaultSnapshotTimestamp: Instant?,
+        private val pinCurrentSnapshot: Boolean = false) {
     private val catalog: DucklakeCatalog = catalog
+    private val pinnedCurrentSnapshot by lazy { notInitializedAware { catalog.currentSnapshotId } }
 
     init {
         if (this.catalogDefaultSnapshotId != null && this.catalogDefaultSnapshotTimestamp != null) {
@@ -82,7 +84,9 @@ open class DucklakeSnapshotResolver(
             return resolveSnapshotIdAtOrBefore(catalogDefaultSnapshotTimestamp)
         }
 
-        return notInitializedAware { catalog.currentSnapshotId }
+        // Resolve lazily, outside Connector.beginTransaction's engine-side monitor. JDBC I/O
+        // there would prevent Trino's cancellation path from acquiring that monitor.
+        return if (pinCurrentSnapshot) pinnedCurrentSnapshot else notInitializedAware { catalog.currentSnapshotId }
     }
 
     fun resolveSnapshotIdById(snapshotId: Long): Long {

@@ -26,12 +26,16 @@ open class DucklakeMetadataFactory @Inject constructor(
     private val fragmentCodec: JsonCodec<DucklakeWriteFragment>,
     private val deleteFragmentCodec: JsonCodec<DucklakeDeleteFragment>,
     private val pathResolver: DucklakePathResolver,
-    config: DucklakeConfig)
+    private val config: DucklakeConfig)
 {
     private val temporalPartitionEncoding: DucklakeTemporalPartitionEncoding = config.getTemporalPartitionEncoding()
 
     open fun create(): DucklakeMetadata
     {
-        return DucklakeMetadata(catalog, typeConverter, snapshotResolver, fragmentCodec, deleteFragmentCodec, pathResolver, temporalPartitionEncoding)
+        val resolver = if (config.isEnableFinal11Reads() && config.getDefaultSnapshotId().isEmpty &&
+                config.getDefaultSnapshotTimestamp().isEmpty) {
+            DucklakeSnapshotResolver(catalog, null, null, true)
+        } else snapshotResolver
+        return DucklakeMetadata(catalog, typeConverter, resolver, fragmentCodec, deleteFragmentCodec, pathResolver, temporalPartitionEncoding)
     }
 }

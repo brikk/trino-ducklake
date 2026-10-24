@@ -15,6 +15,7 @@ package dev.brikk.ducklake.trino.plugin
 
 import com.google.common.collect.ImmutableList
 import com.google.inject.Inject
+import dev.brikk.ducklake.catalog.DucklakeCatalog
 import io.airlift.bootstrap.LifeCycleManager
 import io.trino.plugin.base.classloader.ClassLoaderSafeConnectorMetadata
 import io.trino.plugin.base.classloader.ClassLoaderSafeConnectorTableFunction
@@ -50,7 +51,9 @@ class DucklakeConnector @Inject constructor(
     ducklakeTableProperties: DucklakeTableProperties,
     procedures: Set<Procedure>,
     tableFunctions: Set<@JvmSuppressWildcards ConnectorTableFunction>,
-    private val functionProvider: DucklakeFunctionProvider) : Connector {
+    private val functionProvider: DucklakeFunctionProvider,
+    private val catalog: DucklakeCatalog,
+    private val config: DucklakeConfig) : Connector {
     private val sessionProperties: List<PropertyMetadata<*>> = ImmutableList.copyOf(ducklakeSessionProperties.getSessionProperties())
     private val tableProperties: List<PropertyMetadata<*>> = ImmutableList.copyOf(ducklakeTableProperties.tableProperties)
     private val procedures: Set<Procedure> = procedures.toSet()
@@ -59,7 +62,7 @@ class DucklakeConnector @Inject constructor(
             .toSet()
 
     override fun getProcedures(): Set<Procedure> {
-        return procedures
+        return if (config.isEnableFinal11Reads()) emptySet() else procedures
     }
 
     override fun getTableFunctions(): Set<ConnectorTableFunction> {
@@ -72,7 +75,8 @@ class DucklakeConnector @Inject constructor(
 
     override fun getMetadata(session: ConnectorSession, transaction: ConnectorTransactionHandle): ConnectorMetadata {
         val metadata: DucklakeMetadata = transactionManager.getMetadata(transaction)
-        return ClassLoaderSafeConnectorMetadata(metadata, javaClass.classLoader)
+        val delegate = if (config.isEnableFinal11Reads()) DucklakeReadOnlyMetadata.wrap(metadata, catalog, config.getReadMaxFiles()) else metadata
+        return ClassLoaderSafeConnectorMetadata(delegate, javaClass.classLoader)
     }
 
     override fun getSplitManager(): ConnectorSplitManager {
@@ -113,6 +117,7 @@ class DucklakeConnector @Inject constructor(
     }
 
     override fun shutdown() {
-        lifeCycleManager.stop()
+        try { lifeCycleManager.stop() }
+        finally { catalog.close() }
     }
 }

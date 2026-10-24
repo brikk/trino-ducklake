@@ -46,6 +46,35 @@ class DucklakeConfig {
     private var maintenanceMinRetention: Duration = Duration.valueOf("7d")
     private var cleanupBatchSize: Int = 256
     private var cleanupMaxReferenceFiles: Long = 1_000_000L
+    private var enableFinal11Reads: Boolean = false
+    private var readMaxFiles = 10_000
+    private var readMaxRows = 1_000_000L
+    private var readMaxCdcEvents = 100_000L
+
+    @Min(1) @Max(100_000)
+    fun getReadMaxFiles(): Int = readMaxFiles
+    @Config("ducklake.read.max-files")
+    fun setReadMaxFiles(value: Int): DucklakeConfig { readMaxFiles = value; return this }
+
+    @Min(1) @Max(10_000_000)
+    fun getReadMaxRows(): Long = readMaxRows
+    @Config("ducklake.read.max-physical-rows")
+    fun setReadMaxRows(value: Long): DucklakeConfig { readMaxRows = value; return this }
+
+    @Min(1) @Max(1_000_000)
+    fun getReadMaxCdcEvents(): Long = readMaxCdcEvents
+    @Config("ducklake.read.max-cdc-events")
+    fun setReadMaxCdcEvents(value: Long): DucklakeConfig { readMaxCdcEvents = value; return this }
+
+    fun isEnableFinal11Reads(): Boolean = enableFinal11Reads
+
+    @Config("ducklake.experimental.enable-final-1.1-reads")
+    @ConfigDescription("Experimental read-only final-1.1 consumer; requires the separately qualified catalog candidate. " +
+            "Disables connector writes and maintenance.")
+    fun setEnableFinal11Reads(value: Boolean): DucklakeConfig {
+        enableFinal11Reads = value
+        return this
+    }
 
     @NotNull
     fun getCatalogDatabaseUrl(): String? {
@@ -255,6 +284,16 @@ class DucklakeConfig {
         catalogConfig.catalogDatabasePassword = catalogDatabasePassword
         catalogConfig.dataPath = dataPath
         catalogConfig.maxCatalogConnections = maxCatalogConnections
+        if (enableFinal11Reads) {
+            // Optional API boundary: keep compiling/running the released 0.12 lane unchanged.
+            // Invoke only the candidate's real public setter; never emulate its read admission.
+            val setter = try {
+                catalogConfig.javaClass.getMethod("setEnableFinal11Reads", Boolean::class.javaPrimitiveType)
+            } catch (e: NoSuchMethodException) {
+                throw IllegalArgumentException("Final-1.1 reads require the checksum-qualified 0.13 catalog trial; this catalog library has no opt-in API", e)
+            }
+            setter.invoke(catalogConfig, true)
+        }
         return catalogConfig
     }
 }

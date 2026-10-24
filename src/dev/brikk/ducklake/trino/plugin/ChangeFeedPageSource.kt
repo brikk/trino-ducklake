@@ -46,14 +46,16 @@ import java.io.IOException
  *   DucklakeMergeSink. Without it they surface as delete+insert, a faithful description of Trino's
  *   delete-then-insert UPDATE under fresh rowids.)
  */
-class ChangeFeedUnit(
+class ChangeFeedUnit @JvmOverloads constructor(
         val baseSource: () -> ConnectorPageSource,
         val snapshotId: Long,
         val rowIdStart: Long?,
         val lineageRowIds: LongArray?,
         val keepPositions: Set<Long>?,
         val updatedRowids: Set<Long>,
-        val isDelete: Boolean)
+        val isDelete: Boolean,
+        /** Whole-source rows visited by this unit, including rows rejected by keepPositions. */
+        val physicalRows: Long = 0)
 
 /**
  * Streams the DuckLake change feed as `snapshot_id, rowid[, change_type]` + table columns.

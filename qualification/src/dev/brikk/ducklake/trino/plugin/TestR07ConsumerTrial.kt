@@ -50,7 +50,7 @@ import java.sql.DriverManager
 import java.util.Optional
 import java.util.function.Supplier
 
-/** Candidate-only SPI qualification. This is NOT production flag/session wiring or SQL rollout. */
+/** Candidate-only SPI and matched two-worker SQL qualification, not a rollout. */
 @Execution(ExecutionMode.SAME_THREAD)
 class TestR07ConsumerTrial {
     @Test
@@ -427,12 +427,146 @@ class TestR07ConsumerTrial {
     }
 
     @Test
-    fun unqualifiedFileInitialDefaultRefusesInsteadOfInventingValue(): Unit = Fixture().use { f ->
+    fun decodedFileInitialDefaultProjectsLiteralNull(): Unit = Fixture().use { f ->
         f.native("CALL lake.set_option('data_inlining_row_limit',0); CREATE TABLE lake.t(i INTEGER); INSERT INTO lake.t VALUES(1); " +
             "ALTER TABLE lake.t ADD COLUMN added VARCHAR DEFAULT 'NULL'")
         f.runner().use { runner ->
             assertThat(runner.execute("SELECT i FROM t").onlyValue).isEqualTo(1)
-            assertThatThrownBy { runner.execute("SELECT added FROM t") }.hasMessageContaining("requires decoded catalog default projection")
+            assertThat(runner.execute("SELECT added FROM t").onlyValue).isEqualTo("NULL")
+        }
+    }
+
+    @Test fun localFileDefaultsSql(): Unit = fileDefaultsSql(Lane.LOCAL)
+    @Test fun postgresFileDefaultsSql(): Unit = fileDefaultsSql(Lane.POSTGRES)
+    @Test fun nativeQuackFileDefaultsSql(): Unit = fileDefaultsSql(Lane.NATIVE_QUACK)
+    @Test fun javaQuackFileDefaultsSql(): Unit = fileDefaultsSql(Lane.JAVA_QUACK)
+
+    private fun fileDefaultsSql(lane: Lane): Unit = Fixture(lane).use { f ->
+        val literal = "42'); DROP TABLE ducklake_snapshot; --"
+        f.native("CALL lake.set_option('data_inlining_row_limit',0); CREATE TABLE lake.t(i INTEGER); INSERT INTO lake.t VALUES(1); " +
+            "ALTER TABLE lake.t ADD COLUMN n INTEGER DEFAULT 42; ALTER TABLE lake.t ADD COLUMN s VARCHAR DEFAULT 'NULL'; " +
+            "ALTER TABLE lake.t ADD COLUMN sqlnull VARCHAR DEFAULT NULL; " +
+            "ALTER TABLE lake.t ADD COLUMN d DATE DEFAULT DATE '2026-10-24'; " +
+            "ALTER TABLE lake.t ADD COLUMN ts TIMESTAMP_NS DEFAULT TIMESTAMP_NS '1969-12-31 23:59:59.123456789'; " +
+            "ALTER TABLE lake.t ADD COLUMN b BLOB DEFAULT '\\x00\\x5C\\xFF'::BLOB; " +
+            "ALTER TABLE lake.t ADD COLUMN z DECIMAL(20,3) DEFAULT 12345678901234567.125; " +
+            "ALTER TABLE lake.t ADD COLUMN q VARCHAR DEFAULT '${literal.replace("'", "''")}'; " +
+            "ALTER TABLE lake.t ADD COLUMN p STRUCT(a INTEGER); " +
+            "INSERT INTO lake.t VALUES(2,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL)")
+        val old = f.reader().use { c -> c.readSession(Supplier { c.currentSnapshotId }) }
+        f.native("ALTER TABLE lake.t RENAME COLUMN n TO renamed; ALTER TABLE lake.t ALTER COLUMN renamed TYPE BIGINT; " +
+            "ALTER TABLE lake.t ALTER COLUMN renamed SET DEFAULT 77; INSERT INTO lake.t(i) VALUES(3)")
+        f.reader().use { c ->
+            val plan = f.plan(c)
+            assertThat(plan.splits.filterIsInstance<DucklakeSplit>()).hasSize(3)
+            assertThat(plan.splits.filterIsInstance<DucklakeInlinedSplit>()).isEmpty()
+        }
+        f.runner().use { runner ->
+            val rows = runner.execute("SELECT i,renamed,s,sqlnull,CAST(d AS VARCHAR),CAST(ts AS VARCHAR),to_hex(b),CAST(z AS VARCHAR),q,p IS NULL " +
+                "FROM t ORDER BY i").materializedRows.map { it.fields }
+            assertThat(rows).containsExactly(
+                listOf<Any?>(1,42L,"NULL",null,"2026-10-24","1969-12-31 23:59:59.123456789","005CFF","12345678901234567.125",literal,true),
+                listOf<Any?>(2,null,null,null,null,null,null,null,null,true),
+                listOf<Any?>(3,77L,"NULL",null,"2026-10-24","1969-12-31 23:59:59.123456789","005CFF","12345678901234567.125",literal,true))
+            assertThat(runner.execute("SELECT i FROM t WHERE renamed=42 AND s='NULL'").onlyValue).isEqualTo(1)
+            assertThat(runner.execute("SELECT i FROM t WHERE renamed IS NULL").onlyValue).isEqualTo(2)
+            assertThat(runner.execute("SELECT i,n FROM t FOR VERSION AS OF $old ORDER BY i").materializedRows.map { it.fields })
+                .containsExactly(listOf<Any?>(1,42),listOf<Any?>(2,null))
+            assertThat(runner.execute("SELECT count(*) FROM t").onlyValue).isEqualTo(3L)
+        }
+    }
+
+    @Test fun localNestedFileDefaultsSql(): Unit = nestedFileDefaultsSql(Lane.LOCAL)
+    @Test fun postgresNestedFileDefaultsSql(): Unit = nestedFileDefaultsSql(Lane.POSTGRES)
+
+    private fun nestedFileDefaultsSql(lane: Lane): Unit = Fixture(lane).use { f ->
+        f.native("CALL lake.set_option('data_inlining_row_limit',0); " +
+            "CREATE TABLE lake.t(i INTEGER,s STRUCT(a INTEGER,nested STRUCT(x INTEGER))); " +
+            "INSERT INTO lake.t VALUES(1,{'a':10,'nested':{'x':20}}),(2,NULL),(3,{'a':NULL,'nested':NULL}); " +
+            "ALTER TABLE lake.t ADD COLUMN s.added BLOB DEFAULT '\\x00\\x5C\\xFF'::BLOB; " +
+            "ALTER TABLE lake.t ADD COLUMN s.nested.v INTEGER DEFAULT 42; " +
+            "ALTER TABLE lake.t RENAME s.a TO renamed; " +
+            "ALTER TABLE lake.t ALTER s TYPE STRUCT(renamed BIGINT,nested STRUCT(x INTEGER,v INTEGER),added BLOB); " +
+            "INSERT INTO lake.t VALUES(4,{'renamed':NULL,'nested':{'x':NULL,'v':NULL},'added':NULL})")
+        f.runner().use { runner ->
+            assertThat(runner.execute("SELECT i,s IS NULL,s.renamed,to_hex(s.added),s.nested IS NULL,s.nested.x,s.nested.v FROM t ORDER BY i")
+                .materializedRows.map { it.fields }).containsExactly(
+                listOf<Any?>(1,false,10L,"005CFF",false,20,42),
+                listOf<Any?>(2,true,null,null,true,null,null),
+                listOf<Any?>(3,false,null,"005CFF",true,null,null),
+                listOf<Any?>(4,false,null,null,false,null,null))
+            assertThat(runner.execute("SELECT i FROM t WHERE s.nested.v=42").onlyValue).isEqualTo(1)
+        }
+    }
+
+    @Test
+    fun malformedFileDefaultsFailAndRepairedQueriesRecover(): Unit = Fixture(Lane.POSTGRES).use { f ->
+        f.native("CALL lake.set_option('data_inlining_row_limit',0); CREATE TABLE lake.t(i INTEGER); INSERT INTO lake.t VALUES(1); " +
+            "ALTER TABLE lake.t ADD COLUMN n INTEGER DEFAULT 42; ALTER TABLE lake.t ADD COLUMN p STRUCT(a INTEGER)")
+        f.runner().use { runner ->
+            fun reject(name: String, text: String?, kind: String) {
+                val data = text?.let { "'${it.replace("'", "''")}'" } ?: "NULL"
+                f.metadata("UPDATE ducklake_column SET initial_default=$data,default_value_type='$kind' WHERE column_name='$name'")
+                assertThatThrownBy { runner.execute("SELECT $name FROM t") }.isInstanceOf(io.trino.testing.QueryFailedException::class.java)
+                f.metadata("UPDATE ducklake_column SET initial_default=${if (name == "n") "'42'" else "NULL"},default_value_type='literal' WHERE column_name='$name'")
+                assertThat(runner.execute("SELECT n FROM t").onlyValue).isEqualTo(42)
+                assertThat(runner.execute("SELECT i FROM t").onlyValue).isEqualTo(1)
+            }
+            reject("n", "2147483648", "literal")
+            reject("n", "0); DROP TABLE ducklake_snapshot; --", "literal")
+            reject("n", null, "expression")
+            reject("n", null, "unknown")
+            reject("p", "{'a':1}", "literal")
+            reject("p", "x".repeat(16385), "literal")
+            assertThat(runner.execute("SELECT p IS NULL FROM t").onlyValue).isEqualTo(true)
+            for (format in listOf("duckdb", "vortex", "lance")) {
+                f.metadata("UPDATE ducklake_data_file SET file_format='$format'")
+                assertThatThrownBy { runner.execute("SELECT n FROM t") }.hasMessageContaining("parquet data files")
+                f.metadata("UPDATE ducklake_data_file SET file_format='parquet'")
+                assertThat(runner.execute("SELECT n FROM t").onlyValue).isEqualTo(42)
+            }
+        }
+    }
+
+    @Test
+    fun fileCollectionEvolutionPreservesNullElementsAndContainers(): Unit = Fixture().use { f ->
+        f.native("CALL lake.set_option('data_inlining_row_limit',0); " +
+            "CREATE TABLE lake.t(i INTEGER,xs STRUCT(a TINYINT)[],m MAP(INTEGER,STRUCT(v INTEGER))); " +
+            "INSERT INTO lake.t VALUES(1,[{'a':1},NULL],MAP([1],[{'v':7}])),(2,[],MAP([],[])),(3,NULL,NULL); " +
+            "ALTER TABLE lake.t ALTER xs TYPE STRUCT(a BIGINT,added VARCHAR)[]; " +
+            "ALTER TABLE lake.t ALTER m TYPE MAP(BIGINT,STRUCT(v BIGINT,added INTEGER))")
+        f.runner().use { runner ->
+            assertThat(runner.execute("SELECT i,cardinality(xs),xs[1].a,xs[1].added,xs[2] IS NULL," +
+                "element_at(m,1).v,element_at(m,1).added FROM t WHERE i=1").materializedRows.single().fields)
+                .containsExactly(1,2L,1L,null,true,7L,null)
+            assertThat(runner.execute("SELECT i,cardinality(xs),cardinality(m),xs IS NULL,m IS NULL FROM t WHERE i>1 ORDER BY i")
+                .materializedRows.map { it.fields }).containsExactly(listOf<Any?>(2,0L,0L,false,false),listOf<Any?>(3,null,null,true,true))
+        }
+    }
+
+    @Test
+    fun mysqlMissingFileEvolutionStillRejects(): Unit = Fixture(Lane.MYSQL).use { f ->
+        f.native("CALL lake.set_option('data_inlining_row_limit',0); CREATE TABLE lake.t(i INTEGER); INSERT INTO lake.t VALUES(1); " +
+            "ALTER TABLE lake.t ADD COLUMN n INTEGER DEFAULT 42")
+        f.runner().use { runner ->
+            assertThatThrownBy { runner.execute("SELECT n FROM t") }.hasMessageContaining("MySQL")
+            assertThat(runner.execute("SELECT i FROM t").onlyValue).isEqualTo(1)
+        }
+    }
+
+    @Test
+    fun fileDefaultsIgnoreCallerDefaultButRejectCallerType(): Unit = Fixture().use { f ->
+        f.native("CALL lake.set_option('data_inlining_row_limit',0); CREATE TABLE lake.t(i INTEGER); INSERT INTO lake.t VALUES(1); " +
+            "ALTER TABLE lake.t ADD COLUMN n INTEGER DEFAULT 42")
+        f.config.setEnableFinal11Reads(true)
+        f.reader().use { c ->
+            val plan = f.plan(c)
+            val n = f.column(c,plan,"n",INTEGER)
+            val spoofed = DucklakeColumnHandle(n.columnId,"spoofed",INTEGER,true,"999")
+            assertThat(f.scan(c,plan,listOf(spoofed))).containsExactly(listOf<Any?>(42))
+            assertThatThrownBy { f.scan(c,plan,listOf(DucklakeColumnHandle(n.columnId,"n",VARCHAR,true))) }
+                .hasMessageContaining("fresh target metadata")
+            assertThat(f.scan(c,plan,listOf(n))).containsExactly(listOf<Any?>(42))
         }
     }
 
@@ -652,7 +786,7 @@ class TestR07ConsumerTrial {
             })
 
         fun provider(c: JdbcDucklakeCatalog) = DucklakePageSourceProvider(LocalFileSystemFactory(Path.of("/")),
-            FileFormatDataSourceStats(), ParquetReaderConfig().toParquetReaderOptions(), c, config)
+            FileFormatDataSourceStats(), ParquetReaderConfig().toParquetReaderOptions(), c, config, DucklakeTypeConverter(TESTING_TYPE_MANAGER))
 
         fun scan(c: JdbcDucklakeCatalog, plan: Plan, columns: List<DucklakeColumnHandle>): List<List<Any?>> = c.readSession(Supplier {
             val provider = provider(c)

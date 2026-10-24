@@ -105,7 +105,8 @@ class DucklakePageSourceProvider @Inject constructor(
         private val fileFormatDataSourceStats: FileFormatDataSourceStats,
         private val parquetReaderOptions: ParquetReaderOptions,
         private val catalog: DucklakeCatalog,
-        ducklakeConfig: DucklakeConfig)
+        ducklakeConfig: DucklakeConfig,
+        private val typeConverter: DucklakeTypeConverter)
         : ConnectorPageSourceProvider
 {
     // Resolves relative catalog file paths (data/delete files) to full paths for the change feed,
@@ -211,14 +212,19 @@ class DucklakePageSourceProvider @Inject constructor(
         }
         val dataFileLocation: Location = toLocation(ducklakeSplit.dataFilePath)
         val inputFile: TrinoInputFile = fileSystem.newInputFile(dataFileLocation)
-        val currentTree = if (table is DucklakeTableHandle) columnTree(table.tableId, table.snapshotId) else emptyList()
+        val currentTree = if (table is DucklakeTableHandle) {
+            if (final11Reads) catalog.getAllColumnsWithParentage(table.tableId, table.snapshotId)
+            else columnTree(table.tableId, table.snapshotId)
+        } else emptyList()
+        val defaults = if (final11Reads && catalog.getSpecVersion() == "1.1" && table is DucklakeTableHandle)
+            DucklakeFileDefaults(catalog, table, currentTree, typeConverter) else null
         if (final11Reads) rejectVariantFilePayload(sourceColumns, currentTree)
         val eraTree = if (table is DucklakeTableHandle && ducklakeSplit.beginSnapshot > 0L)
             columnTree(table.tableId, ducklakeSplit.beginSnapshot)
         else
             emptyList()
         createParquetPageSource(
-                inputFile, sourceColumns, ducklakeSplit, effectivePredicate, fileSystem, currentTree, eraTree)
+                inputFile, sourceColumns, ducklakeSplit, effectivePredicate, fileSystem, currentTree, eraTree, defaults)
     }
 
     /**
@@ -1161,7 +1167,8 @@ class DucklakePageSourceProvider @Inject constructor(
             effectivePredicate: TupleDomain<DucklakeColumnHandle>,
             fileSystem: TrinoFileSystem,
             currentColumnTree: List<DucklakeColumn> = emptyList(),
-            eraColumnTree: List<DucklakeColumn> = emptyList()): ConnectorPageSource
+            eraColumnTree: List<DucklakeColumn> = emptyList(),
+            defaults: DucklakeFileDefaults? = null): ConnectorPageSource
     {
         // Create memory context for reading
         val memoryContext: AggregatedMemoryContext = newSimpleAggregatedMemoryContext()
@@ -1214,7 +1221,8 @@ class DucklakePageSourceProvider @Inject constructor(
                                 messageColumnIO,
                                 fieldIdToColumnIO,
                                 split,
-                                eraColumnTree)
+                                eraColumnTree,
+                                defaults != null)
                     }
             // B3b: when the split carries active position deletes, disable in-reader predicate
             // pushdown (row-group pruning + page-level skipping). PositionalVirtualInjectingPageSource and
@@ -1287,6 +1295,7 @@ class DucklakePageSourceProvider @Inject constructor(
             var parquetColumnOrdinal = 0
 
             for (column in fileColumns) {
+                defaults?.validate(column.columnId, column.columnType)
                 val columnName: String = column.columnName
                 val columnIO: ColumnIO? = resolvedColumnIO[column]
 
@@ -1295,9 +1304,10 @@ class DucklakePageSourceProvider @Inject constructor(
                     //   (1) hive-style external file: parquet body omits the partition column,
                     //       but the catalog has a value for it via ducklake_file_partition_value.
                     //       Project that value as a constant block.
-                    //   (2) schema evolution / genuinely missing: return NULL.
+                    //   (2) schema evolution: use the qualified initial default (possibly NULL).
                     transforms.constantValue(
-                        if (final11Reads) buildQualifiedMissingColumnBlock(column, split) else buildMissingColumnBlock(column, split))
+                        if (defaults != null && column.columnId !in split.partitionValuesByColumnId) defaults.missingBlock(column)
+                        else if (final11Reads) buildQualifiedMissingColumnBlock(column, split) else buildMissingColumnBlock(column, split))
                     continue
                 }
 
@@ -1308,7 +1318,8 @@ class DucklakePageSourceProvider @Inject constructor(
                         currentColumnTree,
                         eraColumnTree,
                         split.fieldIdToParquetSourceName,
-                        hasNameMap)
+                        hasNameMap,
+                        defaults?.let { it::missing })
                 if (field.isEmpty) {
                     rejectUnsupportedPhysicalField(column.columnName)
                     // Could not construct field — return nulls (or partition constant if available)
@@ -1318,7 +1329,9 @@ class DucklakePageSourceProvider @Inject constructor(
                 }
 
                 parquetColumns.add(Column(columnName, field.get()))
-                transforms.column(parquetColumnOrdinal)
+                if (defaults != null && defaults.needsRewrite(column.columnId))
+                    transforms.transform(parquetColumnOrdinal) { block -> defaults.rewrite(column, block) }
+                else transforms.column(parquetColumnOrdinal)
                 parquetColumnOrdinal++
             }
 
@@ -1603,7 +1616,8 @@ class DucklakePageSourceProvider @Inject constructor(
                 messageColumnIO: MessageColumnIO,
                 fieldIdToColumnIO: Map<Int, ColumnIO>,
                 split: DucklakeSplit,
-                eraColumns: List<DucklakeColumn>): ColumnIO?
+                eraColumns: List<DucklakeColumn>,
+                authoritativeIds: Boolean = false): ColumnIO?
         {
             if (hasNameMap) {
                 return split.fieldIdToParquetSourceName[column.columnId]
@@ -1611,8 +1625,12 @@ class DucklakePageSourceProvider @Inject constructor(
             }
             // Field identity is authoritative whenever present. Name-first binding swaps values
             // after rename cycles and lets a re-added name bind the dropped field's bytes.
-            if (column.columnId > 0) {
-                fieldIdToColumnIO[column.columnId.toInt()]?.let { return it }
+            if (column.columnId > 0 || authoritativeIds) {
+                if (column.columnId in 0..Int.MAX_VALUE.toLong()) fieldIdToColumnIO[column.columnId.toInt()]?.let { return it }
+                if (authoritativeIds && fieldIdToColumnIO.isNotEmpty()) {
+                    requireCompleteRootIds(messageColumnIO)
+                    return null
+                }
                 val eraName: String? = eraColumns.firstOrNull { it.columnId == column.columnId }?.columnName
                 if (eraName != null && !eraName.equals(column.columnName, ignoreCase = true)) {
                     messageColumnIO.getChild(eraName)?.let { return it }
@@ -1624,6 +1642,11 @@ class DucklakePageSourceProvider @Inject constructor(
                 return messageColumnIO.getChild(column.columnName)
             }
             return null
+        }
+
+        private fun requireCompleteRootIds(message: MessageColumnIO) {
+            if ((0 until message.childrenCount).any { message.getChild(it).type.id == null })
+                throw TrinoException(NOT_SUPPORTED, "Cannot prove absent final-1.1 field in a partially ID-annotated Parquet file")
         }
 
         private fun buildQualifiedMissingColumnBlock(column: DucklakeColumnHandle, split: DucklakeSplit): Block {

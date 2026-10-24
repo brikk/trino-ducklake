@@ -1,5 +1,152 @@
 # R07 Trino candidate qualification — October 23–24, 2026
 
+## October 24 follow-up: decoded missing-file defaults (`3fd75dc`)
+
+The earlier missing-file-default refusal below is superseded for the new exact
+candidate and supported, valid literal histories. The connector now calls the public
+`JdbcDucklakeCatalog.getMissingFileColumnDefaultDecoded(tableId, columnId, targetSnapshotId)`
+inside its existing owned read session, **only after physical footer/stable-ID
+resolution proves the requested field absent**. It never evaluates default text.
+The released 0.12 build remains supported through the established narrow optional
+API bridge; a missing method refuses explicitly, without a text/NULL fallback.
+
+Worker source opens reload target stable-ID metadata, rather than trusting cached
+column trees or a serialized handle's type/default. A mismatched handle type rejects.
+Root constants and nested STRUCT/LIST/MAP projection use decoded values and the
+existing exact converter. A present physical NULL remains NULL; a missing child
+does not materialize a NULL parent or NULL collection element. Existing delete,
+row-identity, CDC, read-only/session/work-limit and timezone paths are retained.
+Name-map nested fields lacking authoritative child IDs and ambiguous partially
+ID-annotated files refuse rather than guessing absence. Non-Parquet file variants,
+MySQL missing-field evolution and non-NULL whole-container defaults remain unsupported.
+An existing STRUCT with no constructable target child still refuses: this change
+does not invent a physical presence anchor to distinguish its NULL/non-NULL parents.
+
+### Artifact identity
+
+Source catalog `3fd75dcd7a31a0b54e40d544970ac106d8522280`; exclusive bundle
+`/tmp/opencode/catalog-r07-3fd75dc`, all four modules/fixtures `0.13.0-SNAPSHOT`.
+All ten manifest entries (JAR/POM/module files) pass `sha256sum -c ../SHA256SUMS`
+from `maven-repository`. Gradle's `verifyR07Candidate` also attests the **actual four
+resolved JAR files**, not just requested coordinates:
+
+- Catalog: `d970be18927c1b669b52c17e88d1eb26e112af590794772febdd4a0fb26cbf08`.
+- Test fixtures: `ca33bee56b33703ea7bbe7b76153bbaccc0275478fc992d48768eb912a1a056f`.
+- Replay: `c8f847d4ba8ca8509a8b3a47c709c1e86b34e50c2c4e3c824b79e1256cba85a4`.
+- SLT: `6406d8fdf2ed16c7fd59465fbeeeb5d1f6e06274357bfd4b3516f779d2bfc409`.
+
+An independent ZIP/class-header scan of those four runtime/fixture JARs checks
+369 classes, all with maximum classfile 61 (Java 17).
+
+The old `58ef4d7` bundle is unchanged. Test JDBC/Quack/native pins, consumer corpus,
+semantic goldens/exclusions and JVM floors are unchanged. No catalog or Doris edits,
+candidate overwrite, push, publication, deployment, connector 1.1 writes, automatic
+migration, maintenance cleanup or default-on change is authorized by this work.
+
+### Positive connector SQL and targeted verification
+
+The new independently expected `fileDefaultsSql` cases use the real Trino
+DistributedQueryRunner with two matched workers and coordinator scheduling disabled,
+on **local DuckDB, native Quack, Java Quack and PostgreSQL** metadata routes. Each
+checks three real physical files and no inline splits, root initial defaults after
+rename/INTEGER→BIGINT widening and later insert-default changes, SQL NULL vs VARCHAR
+`NULL`, BLOB `00 5c ff`, pre-epoch nanosecond timestamps, DATE, exact DECIMAL(20,3),
+SQL-looking literal text, historical target schema, residual predicates and counts.
+Stored NULLs in the later physical file must remain NULL, not become backfills.
+
+Local/PostgreSQL nested-file cases independently check added BLOB/integer defaults,
+nested stable-ID rename/widening, stored NULL leaves, NULL root/nested parents and
+residuals. The local collection case additionally checks evolved STRUCTs inside
+LIST/MAP, NULL list elements, NULL containers and empty containers. Direct source
+controls ignore spoofed handle default/name text, reject a spoofed target type and
+then recover. PostgreSQL malformed-default/oversize and non-Parquet format controls
+repair their disposable metadata and recover through SQL on the same one-connection
+pools; MySQL missing-field refusal retains an ordinary positive column scan.
+Native SQL is used for fixture production, not as a substitute for these connector
+worker scans. This remains a single-host test JVM, not a multi-host distribution.
+
+Candidate command (isolated Gradle registry, no global stop):
+
+```sh
+GRADLE_USER_HOME=/tmp/opencode/trino-r07-gradle mise exec -- ./gradlew test \
+  --tests '*TestR07ConsumerTrial' --tests '*TestLegacyTimezonePartitions' \
+  --tests '*TestDucklakeConfig' --tests '*TestDucklakeReadOnlyMetadata' \
+  --tests '*TestDucklakeDecodedValueConverter' --tests '*TestDucklakePuffinDeleteReader' \
+  --tests '*TestDucklakeTemporalPartitionMatcher' detekt \
+  -Pr07CatalogCandidate=/tmp/opencode/catalog-r07-3fd75dc \
+  --no-daemon --no-configuration-cache
+```
+
+Expanded candidate result: **118 JUnit tests, zero failures/errors/skips**, plus
+detekt; all four resolved-JAR attestations repeat. This includes 44 R07 trial tests
+(ten added cases), the existing legacy-timezone regression, matcher, decoded-value,
+Puffin, configuration and metadata-session controls. Evidence:
+`/tmp/opencode/r07-file-defaults-candidate-2.log` and
+`/tmp/opencode/r07-file-defaults-candidate-xml/`.
+Preliminary reds are retained, not counted as acceptance: native nested-field ALTER
+syntax was corrected to the supported enclosing-STRUCT type change; catalog default
+refusals and type mismatches now preserve specific SQL-facing diagnostics. The
+non-NULL unknown-history contract discrepancy remains explicitly documented below.
+
+Without the candidate property, the **released 0.12.0 / JDBC 1.5.6.0 lane passes
+264 tests across 28 maintained classes**, zero failures/errors/skips, plus detekt.
+This is the earlier 23-class released command below, additionally selecting
+`TestDucklakeFieldIdResolution`, `TestDucklakeNestedFieldDdl`, `TestDucklakeSetFieldType`,
+`TestDucklakeInlinedDeleteHandling` and `TestDucklakeDeleteFileHandling`. It protects
+existing field-ID/rename/drop-readd, nested DDL/widening, real writes, inline and
+physical deletes as well as the earlier SQL/CDC/session/pruning controls. Evidence:
+`/tmp/opencode/r07-file-defaults-legacy.log` and
+`/tmp/opencode/r07-file-defaults-legacy-xml/`.
+
+The maintained released-lane `types` corpus directory is also rerun with the command
+below: **11 files discovered, 9 run, 81 records passed, zero failed**, with the same
+two file / three record exclusions; one JUnit test, zero JUnit skips. No golden,
+exclusion or corpus pin changed; no full corpus run. Evidence:
+`/tmp/opencode/r07-file-defaults-corpus-types.log` and
+`/tmp/opencode/r07-file-defaults-corpus-types-xml/`.
+
+```sh
+GRADLE_USER_HOME=/tmp/opencode/trino-r07-gradle mise exec -- ./gradlew test \
+  --tests '*TestTrinoCorpusReplay' -Dducklake.corpus.dirs=types \
+  --no-daemon --no-configuration-cache
+```
+
+### Catalog-owner clarification/repro: non-NULL default with unknown history kind
+
+One newly authored negative assertion exposed a discrepancy with
+`docs/FILE-INITIAL-DEFAULTS-1.1.md`'s promise to reject unknown/expression histories:
+
+```sql
+-- Disposable native final-1.1 producer, data_inlining_row_limit=0:
+CREATE TABLE lake.t(i INTEGER);
+INSERT INTO lake.t VALUES(1);
+ALTER TABLE lake.t ADD COLUMN n INTEGER DEFAULT 42;
+-- Direct mutation of this disposable PostgreSQL metadata fixture only:
+UPDATE ducklake_column SET initial_default='42', default_value_type='unknown'
+WHERE column_name='n';
+-- Actual two-worker connector SQL, explicit read-only 1.1 opt-in:
+SELECT n FROM t; -- succeeds instead of the documented history-kind refusal
+```
+
+`Final11InlineDefaults.value` in the exact source checks the history kind only when
+`initialDefault == null` (lines 34–35). A non-NULL initial value still goes through
+the closed literal decoder; no SQL execution or wrong returned value was established.
+The retained red connector assertion is in `/tmp/opencode/r07-file-defaults-red-xml/`
+and `r07-file-defaults-targeted.log` (unknown-kind case at original test line 518).
+The maintained negative test now independently exercises **NULL** expression/unknown
+history, malformed/out-of-domain literals, non-NULL container defaults and oversized
+text, with repaired-query recovery; it does not claim non-NULL history-kind rejection.
+Catalog owner must clarify the documented trust contract or tighten it and provide
+new checksum-qualified bytes. The connector cannot inspect hidden history through
+this API and adds no SQL bypass or fabricated validation to conceal that discrepancy.
+
+Valid known-literal missing-file reads no longer have the old blanket refusal.
+Broad R07 remains **NO-GO**: SQL-paged bounded planning/CDC, actual JDBC statement
+cancellation/timeouts and physical-file leases/deployment qualification are still
+separate gates. Cancellation/paging implementation belongs to the coordinator;
+this work neither substitutes for it nor certifies later unpublished catalog bytes.
+Strict native R02=3/R03=1/R04=1/M01=6+4 remain unwaived.
+
 ## October 24 priority correction: legacy TIMESTAMPTZ partition pruning
 
 Reproduced the upstream review's finding through **real matched coordinator/worker

@@ -66,7 +66,7 @@ class TestDucklakePageSourceProvider {
             FileFormatDataSourceStats(),
             ParquetReaderConfig().toParquetReaderOptions(),
             catalog,
-            config)
+            config, DucklakeTypeConverter(io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER))
     }
 
     @AfterEach

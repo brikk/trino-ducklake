@@ -245,7 +245,7 @@ class TestDucklakeInlinedDeleteHandling {
                         FileFormatDataSourceStats(),
                         ParquetReaderConfig().toParquetReaderOptions(),
                         catalog,
-                        config)
+                        config, DucklakeTypeConverter(io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER))
                 return Fixture(isolated, catalog, splitManager, pageSourceProvider)
             }
         }

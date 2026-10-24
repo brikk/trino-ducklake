@@ -63,7 +63,7 @@ class TestDucklakeDeleteFileHandling {
                 FileFormatDataSourceStats(),
                 ParquetReaderConfig().toParquetReaderOptions(),
                 catalog,
-                config)
+                config, DucklakeTypeConverter(io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER))
 
             val snapshotId = catalog.currentSnapshotId
             val table = getTable(catalog, "test_schema", "simple_table", snapshotId)

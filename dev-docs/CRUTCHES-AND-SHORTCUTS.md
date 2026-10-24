@@ -42,11 +42,21 @@ This is not a SQL-query memory bound, SQL-paged catalog enumeration, total cross
 work budget or file lease. The catalog owner must supply the missing bounded APIs;
 there is no whole-catalog preflight scan or direct-SQL bypass masquerading as a fix.
 
-An opt-in missing-file-column initial default also rejects until the catalog offers
-decoded, stable-ID/backend-qualified default projection. Do not reuse partition-text
-parsing or replace an unqualified default with NULL. Ordinary columns and validated
-inline defaults still work. Unconstructable physical fields/VARIANT payloads reject,
-and decoded DECIMAL values outside Trino's declared precision cannot silently narrow.
+The `3fd75dc` candidate adds decoded, stable-ID/backend-qualified missing-file defaults.
+The connector now adopts that public API through a second narrow optional-method
+bridge (released 0.12 still compiles/runs); no missing-method fallback parses text or
+guesses NULL. Footer/stable-ID resolution proves absence before calling it. Fresh
+target metadata validates the projected type; handle default text is never trusted.
+Nested projection rebuilds only affected container branches, retaining present stored
+NULLs, NULL parents/elements and empty containers. This costs extra block allocation
+on evolved nested files. The API still reloads target metadata for each absent field;
+this is not a paged/whole-query bound. MySQL missing-field evolution, non-NULL whole-
+container defaults, nested name-map files without authoritative child IDs, ambiguous
+partially ID-annotated files and unconstructable physical fields/VARIANT reject.
+Decoded DECIMAL values outside Trino's declared precision cannot silently narrow.
+The catalog's non-NULL initial-default/history-kind contract discrepancy is recorded
+with a minimal repro in the qualification report; no connector metadata-SQL bypass
+was introduced to inspect or repair it.
 
 No production/default-on rollout follows from these opt-in experiments. Remaining
 gates include bounded catalog transfers, in-flight JDBC cancellation/network faults,

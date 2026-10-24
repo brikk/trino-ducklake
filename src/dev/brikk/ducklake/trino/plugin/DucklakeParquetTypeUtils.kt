@@ -58,8 +58,9 @@ object DucklakeParquetTypeUtils {
             currentColumns: List<DucklakeColumn>,
             eraColumns: List<DucklakeColumn>,
             sourceNamesByFieldId: Map<Long, String>,
-            hasNameMap: Boolean): Optional<Field> {
-        val context = IdentityContext(currentColumns, eraColumns, sourceNamesByFieldId, hasNameMap)
+            hasNameMap: Boolean,
+            missingField: ((DucklakeColumn, Type) -> Unit)? = null): Optional<Field> {
+        val context = IdentityContext(currentColumns, eraColumns, sourceNamesByFieldId, hasNameMap, missingField)
         return constructField(trinoType, columnIO, context.identity(rootColumnId), context)
     }
 
@@ -69,6 +70,7 @@ object DucklakeParquetTypeUtils {
             identity: DucklakeColumn?,
             context: IdentityContext? = null): Optional<Field> {
         if (columnIO == null) {
+            if (identity != null) context?.missingField?.invoke(identity, trinoType)
             return Optional.empty()
         }
         return when (trinoType) {
@@ -169,7 +171,8 @@ object DucklakeParquetTypeUtils {
             currentColumns: List<DucklakeColumn>,
             eraColumns: List<DucklakeColumn>,
             private val sourceNamesByFieldId: Map<Long, String>,
-            private val hasNameMap: Boolean) {
+            private val hasNameMap: Boolean,
+            val missingField: ((DucklakeColumn, Type) -> Unit)?) {
         private val currentById = currentColumns.associateBy { it.columnId }
         private val eraById = eraColumns.associateBy { it.columnId }
         private val childrenByParent = currentColumns.filter { it.parentColumn != null }
@@ -186,6 +189,11 @@ object DucklakeParquetTypeUtils {
             }
             if (!hasNameMap) {
                 directChildWithFieldId(group, child.columnId)?.let { return it }
+                if (missingField != null && (0 until group.childrenCount).any { group.getChild(it).type.id != null }) {
+                    if ((0 until group.childrenCount).any { group.getChild(it).type.id == null }) throw TrinoException(NOT_SUPPORTED,
+                        "Cannot prove absent final-1.1 nested field in a partially ID-annotated Parquet group")
+                    return null
+                }
                 val era = eraById[child.columnId]
                 if (era != null) {
                     group.getChild(era.columnName)?.let { return it }
@@ -197,6 +205,8 @@ object DucklakeParquetTypeUtils {
             }
             // Catalog 0.7.2 returns only top-level name-map rows. Preserve the old nested-name
             // fallback until it exposes nested target ids; callers track that remaining gap.
+            if (missingField != null) throw TrinoException(NOT_SUPPORTED,
+                "Final-1.1 nested name-map file evolution requires authoritative nested stable IDs")
             return group.getChild(child.columnName)
         }
 

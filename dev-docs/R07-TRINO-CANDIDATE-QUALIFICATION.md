@@ -1,5 +1,46 @@
 # R07 Trino candidate qualification — October 23–25, 2026
 
+## October 25 bounded quality repair: QG-01 and QG-05
+
+Both defects are repaired using the unchanged catalog `6730bb8` bundle below.
+Name lookup uses ASCII-only case equivalence, preserving distinct Unicode schema
+and table identities. Cancellation snapshots registered controls atomically, invokes
+drivers outside registry locks, and attempts all captured controls despite JDBC or
+runtime failures; the first failure retains later distinct failures as suppressed.
+Blocking drivers can still delay the caller, and later registrations are not covered
+by that captured set. No executor/kill/retry or cross-node cancellation claim is added.
+
+New actual-component regressions first failed on unchanged production code: the
+adapter returned schema `ſolo` for missing `solo`, cancellation attempted only one
+of three statements, and same-query registration timed out behind driver cancel.
+The test-only JDBC wrapper injects faults through real catalog controls and adapter
+registration/cleanup, without reflecting into production internals. It is not an
+external-driver fault certification. New two-worker SQL checks distinguish both
+Unicode schema/table pairs, preserve ASCII lookup and reject absent names. Authored
+metadata duplicates still fail explicitly.
+
+Final focused verification passes **6 tests, zero failures/errors/skips**, plus
+detekt and exact resolved bundle checks. This includes the two existing real
+PostgreSQL engine cancellation/deadline-before-unlock and one-pool recovery cases.
+Evidence: `/tmp/opencode/r07-step3-trino-final.log` and `r07-step3-trino-final-xml/`;
+before-fix failures: `r07-step3-trino-red-tests.log` and `r07-step3-trino-red-xml/`.
+Initial test getter compilation errors are separately retained in `r07-step3-trino-red.log`.
+
+```sh
+GRADLE_USER_HOME=/tmp/opencode/trino-r07-gradle mise exec -- ./gradlew test \
+  --tests '*TestR07CancellationFanout' --tests '*TestR07ConsumerTrial.pagedNames*' \
+  --tests '*TestR07ConsumerTrial.cancelledSqlWhileMetadataIsLockedReleasesAfterAbortAndRecovers' \
+  --tests '*TestR07ConsumerTrial.metadataDeadlineStopsPostgresBeforeUnlockAndPoolRecovers' \
+  detekt -Pr07CatalogCandidate=/tmp/opencode/catalog-r07-6730bb8 \
+  --no-daemon --no-configuration-cache
+```
+
+This closes those defect repairs, not the broad rollout boundaries below. No library
+source, candidate bytes, source/corpus pins, goldens or exclusions changed.
+The default released-lane JAR was rebuilt after qualification; candidate adapter/
+budget classes are absent and its SHA256 remains the previously recorded
+`27132fd2cb536035985e2bd59f13fe4f42d8ad48121b3b03a1c308131edabf6f`.
+
 ## October 25 continuation: payload, deletion and retained-history pages
 
 Qualification only; broad R07 remains **NO-GO**. This section supersedes the older

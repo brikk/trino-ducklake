@@ -10,6 +10,7 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
+import com.google.common.base.Ascii
 import dev.brikk.ducklake.catalog.DucklakeCatalog
 import dev.brikk.ducklake.catalog.DucklakeColumn
 import dev.brikk.ducklake.catalog.DucklakeChangeFeedDeletion
@@ -83,12 +84,24 @@ internal class PagedDucklakeCatalog(
         }
     }
 
+    @Suppress("TooGenericExceptionCaught") // JDBC/runtime failures must not prevent cancellation of the other controls.
     override fun cancelQuery(queryId: String) {
-        // No pool/transaction monitor, executor, retry or connection kill on the cancellation path.
-        active.computeIfPresent(queryId) { _, controls ->
-            controls.forEach { it.cancel() }
-            controls
+        var controls = emptyList<DucklakeReadSessionControl>()
+        active.computeIfPresent(queryId) { _, registered ->
+            controls = registered.toList()
+            registered
         }
+        // Snapshot atomically with registration/removal, then invoke drivers without a registry lock.
+        // A blocking driver may still delay this caller; no executor, kill or late-worker guarantee.
+        var failure: Exception? = null
+        for (control in controls) {
+            try { control.cancel() }
+            catch (e: Exception) {
+                if (failure == null) failure = e
+                else if (failure !== e) failure.addSuppressed(e)
+            }
+        }
+        failure?.let { throw it }
     }
 
     private fun paged(): Boolean {
@@ -125,12 +138,12 @@ internal class PagedDucklakeCatalog(
             { it.tableId }, { budget().text(it.tableName); budget().path(it.path) })
 
     override fun getSchema(schemaName: String, snapshotId: Long): DucklakeSchema? = if (!paged()) jdbc.getSchema(schemaName, snapshotId)
-        else listSchemas(snapshotId).filter { it.schemaName.equals(schemaName, ignoreCase = true) }.unique("schema name")
+        else listSchemas(snapshotId).filter { Ascii.equalsIgnoreCase(it.schemaName, schemaName) }.unique("schema name")
 
     override fun getTable(schemaName: String, tableName: String, snapshotId: Long): DucklakeTable? {
         if (!paged()) return jdbc.getTable(schemaName, tableName, snapshotId)
         val schema = getSchema(schemaName, snapshotId) ?: return null
-        return listTables(schema.schemaId, snapshotId).filter { it.tableName.equals(tableName, ignoreCase = true) }.unique("table name")
+        return listTables(schema.schemaId, snapshotId).filter { Ascii.equalsIgnoreCase(it.tableName, tableName) }.unique("table name")
     }
 
     override fun getTableById(tableId: Long, snapshotId: Long): DucklakeTable? {

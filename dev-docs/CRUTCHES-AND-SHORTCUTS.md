@@ -79,6 +79,14 @@ drivers' interruption, pool acquisition/setup/prepare/network partitions, arbitr
 callback computation or retention leases. No helper executor, connection kill or
 hidden retry is used in production. Head resolution remains outside transaction creation.
 
+The bounded quality repair snapshots registered controls under the registry lock,
+then calls drivers outside it. JDBC/runtime failures are collected so each captured
+control is attempted, with the first exception rethrown and later distinct failures
+suppressed. A blocking driver still delays the cancellation caller; controls
+registered after the snapshot are not covered by that request. The candidate's
+schema/table lookup uses ASCII-only case equivalence, preserving distinct Unicode
+identifiers and still rejecting genuine duplicate names.
+
 The `3fd75dc` candidate adds decoded, stable-ID/backend-qualified missing-file defaults.
 The connector now adopts that public API through a second narrow optional-method
 bridge (released 0.12 still compiles/runs); no missing-method fallback parses text or

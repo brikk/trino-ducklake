@@ -997,6 +997,54 @@ class TestR07ConsumerTrial {
         }
     }
 
+    @Test
+    fun pagedNamesPreserveUnicodeIdentityInAdapterAndSql(): Unit = Fixture().use { f ->
+        f.native("CREATE SCHEMA lake.s; CREATE SCHEMA lake.\"ſ\"; CREATE SCHEMA lake.\"ſolo\"; " +
+            "CREATE TABLE lake.s.t(i INTEGER); INSERT INTO lake.s.t VALUES(1); " +
+            "CREATE TABLE lake.\"ſ\".t(i INTEGER); INSERT INTO lake.\"ſ\".t VALUES(2); " +
+            "CREATE TABLE lake.s.\"MiXeD\"(i INTEGER); INSERT INTO lake.s.\"MiXeD\" VALUES(3); " +
+            "CREATE TABLE lake.s.s(i INTEGER); INSERT INTO lake.s.s VALUES(4); " +
+            "CREATE TABLE lake.s.\"ſ\"(i INTEGER); INSERT INTO lake.s.\"ſ\" VALUES(5); " +
+            "CREATE TABLE lake.s.\"ſolo\"(i INTEGER); INSERT INTO lake.s.\"ſolo\" VALUES(6)")
+        f.reader().use { jdbc ->
+            val c = PagedDucklakeCatalog(jdbc, f.config.setReadPageSize(1))
+            c.readSession(Supplier {
+                val snapshot = c.currentSnapshotId
+                assertThat(c.getSchema("solo", snapshot)).isNull()
+                assertThat(c.getSchema("S", snapshot)!!.schemaId).isEqualTo(c.getSchema("s", snapshot)!!.schemaId)
+                assertThat(c.getSchema("ſ", snapshot)!!.schemaId).isNotEqualTo(c.getSchema("s", snapshot)!!.schemaId)
+                assertThat(c.getTable("s", "solo", snapshot)).isNull()
+                assertThat(c.getTable("S", "MIXED", snapshot)!!.tableName).isEqualTo("MiXeD")
+                assertThat(c.getTable("s", "s", snapshot)!!.tableId).isNotEqualTo(c.getTable("s", "ſ", snapshot)!!.tableId)
+            })
+        }
+        f.runner().use { runner ->
+            for ((name, expected) in listOf("s.t" to 1, "\"ſ\".t" to 2, "S.MIXED" to 3,
+                    "s.s" to 4, "s.\"ſ\"" to 5, "s.\"ſolo\"" to 6)) {
+                assertThat(runner.execute("SELECT i FROM $name").onlyValue).isEqualTo(expected)
+            }
+            assertThatThrownBy { runner.execute("SELECT i FROM s.solo") }.hasMessageContaining("does not exist")
+            assertThatThrownBy { runner.execute("SELECT i FROM solo.t") }.hasMessageContaining("does not exist")
+        }
+    }
+
+    @Test
+    fun pagedNamesStillRejectGenuineAsciiDuplicates(): Unit = Fixture().use { f ->
+        f.native("CREATE SCHEMA lake.s; CREATE SCHEMA lake.other; CREATE TABLE lake.s.t(i INTEGER); CREATE TABLE lake.s.other(i INTEGER)")
+        f.metadata("UPDATE ducklake_table SET table_name='T' WHERE table_name='other'")
+        f.reader().use { jdbc ->
+            val c = PagedDucklakeCatalog(jdbc, f.config.setReadPageSize(1))
+            assertThatThrownBy { c.readSession(Supplier { c.getTable("s", "t", c.currentSnapshotId) }) }
+                .hasMessageContaining("duplicate table name")
+        }
+        f.metadata("UPDATE ducklake_schema SET schema_name='S' WHERE schema_name='other'")
+        f.reader().use { jdbc ->
+            val c = PagedDucklakeCatalog(jdbc, f.config.setReadPageSize(1))
+            assertThatThrownBy { c.readSession(Supplier { c.getSchema("s", c.currentSnapshotId) }) }
+                .hasMessageContaining("duplicate schema name")
+        }
+    }
+
     private class Fixture(val lane: Lane = Lane.LOCAL) : AutoCloseable {
         val root = Files.createTempDirectory(Path.of("/tmp/opencode"), "trino-r07-")
         val db = root.resolve("metadata.db")

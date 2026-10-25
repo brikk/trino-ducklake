@@ -23,6 +23,6 @@ class DucklakeCatalogProvider @Inject constructor(private val config: DucklakeCo
 
     override fun get(): DucklakeCatalog {
         requireNonNull(config.getCatalogDatabaseUrl(), "ducklake.catalog.database-url is null")
-        return JdbcDucklakeCatalog(config.toCatalogConfig())
+        return candidateReadAdapter(JdbcDucklakeCatalog(config.toCatalogConfig()), config)
     }
 }

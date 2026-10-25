@@ -15,12 +15,13 @@ import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
 import io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR
 import io.trino.spi.TrinoException
 import io.trino.spi.connector.ConnectorMetadata
+import io.trino.spi.connector.ConnectorSession
 import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Proxy
 
 /** One complete synchronous SPI metadata operation owns one read view, on its calling thread. */
 internal object DucklakeReadOnlyMetadata {
-    fun wrap(delegate: ConnectorMetadata, catalog: DucklakeCatalog, maxEntries: Int): ConnectorMetadata = Proxy.newProxyInstance(
+    fun wrap(delegate: ConnectorMetadata, catalog: DucklakeCatalog, maxEntries: Int, queryId: String? = null): ConnectorMetadata = Proxy.newProxyInstance(
         ConnectorMetadata::class.java.classLoader, arrayOf(ConnectorMetadata::class.java)) { proxy, method, arguments ->
         when (method.name) {
             "toString" -> "ReadOnlyDucklakeMetadata"
@@ -30,11 +31,14 @@ internal object DucklakeReadOnlyMetadata {
                 if (!isReadOperation(method.name)) throw TrinoException(NOT_SUPPORTED, "Experimental final-1.1 consumer is read-only: ${method.name}")
                 // DucklakeMetadata inherits these no-SQL defaults. Opening JDBC here can make
                 // cancellation/metrics collection wait behind the operation being cancelled.
+                if (method.name == "cleanupQuery") {
+                    readQueryId(arguments, queryId)?.let { catalog.cancelReadQuery(it) }
+                }
                 if (method.name in setOf("beginQuery", "cleanupQuery", "getMetrics")) {
                     return@newProxyInstance method.invoke(delegate, *(arguments ?: emptyArray()))
                 }
                 try {
-                    catalog.readSession {
+                    catalog.queryReadSession(readQueryId(arguments, queryId)) {
                         // Force in-session admission/layout validation even for a metadata cache hit.
                         catalog.currentSnapshotId
                         try { materialize(method.invoke(delegate, *(arguments ?: emptyArray())), maxEntries) }
@@ -48,6 +52,9 @@ internal object DucklakeReadOnlyMetadata {
             }
         }
     } as ConnectorMetadata
+
+    private fun readQueryId(arguments: Array<out Any?>?, fallback: String?): String? =
+        arguments?.filterIsInstance<ConnectorSession>()?.firstOrNull()?.queryId ?: fallback
 
     /** Never let a deferred catalog iterator escape its owning readSession. */
     private fun materialize(value: Any?, maxEntries: Int): Any? = when (value) {

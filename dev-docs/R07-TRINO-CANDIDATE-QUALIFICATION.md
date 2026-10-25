@@ -1,4 +1,176 @@
-# R07 Trino candidate qualification — October 23–24, 2026
+# R07 Trino candidate qualification — October 23–25, 2026
+
+## October 25 follow-up: public planning pages and controlled owned sessions
+
+This section supersedes the earlier candidate identity, non-NULL history discrepancy
+and blanket planning/cancellation gaps **only for the scopes explicitly described here**.
+Broad R07 remains **NO-GO**, not release/deployment approval.
+
+### Exact immutable candidate and compatibility boundary
+
+Source catalog `10f81f91df69ab6bc024cc02b6a0530628c54166`, bundle
+`/tmp/opencode/catalog-r07-10f81f9`, exclusive `maven-repository` resolution;
+the same three modules plus catalog test fixtures remain `0.13.0-SNAPSHOT`.
+All ten SHA256SUMS entries pass. Gradle rechecks the **actual four resolved JARs**:
+
+- Catalog: `370e4ad265c253b4dfbc791a962df2ab2f44e05faba981dc19c2d8ce5a5f25f7`.
+- Fixtures: `ca33bee56b33703ea7bbe7b76153bbaccc0275478fc992d48768eb912a1a056f`.
+- Replay: `c8f847d4ba8ca8509a8b3a47c709c1e86b34e50c2c4e3c824b79e1256cba85a4`.
+- SLT: `6406d8fdf2ed16c7fd59465fbeeeb5d1f6e06274357bfd4b3516f779d2bfc409`.
+
+Independent ZIP/header inspection checks 384 classes across those four JARs,
+maximum classfile 61/Java 17. Trino's own existing JVM floor is unchanged. Old bundles
+and catalog/Doris sources are untouched. Test-only JDBC2/core2/DuckLake417a9117f5,
+Quackf96420ed46/JavaQuack0.8.0/scanner and corpus pins remain unchanged.
+Evidence: `/tmp/opencode/r07-paging-manifest-check.log` and
+`/tmp/opencode/r07-paging-java17-check.log`.
+
+`-Pr07CatalogCandidate=...` selects `candidate/src` for a **typed public-API** catalog
+adapter; without it `released/src` contains no candidate symbols and retains released
+0.12 dependencies. This is an explicitly versioned qualification-build distinction,
+not runtime reflection into internals, an increased released floor or a distributable
+1.1 plugin. The existing narrow opt-in/default bridges remain for released compatibility.
+Detekt includes the selected adapter source, not just the old `src`/`test` trees.
+
+### Real production read paths and actual bounds
+
+The provider installs the typed adapter only with explicit final-1.1 opt-in. Existing
+metadata, split planning, `$files`, worker schema loads and insert-side CDC consumers
+now drain public active/added-file and planning-metadata pages instead of their old
+list calls on those implemented surfaces. One outer owned read view contains the
+entire drain; nested sessions reuse its control and budget. Each scope requires its
+terminal empty page, including short pages and `hasLiveRows=false` registry rows.
+Paging admission is final-1.1-specific: opted-in legacy 0.4/1.0 reads still delegate
+their legacy list contracts and are not re-labelled bounded by this adapter.
+
+Shared per-view totals are 1,024 page calls, 16,384 returned nodes, 20,000 paths,
+16 MiB conservative UTF-8 text allowance (three bytes per UTF-16 code unit), 131,072
+logical work units, 64 hierarchy levels, at most 4,096 columns per complete tree and
+the existing configured file/physical-row limits. Page size defaults to 128, allowed
+1..1024; qualification SQL selects one-item pages. A bounded overflow page may be
+received before the total rejects; no partial plan is published. Text cells are also
+SQL-bounded by the library before JDBC transfer. These are not heap/driver/network
+or database internal scan/sort-work bounds. Budgets reset per outer synchronous
+operation, **not** globally across queries, transactions, lazy opens or worker nodes.
+Shared-total budget overflow is sticky through successful callback return, even if a caller
+catches the first exception; an original caller failure still propagates unchanged.
+
+Composite data/delete cursors and begin-snapshot/added-file cursors are preserved.
+Final-1.1 min/max pruning remains conservative, exactly as the catalog's legacy DTO
+contract requires; it reuses the already paged active files instead of re-fetching
+all active IDs through the old range-list SQL. Exact residual predicates remain.
+Flat ID-ordered columns are assembled completely, validated for duplicates/parentage/
+cycles/depth and reordered using stored column order before type projection. Active
+partition specs remain distinct from retired file specs; NULL values and NULL row-ID
+starts are not synthesized. Name-map parents use mapping-column identity; unknown
+partition flags fail closed, not false. Native body-carried partitions remain distinct
+from Hive body-absent values. Absent inline tables retain their registry entries;
+ordinary split planning no longer opens a synthetic payload split for them.
+
+**Still not paged:** decoded ordinary/CDC inline payloads, deletion candidates/history,
+inline file-position deletes and some stats/comments/views/point lookups/schema-version/
+decoded-default internals. Ordinary inline count-before-payload and physical-footer
+row checks remain. CDC/deletion list checks still follow materialization and are only
+known-small work guards, never advertised as bounded transfer. The catalog coordinator
+owns the missing payload/deletion page APIs. No direct metadata SQL, shared-storage
+staging, native-oracle substitution, golden/exclusion change or fabricated capability.
+
+### Cancellation and corrected history contract
+
+Each outer candidate view creates a single-use `DucklakeReadSessionControl`, default
+positive 30-second deadline (`ducklake.read.timeout-seconds`, 1..3600). Trino's supported
+metadata `cleanupQuery` hook cancels registered controls for that query from the engine
+lifecycle thread; it does not acquire JDBC/pool/transaction-creation monitors. Query
+IDs are carried through metadata, split/function analysis and source/lazy CDC opens.
+No helper executor, retry, connection kill or eager monitored head read is introduced.
+
+The real PostgreSQL engine-SQL cancellation test holds ACCESS EXCLUSIVE on
+`ducklake_snapshot`, observes the reader waiting in `pg_stat_activity`, invokes Trino
+dispatch cancellation, then asserts **zero locked metadata statements before rollback**.
+A separate two-second deadline test likewise stops before fixture unlock. Both recover
+`SELECT i FROM t`, returning `7`, through the same node pools configured with one connection.
+Caller responsiveness alone is not acceptance evidence.
+
+This certifies that coordinator metadata cancellation path on PostgreSQL, **not**
+blocking worker-source construction/task-close propagation, other drivers' interruption,
+pool acquisition/setup/prepare, network partitions, callback computation, multi-host
+deployment or file leases. Positive scans on another route do not certify cancel there.
+
+The actual SQL assertion for `initial_default='42',default_value_type='unknown'`
+is restored with the specific unknown-history diagnostic and repaired-query recovery.
+The shared catalog validator now rejects unknown kinds even for non-NULL values.
+Native expression-kind plus a materialized initial literal remains allowed (notably
+VARCHAR `NULL`); expression-kind without that value still rejects. No expression text
+executes. This corrects the earlier docs' overbroad expression-history wording.
+
+### Verification
+
+Positive connector SQL uses two matched workers, coordinator scheduling disabled,
+in the existing single-host DistributedQueryRunner JVM. Mixed scans cover all five
+routes. The four default-qualified routes additionally read three physical files
+through ordinary SQL and insert-side CDC, with independently expected defaults,
+stored NULLs and row IDs. A merged-file insertion window checks embedded absolute
+IDs and row-origin snapshots despite a NULL catalog row-ID start and file begin
+before the window. Historical Parquet/Puffin deletes and inline decoded CDC remain
+in the selected suite. Native producers build fixtures, never substitute for worker SQL.
+
+New SQL checks exercise retired/current partition specs with NULL/escaped values,
+native Hive import/name-map rename, flat nested-column assembly, and malformed-parent
+refusal/recovery. Authored absent-inline-table/name-registry/oversized-text fixtures
+are explicitly query/negative fixtures, not native flush/import/default qualification.
+Shared-page overflow remains fatal even if caught inside the callback; cumulative
+text overflow rejects before publishing a column tree and the same pool recovers.
+
+Candidate final check: **128 JUnit tests across seven classes, zero failures/errors/
+skips**, plus detekt including `candidate/src`. This includes all 53 discoverable R07
+trial tests (nine new cases), the expanded four-route file insertion CDC and merged
+window assertions, and the new configuration test. All four resolved-JAR hash checks
+repeat. Evidence: `/tmp/opencode/r07-paging-candidate-final-4.log` and
+`/tmp/opencode/r07-paging-candidate-final-xml/`.
+
+Released 0.12.0 / JDBC 1.5.6.0 lane: **265 tests across the same 28 maintained
+classes, zero failures/errors/skips**, plus detekt including `released/src`.
+This retains actual legacy DDL/writes, nested evolution, inline/file deletes,
+historical/CDC/row-identity and partition regressions. ZIP inspection of the current
+`build/libs/trino-ducklake-483-0.5.0-SNAPSHOT.jar` confirms the candidate implementation
+and planning-budget classes are absent. Evidence: `/tmp/opencode/r07-paging-released.log`
+and `/tmp/opencode/r07-paging-released-xml/`.
+
+Released-lane `types` corpus directory: **11 files discovered, nine run, 81 records
+passed, zero failed**, with the same two file/three record exclusions. One JUnit
+test passes with zero JUnit skips. Evidence: `/tmp/opencode/r07-paging-corpus-types.log`
+and `/tmp/opencode/r07-paging-corpus-types-xml/` (the XML's system-err contains the
+record summary). No full corpus run or new exclusion is involved.
+
+The two final standalone Hive/text controls also pass in
+`/tmp/opencode/r07-paging-hive-text.log`. Preliminary compile/lint and authored metadata
+type-name (`integer` versus native `int32`) reds are retained, not counted as acceptance;
+no assertion, corpus golden/exclusion or skip rule was weakened to obtain the final run.
+
+```sh
+GRADLE_USER_HOME=/tmp/opencode/trino-r07-gradle mise exec -- ./gradlew test \
+  --tests '*TestR07ConsumerTrial' --tests '*TestLegacyTimezonePartitions' \
+  --tests '*TestDucklakeConfig' --tests '*TestDucklakeReadOnlyMetadata' \
+  --tests '*TestDucklakeDecodedValueConverter' --tests '*TestDucklakePuffinDeleteReader' \
+  --tests '*TestDucklakeTemporalPartitionMatcher' detekt \
+  -Pr07CatalogCandidate=/tmp/opencode/catalog-r07-10f81f9 \
+  --no-daemon --no-configuration-cache
+```
+
+The released check omits the property and repeats the same 28 maintained classes
+listed by the October 24 follow-up and its referenced 23/15-class commands below.
+The new configuration-boundary test runs in both lanes. The only corpus rerun is
+`test --tests '*TestTrinoCorpusReplay' -Dducklake.corpus.dirs=types` with the same
+isolated Gradle home/common flags and no candidate property. No exclusions or goldens
+are rewritten; no full corpus or strict native gate run is implied.
+
+No new catalog defect was established beyond the explicit missing/unbounded API
+surfaces above. Those are coordinating-library work, not concealed by consumer SQL
+or a new compatibility/format bypass.
+
+Strict native R02=3/R03=1/R04=1/M01=6+4 and the separate Doris long-path failure remain
+unwaived, not rerun or inferred away. No push/release/deploy/default-on/migration,
+connector1.1 writes, cleanup or full corpus campaign is authorized or performed.
 
 ## October 24 follow-up: decoded missing-file defaults (`3fd75dc`)
 

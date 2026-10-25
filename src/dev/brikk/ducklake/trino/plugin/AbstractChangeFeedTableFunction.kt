@@ -74,7 +74,7 @@ abstract class AbstractChangeFeedTableFunction(
             session: ConnectorSession,
             transaction: ConnectorTransactionHandle,
             arguments: Map<String, Argument>,
-            accessControl: ConnectorAccessControl): TableFunctionAnalysis = catalog.readSession {
+            accessControl: ConnectorAccessControl): TableFunctionAnalysis = catalog.queryReadSession(session.queryId) {
         val schemaName: String = stringArgument(arguments, ARG_SCHEMA_NAME)
         val tableName: String = stringArgument(arguments, ARG_TABLE_NAME)
 

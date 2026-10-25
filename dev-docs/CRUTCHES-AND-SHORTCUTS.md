@@ -34,13 +34,38 @@ pool. SQL qualification uses two actual Trino workers with coordinator schedulin
 disabled, still in the same single-host DistributedQueryRunner JVM. It is not a
 multi-process/multi-host deployment or mixed-version negotiation test.
 
-Consumer limits cap descriptors, physical row work, CDC candidates/units and deferred
-metadata iteration. Inline ordinary reads count inside their owned view before
-payload transfer; Parquet scans check actual footer row counts. **Legacy descriptor,
-hierarchy and inline CDC list APIs still materialize before their consumer check.**
-This is not a SQL-query memory bound, SQL-paged catalog enumeration, total cross-node
-work budget or file lease. The catalog owner must supply the missing bounded APIs;
-there is no whole-catalog preflight scan or direct-SQL bypass masquerading as a fix.
+The `10f81f9` qualification build selects a **typed public-API adapter** from
+`candidate/src`; the default build selects the no-candidate-symbol adapter from
+`released/src` and still consumes released 0.12. No released dependency floor changes.
+The candidate adapter drains SQL-keyset active/added files, schemas/tables/flat columns,
+partition fields/values, immutable name rows and inline registry versions. Each outer
+view shares totals: 1,024 page calls (including empty terminals), 16,384 returned nodes,
+20,000 paths, 16 MiB conservative UTF-8 text allowance, 131,072 logical work units,
+64 hierarchy levels and configured file/physical-row limits. Page size defaults to 128
+(1..1024); overflow fails, not a partial plan. Full column/name hierarchies are validated
+only after terminal enumeration. Unknown name-map partition flags refuse rather than
+become body-carried or Hive partition values. Missing physical inline tables retain
+their registry positions and do not get synthetic empty-payload splits.
+Legacy 0.4/1.0 list contracts are delegated, not re-labelled SQL-paged.
+
+These are **per-owned-view bounds on these APIs**, not a heap/network/DB execution-work
+bound or a total query/cross-node budget. Scoped point lookups, stats/comments/views,
+schema-version/default internals and inline delete APIs are not all paged. Ordinary
+inline payload transfer still uses the existing in-view count preflight; decoded CDC
+payload/deletion-candidate lists still materialize before their known-small consumer
+checks. Registry/added-file pages do not replace those missing library payload/deletion
+pages. Parquet scans check actual footer row counts. Keep the known-small limits;
+there is no direct metadata SQL, whole-catalog preflight or staging workaround.
+
+Owned candidate sessions use single-use controls and a positive default 30-second
+deadline (1..3600). Metadata `cleanupQuery` cancels the actual registered controls by
+Trino query ID; ordinary/split/function analysis and lazy CDC file-open sessions use
+the same typed boundary. PostgreSQL engine cancellation and a two-second JDBC deadline
+are checked before fixture unlock, with one-connection recovery. This does **not**
+certify worker task-close cancellation during blocking source construction, other
+drivers' interruption, pool acquisition/setup/prepare/network partitions, arbitrary
+callback computation or retention leases. No helper executor, connection kill or
+hidden retry is used in production. Head resolution remains outside transaction creation.
 
 The `3fd75dc` candidate adds decoded, stable-ID/backend-qualified missing-file defaults.
 The connector now adopts that public API through a second narrow optional-method
@@ -54,12 +79,13 @@ this is not a paged/whole-query bound. MySQL missing-field evolution, non-NULL w
 container defaults, nested name-map files without authoritative child IDs, ambiguous
 partially ID-annotated files and unconstructable physical fields/VARIANT reject.
 Decoded DECIMAL values outside Trino's declared precision cannot silently narrow.
-The catalog's non-NULL initial-default/history-kind contract discrepancy is recorded
-with a minimal repro in the qualification report; no connector metadata-SQL bypass
-was introduced to inspect or repair it.
+The `10f81f9` candidate corrects the earlier non-NULL unknown-history discrepancy:
+the real worker-SQL negative assertion and repaired-query recovery are restored.
+Known native expression-kind plus materialized literal (including VARCHAR `NULL`)
+remains valid; expression-kind without that value rejects. No expression executes.
 
 No production/default-on rollout follows from these opt-in experiments. Remaining
-gates include bounded catalog transfers, in-flight JDBC cancellation/network faults,
+gates include remaining bounded catalog transfers, broader cancellation/network faults,
 retention/lease coordination, broader route/type/legacy qualification and deployment
 testing. See [the qualification report](R07-TRINO-CANDIDATE-QUALIFICATION.md).
 

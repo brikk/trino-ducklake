@@ -19,7 +19,7 @@ detekt {
     buildUponDefaultConfig = true
     config.setFrom(rootProject.file("config/detekt/detekt.yml"))
     baseline = file("detekt-baseline.xml")
-    source.setFrom("src", "test")
+    source.setFrom("src", "test", if (providers.gradleProperty("r07CatalogCandidate").isPresent) "candidate/src" else "released/src")
 }
 
 // The brikk-sql (dev.brikk.house) TEST-ONLY transpiler resolves from the Central Portal snapshots
@@ -35,6 +35,7 @@ repositories {
 // Point at the candidate bundle (README.md + SHA256SUMS + maven-repository), not ~/.m2.
 val r07CatalogCandidate = providers.gradleProperty("r07CatalogCandidate").orNull?.let(::file)
 val r07Modules = setOf("ducklake-catalog", "slt-format", "ducklake-test-corpus-replay")
+kotlin.sourceSets.main { kotlin.srcDir(if (r07CatalogCandidate != null) "candidate/src" else "released/src") }
 if (r07CatalogCandidate != null) {
     repositories.exclusiveContent {
         forRepository {

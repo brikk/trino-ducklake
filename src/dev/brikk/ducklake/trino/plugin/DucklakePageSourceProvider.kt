@@ -142,9 +142,9 @@ class DucklakePageSourceProvider @Inject constructor(
             tableCredentials: Optional<ConnectorTableCredentials>,
             columns: List<ColumnHandle>,
             dynamicFilter: DynamicFilter): ConnectorPageSource
-    = catalog.readSession {
+    = catalog.queryReadSession(session.queryId) {
         if (final11Reads) catalog.currentSnapshotId
-        specialSplitPageSource(session, split, table, columns)?.let { return@readSession it }
+        specialSplitPageSource(session, split, table, columns)?.let { return@queryReadSession it }
 
         val ducklakeSplit = split as DucklakeSplit
 
@@ -155,7 +155,7 @@ class DucklakePageSourceProvider @Inject constructor(
                 .intersect(dynamicFilterPredicate)
 
         if (effectivePredicate.isNone) {
-            return@readSession EmptyPageSource()
+            return@queryReadSession EmptyPageSource()
         }
 
         // Extract column information
@@ -1019,7 +1019,9 @@ class DucklakePageSourceProvider @Inject constructor(
         val readColumns: List<DucklakeColumnHandle> = dataColumns + VirtualKind.FILE_ROW_NUMBER.columnHandle()
         return try {
             val fileSystem: TrinoFileSystem = fileSystemFactory.create(session)
-            createDataFilePageSource(split, syntheticHandle, readColumns, TupleDomain.all(), fileSystem)
+            catalog.queryReadSession(session.queryId) {
+                createDataFilePageSource(split, syntheticHandle, readColumns, TupleDomain.all(), fileSystem)
+            }
         }
         catch (e: IOException) {
             throw TrinoException(GENERIC_INTERNAL_ERROR, "Failed to open change-feed data file: $resolvedPath", e)

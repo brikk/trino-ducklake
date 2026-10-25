@@ -163,8 +163,11 @@ class TestR07ConsumerTrial {
         f.native("CALL lake.set_option('data_inlining_row_limit',2); CREATE TABLE lake.t(i INTEGER); INSERT INTO lake.t VALUES(1),(2),(3)")
         val first = f.snapshot()
         f.native("INSERT INTO lake.t VALUES(4)")
+        val fourth = f.snapshot()
         f.native("INSERT INTO lake.t VALUES(5),(6),(7)")
+        val lastInsert = f.snapshot()
         f.native("CALL ducklake_merge_adjacent_files('lake','t')")
+        val merged = f.snapshot()
         f.reader().use { c ->
             val plan = f.plan(c, first)
             assertThat(plan.splits.filterIsInstance<DucklakeSplit>().single().rowIdStart).isNull()
@@ -178,6 +181,9 @@ class TestR07ConsumerTrial {
         f.runner().use { runner ->
             assertThat(runner.execute("SELECT i,\"\$row_id\" FROM t FOR VERSION AS OF $first ORDER BY i").materializedRows.map { it.fields })
                 .containsExactly(listOf<Any?>(1, 0L), listOf<Any?>(2, 1L), listOf<Any?>(3, 2L))
+            assertThat(runner.execute("SELECT i,rowid,snapshot_id FROM TABLE(ducklake.system.table_insertions('main','t',$fourth,$merged)) ORDER BY i")
+                .materializedRows.map { it.fields }).containsExactly(
+                listOf<Any?>(4,3L,fourth), listOf<Any?>(5,4L,lastInsert), listOf<Any?>(6,5L,lastInsert), listOf<Any?>(7,6L,lastInsert))
             assertThat(runner.execute("SELECT count(*) FROM t").onlyValue).isEqualTo(7L)
         }
     }
@@ -456,6 +462,7 @@ class TestR07ConsumerTrial {
         val old = f.reader().use { c -> c.readSession(Supplier { c.currentSnapshotId }) }
         f.native("ALTER TABLE lake.t RENAME COLUMN n TO renamed; ALTER TABLE lake.t ALTER COLUMN renamed TYPE BIGINT; " +
             "ALTER TABLE lake.t ALTER COLUMN renamed SET DEFAULT 77; INSERT INTO lake.t(i) VALUES(3)")
+        val latest = f.reader().use { c -> c.readSession(Supplier { c.currentSnapshotId }) }
         f.reader().use { c ->
             val plan = f.plan(c)
             assertThat(plan.splits.filterIsInstance<DucklakeSplit>()).hasSize(3)
@@ -473,6 +480,8 @@ class TestR07ConsumerTrial {
             assertThat(runner.execute("SELECT i,n FROM t FOR VERSION AS OF $old ORDER BY i").materializedRows.map { it.fields })
                 .containsExactly(listOf<Any?>(1,42),listOf<Any?>(2,null))
             assertThat(runner.execute("SELECT count(*) FROM t").onlyValue).isEqualTo(3L)
+            assertThat(runner.execute("SELECT i,renamed,rowid FROM TABLE(ducklake.system.table_insertions('main','t',1,$latest)) ORDER BY i")
+                .materializedRows.map { it.fields }).containsExactly(listOf<Any?>(1,42L,0L),listOf<Any?>(2,null,1L),listOf<Any?>(3,77L,2L))
         }
     }
 
@@ -507,7 +516,8 @@ class TestR07ConsumerTrial {
             fun reject(name: String, text: String?, kind: String) {
                 val data = text?.let { "'${it.replace("'", "''")}'" } ?: "NULL"
                 f.metadata("UPDATE ducklake_column SET initial_default=$data,default_value_type='$kind' WHERE column_name='$name'")
-                assertThatThrownBy { runner.execute("SELECT $name FROM t") }.isInstanceOf(io.trino.testing.QueryFailedException::class.java)
+                val failure = assertThatThrownBy { runner.execute("SELECT $name FROM t") }.isInstanceOf(io.trino.testing.QueryFailedException::class.java)
+                if (kind == "unknown") failure.hasMessageContaining("unknown initial-default history kind")
                 f.metadata("UPDATE ducklake_column SET initial_default=${if (name == "n") "'42'" else "NULL"},default_value_type='literal' WHERE column_name='$name'")
                 assertThat(runner.execute("SELECT n FROM t").onlyValue).isEqualTo(42)
                 assertThat(runner.execute("SELECT i FROM t").onlyValue).isEqualTo(1)
@@ -516,6 +526,7 @@ class TestR07ConsumerTrial {
             reject("n", "0); DROP TABLE ducklake_snapshot; --", "literal")
             reject("n", null, "expression")
             reject("n", null, "unknown")
+            reject("n", "42", "unknown")
             reject("p", "{'a':1}", "literal")
             reject("p", "x".repeat(16385), "literal")
             assertThat(runner.execute("SELECT p IS NULL FROM t").onlyValue).isEqualTo(true)
@@ -672,7 +683,11 @@ class TestR07ConsumerTrial {
                             .get(10, java.util.concurrent.TimeUnit.SECONDS)
                         assertThatThrownBy { future.get(10, java.util.concurrent.TimeUnit.SECONDS) }
                             .hasCauseInstanceOf(io.trino.testing.QueryFailedException::class.java)
-                        println("R07 cancelled SQL: JDBC metadata still blocked before lock release = ${f.blockedMetadataQueries() > 0}")
+                        for (attempt in 1..100) {
+                            if (f.blockedMetadataQueries() == 0L) break
+                            java.util.concurrent.locks.LockSupport.parkNanos(50_000_000L)
+                        }
+                        assertThat(f.blockedMetadataQueries()).describedAs("engine cancellation must stop PostgreSQL BEFORE lock rollback").isZero()
                     } finally { lock.rollback() }
                 }
                 assertThat(runner.execute("SELECT i FROM t").onlyValue).isEqualTo(7)
@@ -682,7 +697,169 @@ class TestR07ConsumerTrial {
 
     private data class Plan(val handle: DucklakeTableHandle, val splits: List<ConnectorSplit>)
 
+    @Test
+    fun metadataDeadlineStopsPostgresBeforeUnlockAndPoolRecovers(): Unit = Fixture(Lane.POSTGRES).use { f ->
+        f.native("CREATE TABLE lake.t(i INTEGER); INSERT INTO lake.t VALUES(7)")
+        f.runner(mapOf("ducklake.read.timeout-seconds" to "2")).use { runner ->
+            val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+            try {
+                DriverManager.getConnection(f.url, f.config.getCatalogDatabaseUser(), f.config.getCatalogDatabasePassword()).use { lock ->
+                    lock.autoCommit = false
+                    lock.createStatement().use { it.execute("LOCK TABLE ducklake_snapshot IN ACCESS EXCLUSIVE MODE") }
+                    try {
+                        val future = executor.submit<Any> { runner.execute("SELECT i AS r07_deadline_marker FROM t") }
+                        var blocked = false
+                        for (attempt in 1..100) {
+                            if (f.blockedMetadataQueries() > 0) { blocked = true; break }
+                            java.util.concurrent.locks.LockSupport.parkNanos(20_000_000L)
+                        }
+                        check(blocked) { "deadline query never reached PostgreSQL lock" }
+                        assertThatThrownBy { future.get(10, java.util.concurrent.TimeUnit.SECONDS) }
+                            .hasCauseInstanceOf(io.trino.testing.QueryFailedException::class.java)
+                        assertThat(f.blockedMetadataQueries()).describedAs("JDBC deadline stops server statement before fixture unlock").isZero()
+                    } finally { lock.rollback() }
+                }
+                assertThat(runner.execute("SELECT i FROM t").onlyValue).isEqualTo(7)
+            } finally { executor.shutdownNow() }
+        }
+    }
+
+    @Test
+    fun pagedMetadataAssemblesFlatTreesAndSharedBudgetsRecover(): Unit = Fixture().use { f ->
+        f.native("CREATE SCHEMA lake.extra; CREATE TABLE lake.t(i INTEGER,s STRUCT(a INTEGER,b VARCHAR)); " +
+            "INSERT INTO lake.t VALUES(1,{'a':2,'b':'three'}); CREATE TABLE lake.extra.other(n INTEGER)")
+        f.reader().use { jdbc ->
+            val c = PagedDucklakeCatalog(jdbc, f.config.setReadPageSize(1))
+            c.readSession(Supplier {
+                val id = c.currentSnapshotId
+                assertThat(c.listSchemas(id).map { it.schemaName }).containsExactlyInAnyOrder("main", "extra")
+                val table = c.getTable("main", "t", id)!!
+                val rows = c.getAllColumnsWithParentage(table.tableId, id)
+                assertThat(rows.map { it.columnName }).containsExactlyInAnyOrder("i", "s", "a", "b")
+                assertThat(c.getTableColumns(table.tableId, id).map { it.columnType }).containsExactly("int32", "struct<a:int32,b:varchar>")
+            })
+            // Two pages per enumeration. Repeated scopes share one total, including empty terminals.
+            assertThatThrownBy { c.readSession(Supplier {
+                val id = c.currentSnapshotId
+                // Even a caller that catches the overflow cannot publish a successful partial plan.
+                runCatching { repeat(1025) { c.listSchemas(id) } }
+                "partial plan must not escape"
+            }) }.hasMessageContaining("total planning page budget")
+            c.readSession(Supplier { assertThat(c.listSchemas(c.currentSnapshotId)).hasSize(2) })
+        }
+        f.runner().use { runner ->
+            assertThat(runner.execute("SHOW SCHEMAS").materializedRows.map { it.getField(0) }).contains("main", "extra")
+            assertThat(runner.execute("SHOW TABLES FROM extra").onlyValue).isEqualTo("other")
+            assertThat(runner.execute("SELECT i,s.a,s.b FROM t").materializedRows.single().fields).containsExactly(1, 2, "three")
+        }
+    }
+
+    @Test
+    fun pagedColumnParentCycleRejectsAndSqlRecovers(): Unit = Fixture(Lane.POSTGRES).use { f ->
+        f.native("CREATE TABLE lake.t(i INTEGER,s STRUCT(a INTEGER)); INSERT INTO lake.t VALUES(1,{'a':2})")
+        f.runner().use { runner ->
+            f.metadata("UPDATE ducklake_column SET parent_column=column_id WHERE column_name='s'")
+            assertThatThrownBy { runner.execute("SELECT i FROM t") }.hasMessageContaining("cycle/depth")
+            f.metadata("UPDATE ducklake_column SET parent_column=NULL WHERE column_name='s'")
+            assertThat(runner.execute("SELECT s.a FROM t").onlyValue).isEqualTo(2)
+        }
+    }
+
     private enum class Lane { LOCAL, POSTGRES, NATIVE_QUACK, JAVA_QUACK, MYSQL }
+
+    @Test fun localPagedPartitionEvolutionSql(): Unit = pagedPartitionEvolutionSql(Lane.LOCAL)
+    @Test fun postgresPagedPartitionEvolutionSql(): Unit = pagedPartitionEvolutionSql(Lane.POSTGRES)
+
+    private fun pagedPartitionEvolutionSql(lane: Lane): Unit = Fixture(lane).use { f ->
+        f.native("CALL lake.set_option('data_inlining_row_limit',0); CREATE TABLE lake.t(i INTEGER,p VARCHAR,q INTEGER); " +
+            "ALTER TABLE lake.t SET PARTITIONED BY(p); INSERT INTO lake.t VALUES(1,'a/b',10),(2,NULL,20),(3,'NULL',30)")
+        val old = if (lane == Lane.LOCAL) f.snapshot() else f.reader().use { c -> c.readSession(Supplier { c.currentSnapshotId }) }
+        f.native("ALTER TABLE lake.t SET PARTITIONED BY(q); INSERT INTO lake.t VALUES(4,'new',40),(5,NULL,50)")
+        f.runner().use { runner ->
+            assertThat(runner.execute("SELECT i,p,q FROM t ORDER BY i").materializedRows.map { it.fields }).containsExactly(
+                listOf<Any?>(1,"a/b",10), listOf<Any?>(2,null,20), listOf<Any?>(3,"NULL",30),
+                listOf<Any?>(4,"new",40), listOf<Any?>(5,null,50))
+            assertThat(runner.execute("SELECT i FROM t WHERE p IS NULL ORDER BY i").materializedRows.map { it.getField(0) }).containsExactly(2,5)
+            assertThat(runner.execute("SELECT i FROM t WHERE q=10").onlyValue).isEqualTo(1)
+            assertThat(runner.execute("SELECT i FROM t WHERE p='a/b'").onlyValue).isEqualTo(1)
+            assertThat(runner.execute("SELECT i FROM t FOR VERSION AS OF $old WHERE p IS NULL").onlyValue).isEqualTo(2)
+        }
+    }
+
+    @Test
+    fun pagedRegistryRetainsAbsentVersionAndReachesLaterLiveRows(): Unit = Fixture().use { f ->
+        f.native("CREATE TABLE lake.t(i INTEGER); INSERT INTO lake.t VALUES(1); " +
+            "ALTER TABLE lake.t ADD COLUMN n INTEGER DEFAULT 42; INSERT INTO lake.t VALUES(2,7)")
+        val infos = f.reader().use { c -> c.readSession(Supplier {
+            val id = c.currentSnapshotId
+            c.getInlinedDataInfos(c.getTable("main", "t", id)!!.tableId, id)
+        }) }
+        assertThat(infos).hasSize(2)
+        // Owned absent-table registry fixture; NOT native flush/retention qualification.
+        f.metadata("DROP TABLE ${infos.first().tableName}")
+        f.reader().use { jdbc ->
+            val c = PagedDucklakeCatalog(jdbc, f.config.setReadPageSize(1))
+            c.readSession(Supplier {
+                val rows = c.getInlinedDataInfos(infos.first().tableId, c.currentSnapshotId)
+                assertThat(rows.map { it.schemaVersion }).containsExactlyElementsOf(infos.map { it.schemaVersion })
+                assertThat(rows.map { it.hasLiveRows }).containsExactly(false, true)
+            })
+        }
+        f.runner().use { runner ->
+            assertThat(runner.execute("SELECT i,n FROM t").materializedRows.single().fields).containsExactly(2,7)
+        }
+    }
+
+    @Test
+    fun pagedNameMappingKeepsParentIdentityAndRefusesUnknownFlags(): Unit = Fixture(Lane.POSTGRES).use { f ->
+        f.native("CREATE TABLE lake.t(i INTEGER)")
+        // Authored registry facts, not a native Hive import/payload certification.
+        f.metadata("INSERT INTO ducklake_name_mapping(mapping_id,column_id,source_name,target_field_id,parent_column,is_partition) " +
+            "VALUES(303,11,'old_s',1,NULL,false),(303,22,'old_child',2,11,false),(303,33,'hive_p',3,NULL,true)")
+        f.reader().use { jdbc ->
+            val c = PagedDucklakeCatalog(jdbc, f.config.setReadPageSize(1))
+            c.readSession(Supplier {
+                assertThat(c.getNameMaps(setOf(303L))).isEqualTo(mapOf(303L to mapOf(1L to "old_s",2L to "old_child")))
+                assertThat(c.getPartitionNameMaps(setOf(303L))).isEqualTo(mapOf(303L to mapOf(3L to "hive_p")))
+            })
+            f.metadata("UPDATE ducklake_name_mapping SET is_partition=NULL WHERE column_id=33")
+            assertThatThrownBy { c.readSession(Supplier { c.getNameMaps(setOf(303L)) }) }.hasMessageContaining("unknown name mapping partition flag")
+            f.metadata("UPDATE ducklake_name_mapping SET is_partition=true WHERE column_id=33")
+            c.readSession(Supplier { assertThat(c.getPartitionNameMaps(setOf(303L))[303L]).isEqualTo(mapOf(3L to "hive_p")) })
+        }
+    }
+
+    @Test
+    fun nativeHiveNameMapAndRenamedBodyColumnUsePagedMappings(): Unit = Fixture().use { f ->
+        val path = Files.createDirectories(f.root.resolve("import/p=us")).resolve("body.parquet")
+        f.native("CREATE TABLE lake.t(i INTEGER,p VARCHAR,b BLOB); " +
+            "COPY (SELECT 7::INTEGER AS i,from_hex('005CFF') AS b) TO '$path'(FORMAT PARQUET); " +
+            "CALL ducklake_add_data_files('lake','t','$path',hive_partitioning=>true); ALTER TABLE lake.t RENAME i TO renamed")
+        f.runner().use { runner ->
+            assertThat(runner.execute("SELECT renamed,p,to_hex(b) FROM t").materializedRows.single().fields).containsExactly(7,"us","005CFF")
+            assertThat(runner.execute("SELECT renamed FROM t WHERE p='us' AND renamed=7").onlyValue).isEqualTo(7)
+            assertThat(runner.execute("SELECT count(*) FROM t WHERE p='missing'").onlyValue).isEqualTo(0L)
+        }
+    }
+
+    @Test
+    fun pagedMetadataTextTotalsRejectBeforePublishingTreeAndRecover(): Unit = Fixture().use { f ->
+        f.native("CREATE TABLE lake.t(${(0 until 400).joinToString(",") { "c$it VARCHAR" }}); CREATE TABLE lake.small(i INTEGER)")
+        // Valid-sized individual cells, but their combined transferred text exceeds the view budget.
+        // This is an authored metadata-budget fixture, not native default-evolution qualification.
+        f.metadata("UPDATE ducklake_column SET initial_default='${"x".repeat(16000)}' WHERE column_name LIKE 'c%'")
+        f.reader().use { jdbc ->
+            val c = PagedDucklakeCatalog(jdbc, f.config.setReadPageSize(32))
+            assertThatThrownBy { c.readSession(Supplier {
+                val id = c.currentSnapshotId
+                c.getAllColumnsWithParentage(c.getTable("main", "t", id)!!.tableId, id)
+            }) }.hasMessageContaining("total planning byte budget")
+            c.readSession(Supplier {
+                val id = c.currentSnapshotId
+                assertThat(c.getTableColumns(c.getTable("main", "small", id)!!.tableId, id).map { it.columnName }).containsExactly("i")
+            })
+        }
+    }
 
     private class Fixture(val lane: Lane = Lane.LOCAL) : AutoCloseable {
         val root = Files.createTempDirectory(Path.of("/tmp/opencode"), "trino-r07-")
@@ -747,7 +924,8 @@ class TestR07ConsumerTrial {
             try {
                 runner.installPlugin(DucklakePlugin())
                 val properties = mutableMapOf("ducklake.catalog.database-url" to url, "ducklake.data-path" to data.toString(),
-                    "ducklake.catalog.max-connections" to "1", "ducklake.experimental.enable-final-1.1-reads" to "true", "fs.hadoop.enabled" to "true")
+                    "ducklake.catalog.max-connections" to "1", "ducklake.experimental.enable-final-1.1-reads" to "true",
+                    "ducklake.read.page-size" to "1", "fs.hadoop.enabled" to "true")
                 config.getCatalogDatabaseUser()?.let { properties["ducklake.catalog.database-user"] = it }
                 config.getCatalogDatabasePassword()?.let { properties["ducklake.catalog.database-password"] = it }
                 runner.createCatalog("ducklake", "ducklake", properties + extra)

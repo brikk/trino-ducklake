@@ -75,7 +75,9 @@ class DucklakeConnector @Inject constructor(
 
     override fun getMetadata(session: ConnectorSession, transaction: ConnectorTransactionHandle): ConnectorMetadata {
         val metadata: DucklakeMetadata = transactionManager.getMetadata(transaction)
-        val delegate = if (config.isEnableFinal11Reads()) DucklakeReadOnlyMetadata.wrap(metadata, catalog, config.getReadMaxFiles()) else metadata
+        val delegate = if (config.isEnableFinal11Reads())
+            DucklakeReadOnlyMetadata.wrap(metadata, catalog, config.getReadMaxFiles(), session.queryId)
+        else metadata
         return ClassLoaderSafeConnectorMetadata(delegate, javaClass.classLoader)
     }
 

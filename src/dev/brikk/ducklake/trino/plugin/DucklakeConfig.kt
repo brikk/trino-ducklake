@@ -50,6 +50,18 @@ class DucklakeConfig {
     private var readMaxFiles = 10_000
     private var readMaxRows = 1_000_000L
     private var readMaxCdcEvents = 100_000L
+    private var readTimeoutSeconds = 30
+    private var readPageSize = 128
+
+    @Min(1) @Max(1024)
+    fun getReadPageSize(): Int = readPageSize
+    @Config("ducklake.read.page-size")
+    fun setReadPageSize(value: Int): DucklakeConfig { readPageSize = value; return this }
+
+    @Min(1) @Max(3600)
+    fun getReadTimeoutSeconds(): Int = readTimeoutSeconds
+    @Config("ducklake.read.timeout-seconds")
+    fun setReadTimeoutSeconds(value: Int): DucklakeConfig { readTimeoutSeconds = value; return this }
 
     @Min(1) @Max(100_000)
     fun getReadMaxFiles(): Int = readMaxFiles

@@ -26,6 +26,27 @@ import org.junit.jupiter.api.Test
 
 class TestDucklakeConfig {
     @Test
+    fun readPageAndDeadlineDefaultsAndBounds() {
+        assertThat(DucklakeConfig().getReadPageSize()).isEqualTo(128)
+        assertThat(DucklakeConfig().getReadTimeoutSeconds()).isEqualTo(30)
+        for ((key, valid, invalid) in listOf(
+            Triple("ducklake.read.page-size", listOf(1, 1024), listOf(0, 1025)),
+            Triple("ducklake.read.timeout-seconds", listOf(1, 3600), listOf(0, 3601)),
+        )) {
+            for (value in valid + invalid) {
+                ConfigurationFactory(mapOf("ducklake.catalog.database-url" to "jdbc:postgresql://example.invalid/ducklake",
+                    key to value.toString())).use { factory ->
+                    if (value in invalid) assertThatThrownBy { factory.build(DucklakeConfig::class.java) }
+                        .isInstanceOf(ConfigurationException::class.java).hasMessageContaining(key)
+                    else {
+                        val config = factory.build(DucklakeConfig::class.java)
+                        assertThat(if (key.endsWith("page-size")) config.getReadPageSize() else config.getReadTimeoutSeconds()).isEqualTo(value)
+                    }
+                }
+            }
+        }
+    }
+    @Test
     fun final11IsExplicitAndNeverEmulatedOnTheReleasedLibrary() {
         assertThat(DucklakeConfig().isEnableFinal11Reads()).isFalse()
         val config = DucklakeConfig().setEnableFinal11Reads(true)

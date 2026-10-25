@@ -61,9 +61,8 @@ internal class DucklakeFileDefaults(
 
     // Optional public API boundary, like the opt-in setter: no fallback to text, SQL or guessed NULL.
     private fun decoded(columnId: Long): Any? {
-        require(catalog is JdbcDucklakeCatalog) { "Decoded file defaults require JdbcDucklakeCatalog" }
         val method = defaultMethod()
-        return try { method.invoke(catalog, table.tableId, columnId, table.snapshotId) }
+        return try { method.invoke(catalog.jdbcCatalog(), table.tableId, columnId, table.snapshotId) }
         catch (e: InvocationTargetException) { throw projectionFailure(e) }
     }
 

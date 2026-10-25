@@ -66,15 +66,16 @@ class DucklakeSplitManager @Inject constructor(
     private val temporalPartitionEncoding: DucklakeTemporalPartitionEncoding = config.getTemporalPartitionEncoding()
     private val temporalPartitionEncodingReadLeniency: Boolean = config.isTemporalPartitionEncodingReadLeniency()
     private val readWorkLimits = DucklakeReadWorkLimits(config)
+    private val final11Reads = config.isEnableFinal11Reads()
 
     override fun getSplits(
             transaction: ConnectorTransactionHandle?,
             session: ConnectorSession?,
             table: ConnectorTableHandle,
             dynamicFilterColumns: MutableSet<ColumnHandle>,
-            constraint: Constraint): ConnectorSplitSource = catalog.readSession {
+            constraint: Constraint): ConnectorSplitSource = catalog.queryReadSession(session?.queryId) {
         // All descriptors, paths, partition/name maps and inline deletes share one owned view.
-        specialSplitSource(table)?.let { return@readSession it }
+        specialSplitSource(table)?.let { return@queryReadSession it }
 
         val tableHandle: DucklakeTableHandle = table as DucklakeTableHandle
 
@@ -176,7 +177,10 @@ class DucklakeSplitManager @Inject constructor(
         // Empty table (no data files at all) with an inlined data table: emit an inlined
         // split so the engine gets a proper empty result instead of zero splits.
         // This does NOT apply when pruning eliminated all files — that means no rows match.
-        if (tableHasNoDataFiles && inlinedSplits.isEmpty() && !inlinedDataInfos.isEmpty()) {
+        // Final-1.1 registry entries can describe absent physical tables: keep zero splits
+        // there rather than inventing an empty payload table to open.
+        val legacyEmptyInline = !final11Reads && tableHasNoDataFiles
+        if (legacyEmptyInline && inlinedSplits.isEmpty() && !inlinedDataInfos.isEmpty()) {
             val latestInfo: DucklakeInlinedDataInfo = inlinedDataInfos.last()
             log.debug("Emitting empty inlined split for table %s (tableId=%d, schemaVersion=%d)",
                     tableHandle.tableName, latestInfo.tableId, latestInfo.schemaVersion)
@@ -185,7 +189,7 @@ class DucklakeSplitManager @Inject constructor(
 
         if (parquetSplits.isEmpty() && inlinedSplits.isEmpty()) {
             log.debug("No data files or inlined data found for table %s", tableHandle.tableName)
-            return@readSession FixedSplitSource(listOf<ConnectorSplit>())
+            return@queryReadSession FixedSplitSource(listOf<ConnectorSplit>())
         }
 
         val allSplits: MutableList<ConnectorSplit> = ArrayList(parquetSplits.size + inlinedSplits.size)
@@ -244,6 +248,11 @@ class DucklakeSplitManager @Inject constructor(
         if (constraint.summary.isNone) {
             return listOf()
         }
+
+        // The final-1.1 legacy stats DTO has no endpoint exactness: the public catalog
+        // range API deliberately retains EVERY active ID. Reuse our already paged file
+        // enumeration rather than transferring that same set through its old list SQL.
+        if (final11Reads && catalog.getSpecVersion() == "1.1") return dataFiles
 
         val domains: Optional<Map<ColumnHandle, Domain>> = constraint.summary.getDomains()
         if (domains.isEmpty || domains.get().isEmpty()) {

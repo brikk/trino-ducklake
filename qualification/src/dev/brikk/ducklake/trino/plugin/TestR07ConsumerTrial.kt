@@ -767,6 +767,142 @@ class TestR07ConsumerTrial {
 
     private enum class Lane { LOCAL, POSTGRES, NATIVE_QUACK, JAVA_QUACK, MYSQL }
 
+    @Test fun localPagedRepeatedVersionsWithNoLiveRowsSql(): Unit = repeatedVersionsSql(Lane.LOCAL)
+    @Test fun postgresPagedRepeatedVersionsWithNoLiveRowsSql(): Unit = repeatedVersionsSql(Lane.POSTGRES)
+
+    private fun repeatedVersionsSql(lane: Lane): Unit = Fixture(lane).use { f ->
+        f.native("CREATE TABLE lake.t(i INTEGER); INSERT INTO lake.t VALUES(1)")
+        val first = f.head()
+        f.native("UPDATE lake.t SET i=2")
+        val second = f.head()
+        f.native("UPDATE lake.t SET i=3")
+        val third = f.head()
+        f.native("DELETE FROM lake.t")
+        val last = f.head()
+        f.runner().use { runner ->
+            assertThat(runner.execute("SELECT count(*) FROM t").onlyValue).isEqualTo(0L)
+            assertThat(runner.execute("SELECT i,\"\$snapshot_id\" FROM t FOR VERSION AS OF $first").materializedRows.single().fields)
+                .containsExactly(1,first)
+            val rows = runner.execute("SELECT snapshot_id,rowid,change_type,i FROM " +
+                "TABLE(ducklake.system.table_changes('main','t',$first,$last)) ORDER BY snapshot_id,change_type").materializedRows.map { it.fields }
+            assertThat(rows).containsExactly(
+                listOf<Any?>(first,0L,"insert",1), listOf<Any?>(second,0L,"update_postimage",2),
+                listOf<Any?>(second,0L,"update_preimage",1), listOf<Any?>(third,0L,"update_postimage",3),
+                listOf<Any?>(third,0L,"update_preimage",2), listOf<Any?>(last,0L,"delete",3))
+            assertThat(runner.execute("SELECT count(*) FROM TABLE(ducklake.system.table_deletions('main','t',$last,$last))").onlyValue).isEqualTo(1L)
+        }
+    }
+
+    @Test
+    fun pagedZeroLifetimeCandidatesAreChargedButNeverEmittedSql(): Unit = Fixture().use { f ->
+        f.native("CREATE TABLE lake.t(i INTEGER); INSERT INTO lake.t VALUES(9)")
+        val head = f.head()
+        val info = f.reader().use { c -> c.readSession(Supplier {
+            c.getInlinedDataInfos(c.getTable("main","t",head)!!.tableId, head).single()
+        }) }
+        // Authored physical zero-lifetime history, not a native writer guarantee.
+        f.metadata("UPDATE ${info.tableName} SET _ducklake_end_snapshot=_ducklake_begin_snapshot")
+        f.runner().use { runner ->
+            assertThat(runner.execute("SELECT count(*) FROM t").onlyValue).isEqualTo(0L)
+            for (feed in listOf("table_changes","table_insertions","table_deletions"))
+                assertThat(runner.execute("SELECT count(*) FROM TABLE(ducklake.system.$feed('main','t',$head,$head))").onlyValue).isEqualTo(0L)
+        }
+        f.reader().use { jdbc ->
+            val c = PagedDucklakeCatalog(jdbc, f.config.setReadPageSize(1).setReadMaxCdcEvents(1))
+            assertThatThrownBy { c.readSession(Supplier {
+                runCatching { c.getInlinedChangesBetweenDecoded(info.tableId,info.schemaVersion,head,head,emptyList()) }
+                "must not escape"
+            }) }.hasMessageContaining("CDC events")
+            c.readSession(Supplier { assertThat(c.inlineRows(info.tableId,info.schemaVersion,head,emptyList())).isEmpty() })
+        }
+    }
+
+    @Test
+    fun pagedRetainedSnapshotChangesSurviveExpiredSnapshotSql(): Unit = Fixture().use { f ->
+        f.native("CREATE TABLE lake.t(i INTEGER); INSERT INTO lake.t VALUES(7)")
+        val expired = f.head()
+        f.native("CREATE TABLE lake.marker(i INTEGER)")
+        // Authored expiry/query fixture: no catalog cleanup or native expiry is invoked.
+        f.metadata("DELETE FROM ducklake_snapshot WHERE snapshot_id=$expired")
+        f.runner().use { runner ->
+            assertThat(runner.execute("SELECT snapshot_id FROM \"t\$snapshots\" WHERE snapshot_id=$expired").materializedRows).isEmpty()
+            assertThat(runner.execute("SELECT snapshot_id FROM \"t\$snapshot_changes\" WHERE snapshot_id=$expired").onlyValue).isEqualTo(expired)
+            assertThat(runner.execute("SELECT i FROM t").onlyValue).isEqualTo(7)
+        }
+    }
+
+    @Test
+    fun pagedPayloadRejectsCompositeMapKeysEvenForNullCellsSql(): Unit = Fixture().use { f ->
+        f.native("CREATE TABLE lake.t(i INTEGER,m MAP(STRUCT(k INTEGER),INTEGER)); INSERT INTO lake.t VALUES(7,NULL)")
+        f.runner().use { runner ->
+            assertThatThrownBy { runner.execute("SELECT m FROM t") }.hasMessageContaining("MAP")
+            assertThat(runner.execute("SELECT i FROM t").onlyValue).isEqualTo(7)
+            assertThat(runner.execute("SELECT count(*) FROM t").onlyValue).isEqualTo(1L)
+        }
+    }
+
+    @Test
+    fun pagedPayloadOversizeRefusesAndSamePoolRecoversSql(): Unit = Fixture(Lane.POSTGRES).use { f ->
+        f.native("CREATE TABLE lake.t(i INTEGER,s VARCHAR); INSERT INTO lake.t VALUES(7,'small')")
+        val head = f.head()
+        val info = f.reader().use { c -> c.readSession(Supplier {
+            c.getInlinedDataInfos(c.getTable("main","t",head)!!.tableId,head).single()
+        }) }
+        f.runner().use { runner ->
+            f.metadata("UPDATE ${info.tableName} SET s=convert_to(repeat('x',1048577),'UTF8')")
+            assertThatThrownBy { runner.execute("SELECT s FROM t") }.hasMessageContaining("budget")
+            f.metadata("UPDATE ${info.tableName} SET s=convert_to('fixed','UTF8')")
+            assertThat(runner.execute("SELECT s FROM t").onlyValue).isEqualTo("fixed")
+        }
+    }
+
+    @Test
+    fun pagedInlineTerminalAndNestedScopesShareStickyWorkBudget(): Unit = Fixture().use { f ->
+        f.native("CREATE TABLE lake.t(i INTEGER); INSERT INTO lake.t VALUES(7)")
+        f.reader().use { jdbc ->
+            val c = PagedDucklakeCatalog(jdbc,f.config.setReadPageSize(1))
+            val head = f.head()
+            val info = jdbc.readSession(Supplier { jdbc.getInlinedDataInfos(jdbc.getTable("main","t",head)!!.tableId,head).single() })
+            assertThatThrownBy { c.readSession(Supplier {
+                runCatching { repeat(16) { c.readSession(Supplier { c.inlineRows(info.tableId,info.schemaVersion,head,emptyList()) }) } }
+                "incomplete"
+            }) }.hasMessageContaining("total planning work budget")
+            c.readSession(Supplier { assertThat(c.inlineRows(info.tableId,info.schemaVersion,head,emptyList()).map { it.rowId }).containsExactly(0L) })
+        }
+    }
+
+    @Test
+    fun pagedPositionalDeletesRequireRetainedFileAndUseLocalPositionsSql(): Unit = Fixture(Lane.POSTGRES).use { f ->
+        f.native("CALL lake.set_option('data_inlining_row_limit',0); CREATE TABLE lake.t(i INTEGER); INSERT INTO lake.t VALUES(10),(20)")
+        val file = f.reader().use { c -> c.readSession(Supplier {
+            c.getDataFiles(c.getTable("main","t",c.currentSnapshotId)!!.tableId,c.currentSnapshotId).single()
+        }) }
+        f.native("CREATE TABLE lake.marker(i INTEGER)")
+        val head = f.head()
+        // Authored positional/orphan query fixture, not native persistence certification.
+        f.metadata("CREATE TABLE IF NOT EXISTS ducklake_inlined_delete_${file.tableId}(file_id BIGINT,row_id BIGINT,begin_snapshot BIGINT)")
+        f.metadata("INSERT INTO ducklake_inlined_delete_${file.tableId} VALUES(${file.dataFileId+10000},1,$head)")
+        f.runner().use { runner ->
+            val sql = "SELECT rowid,i FROM TABLE(ducklake.system.table_deletions('main','t',$head,$head))"
+            assertThatThrownBy { runner.execute(sql) }.hasMessageContaining("missing/duplicate required identities")
+            f.metadata("UPDATE ducklake_inlined_delete_${file.tableId} SET file_id=${file.dataFileId}")
+            assertThat(runner.execute(sql).materializedRows.single().fields).containsExactly(file.rowIdStart!!+1,20)
+            assertThat(runner.execute("SELECT count(*) FROM t").onlyValue).isEqualTo(1L)
+        }
+    }
+
+    @Test
+    fun fractionalPhysicalFooterMetadataRejectsBeforeCoercionSql(): Unit = Fixture(Lane.POSTGRES).use { f ->
+        f.native("CALL lake.set_option('data_inlining_row_limit',0); CREATE TABLE lake.t(i INTEGER); INSERT INTO lake.t VALUES(7)")
+        f.runner().use { runner ->
+            f.metadata("ALTER TABLE ducklake_data_file ALTER COLUMN footer_size TYPE NUMERIC USING footer_size::numeric")
+            f.metadata("UPDATE ducklake_data_file SET footer_size=1.5")
+            assertThatThrownBy { runner.execute("SELECT i FROM t") }.hasMessageContaining("physical")
+            f.metadata("ALTER TABLE ducklake_data_file ALTER COLUMN footer_size TYPE BIGINT USING 0::bigint")
+            assertThat(runner.execute("SELECT i FROM t").onlyValue).isEqualTo(7)
+        }
+    }
+
     @Test fun localPagedPartitionEvolutionSql(): Unit = pagedPartitionEvolutionSql(Lane.LOCAL)
     @Test fun postgresPagedPartitionEvolutionSql(): Unit = pagedPartitionEvolutionSql(Lane.POSTGRES)
 
@@ -915,6 +1051,8 @@ class TestR07ConsumerTrial {
         fun snapshot(): Long = DriverManager.getConnection("jdbc:duckdb:$db").use { c -> c.createStatement().use { s ->
             s.executeQuery("SELECT max(snapshot_id) FROM ducklake_snapshot").use { r -> check(r.next()); r.getLong(1) }
         } }
+
+        fun head(): Long = reader().use { c -> c.readSession(Supplier { c.currentSnapshotId }) }
 
         fun reader() = JdbcDucklakeCatalog(config.toCatalogConfig().apply { enableFinal11Reads = true })
 

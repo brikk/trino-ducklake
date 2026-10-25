@@ -48,13 +48,25 @@ become body-carried or Hive partition values. Missing physical inline tables ret
 their registry positions and do not get synthetic empty-payload splits.
 Legacy 0.4/1.0 list contracts are delegated, not re-labelled SQL-paged.
 
+The `6730bb8` candidate continuation also drains ordinary/CDC inline payloads,
+deletion candidates, file-local inline positions, exact retained-file ID batches and
+retained snapshot/change history. Ordinary identity-only scans no longer require a
+separate live-count/begin-snapshot list. Encoded/decoded/default-copy allocation guards
+are enforced inside the library page APIs; candidate projection/default calls reserve
+8,192 logical work units plus eight per projected root, even on terminal pages.
+Budget and page failures stick across nested calls and caught exceptions. This is a
+conservative work admission policy, not complete accounting of internal schema bytes:
+the library has bounded source/target/default preflights but no shared accounting hook.
+
 These are **per-owned-view bounds on these APIs**, not a heap/network/DB execution-work
 bound or a total query/cross-node budget. Scoped point lookups, stats/comments/views,
-schema-version/default internals and inline delete APIs are not all paged. Ordinary
-inline payload transfer still uses the existing in-view count preflight; decoded CDC
-payload/deletion-candidate lists still materialize before their known-small consumer
-checks. Registry/added-file pages do not replace those missing library payload/deletion
-pages. Parquet scans check actual footer row counts. Keep the known-small limits;
+and internal schema/default accounting are not all closed. The old view/tag/comment
+delegates remain a concrete qualification blocker, not certified bounded metadata.
+The candidate omits optional optimizer estimates before the legacy file-column
+aggregate; it never replaces unknown statistics with zero.
+The released lane and direct legacy SPI fixtures keep their older paths; new public
+pages do not retroactively page an unwrapped catalog. Parquet scans check actual footer
+row counts. Keep the known-small limits;
 there is no direct metadata SQL, whole-catalog preflight or staging workaround.
 
 Owned candidate sessions use single-use controls and a positive default 30-second

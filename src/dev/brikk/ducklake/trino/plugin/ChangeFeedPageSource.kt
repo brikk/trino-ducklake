@@ -55,7 +55,9 @@ class ChangeFeedUnit @JvmOverloads constructor(
         val updatedRowids: Set<Long>,
         val isDelete: Boolean,
         /** Whole-source rows visited by this unit, including rows rejected by keepPositions. */
-        val physicalRows: Long = 0)
+        val physicalRows: Long = 0,
+        /** Physical versions born and deleted in one snapshot, not other versions of that row ID. */
+        val excludedPositions: Set<Long> = emptySet())
 
 /**
  * Streams the DuckLake change feed as `snapshot_id, rowid[, change_type]` + table columns.
@@ -135,7 +137,7 @@ class ChangeFeedPageSource(
         var keptCount = 0
         for (i in 0 until positionCount) {
             val filePosition: Long = BIGINT.getLong(filePositionBlock, i)
-            if (unit.keepPositions != null && !unit.keepPositions.contains(filePosition)) {
+            if (!keep(unit, filePosition)) {
                 continue
             }
             keptIdx[keptCount] = i
@@ -146,7 +148,7 @@ class ChangeFeedPageSource(
             return null
         }
         // keepPositions == null means the whole page is kept in order, so data blocks pass through.
-        val selectAll: Boolean = unit.keepPositions == null
+        val selectAll: Boolean = unit.keepPositions == null && keptCount == positionCount
 
         val blocks: Array<Block?> = arrayOfNulls(requestedColumns.size)
         for ((outIndex, column) in requestedColumns.withIndex()) {
@@ -166,6 +168,9 @@ class ChangeFeedPageSource(
         @Suppress("UNCHECKED_CAST")
         return SourcePage.create(Page(keptCount, *(blocks as Array<Block>)))
     }
+
+    private fun keep(unit: ChangeFeedUnit, position: Long): Boolean =
+        position !in unit.excludedPositions && (unit.keepPositions == null || position in unit.keepPositions)
 
     private fun rowIdBlock(keptRowIds: LongArray, keptCount: Int): Block {
         val builder = BIGINT.createBlockBuilder(null, keptCount)

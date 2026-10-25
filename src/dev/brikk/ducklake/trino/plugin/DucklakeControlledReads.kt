@@ -11,6 +11,7 @@
 package dev.brikk.ducklake.trino.plugin
 
 import dev.brikk.ducklake.catalog.DucklakeCatalog
+import dev.brikk.ducklake.catalog.DucklakeInlinedChangeRow
 import dev.brikk.ducklake.catalog.JdbcDucklakeCatalog
 import java.util.function.Supplier
 
@@ -19,6 +20,8 @@ internal interface DucklakeControlledReads {
     val jdbc: JdbcDucklakeCatalog
     fun <T> queryRead(queryId: String?, action: Supplier<T>): T
     fun cancelQuery(queryId: String)
+    fun inlineRows(tableId: Long, version: Long, snapshot: Long, ids: List<Long>): List<DucklakeInlinedChangeRow>
+    fun fileDefault(tableId: Long, columnId: Long, snapshot: Long): Any?
 }
 
 internal fun <T> DucklakeCatalog.queryReadSession(queryId: String?, action: () -> T): T =

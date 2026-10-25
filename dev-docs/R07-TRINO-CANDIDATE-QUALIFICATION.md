@@ -1,5 +1,145 @@
 # R07 Trino candidate qualification — October 23–25, 2026
 
+## October 25 continuation: payload, deletion and retained-history pages
+
+Qualification only; broad R07 remains **NO-GO**. This section supersedes the older
+missing-page-API inventory below, not its release, retention or fleet boundaries.
+
+The exclusively selected immutable bundle is `/tmp/opencode/catalog-r07-6730bb8`,
+catalog source `6730bb871350fe27d6c926db2f1d8f50f41cb5e1`, all four coordinates still
+`0.13.0-SNAPSHOT`. Main JAR SHA256 is
+`9ae564720d48b78f8aa6d4349cc082a8ff11815dfe8a9e639a5c140cc95cbab6`;
+fixtures/replay/SLT retain the three hashes in the preceding checkpoint. The ten
+manifest entries pass independently; Gradle attests actual resolved JARs. Old bundles,
+catalog/Doris sources, native extensions, corpus pins and goldens remain untouched.
+Independent ZIP/class-header inspection checks **402 classes across the four runtime/
+fixture JARs, maximum classfile 61 (Java 17)**; Trino's JVM floor remains unchanged.
+
+### Implemented production paths
+
+The typed adapter now drains decoded ordinary inline and inclusive CDC pages,
+incremental/full-retirement deletion candidate pages, physical positional-delete
+pages, exact retained-file batches, and both snapshot/history pages. `$snapshots`
+and `$snapshot_changes` therefore use the same owned-view protocol as normal reads.
+History enumeration does not join away expired snapshot conflict rows. Schema/table
+name/ID resolution now uses complete planning pages with duplicate rejection, rather
+than assuming that `fetchOne` imposes a transfer bound.
+
+Ordinary inline values and `$snapshot_id` come from ONE physical row-version stream;
+empty projection explicitly requests identities. No separate count or begin-snapshot
+list is used in this candidate production branch. Projection IDs use fresh target
+metadata, and spoofed types refuse. CDC seeks `(rowId,beginSnapshot)` and retains
+actual nullable ends; live counts/registry liveness never bound history. Composite
+MAP-key payload refusal has no legacy unbounded fallback, including NULL cells.
+
+Deletion enumeration phases are not treated as event chronology. Existing physical
+Parquet/Puffin snapshot-tag windowing and equal-path behavior are retained. Missing
+retained positional-delete files now fail, not silently drop events. Positions are
+validated as file-local offsets. Zero-lifetime inline candidates are charged but
+suppressed before pairing. Physical file transients are filtered by position and
+actual embedded origin snapshot (or ordinary file begin), on both emitted sides;
+other versions sharing a stable row ID are not suppressed.
+The origin reader now distinguishes an absent field in an ordinary physical file
+from a required-but-missing partial-file marker. Lineage/origin reads check actual
+footer row counts before collecting arrays; catalog counts are not footer attestation.
+
+Terminal fetches, lookahead work, returned decoded nodes/depth/text/binary, physical
+rows and CDC candidate events share the existing outer-view totals. Page/default
+library failures and budget failures stick even when caught inside a callback; a
+fresh outer view recovers. Decoded cells/default-copy expansion have the library's
+pre-transfer/pre-allocation page guards, not just a post-materialization size check.
+Internal projection/default preflights additionally reserve 8,192 logical work units
+plus eight per projected root before each invocation, including empty terminals.
+This deliberately limits small-page drains as well as returned rows; it is not a
+measurement or bound on database execution, JVM heap or every internal schema byte.
+
+### Source audit and concrete remaining boundaries
+
+- `getTableStats` already has SQL `LIMIT 1`; snapshot-at-time and schema-version
+  resolution also have `LIMIT 1`. These are not missing bulk page APIs. Required
+  point identities/text still need appropriate corruption/representation admission;
+  a method named `fetchOne` alone does not prove that admission.
+- Catalog source/target column preflights already cap 4,096 nodes, depth and text;
+  default-history probes are bounded. The adapter reserves logical work and charges
+  decoded results, but the library exposes no accounting of **internal** source-schema/
+  default-history bytes/nodes to reconcile with the connector's returned-metadata
+  totals. Full shared internal-byte accounting is not certified by these reservations.
+  A public accounting/budget hook is a real fix; reflection or metadata SQL is not.
+- `getColumnStats` delegates to `aggregateFileColumnStats`, which fetches file-column
+  metadata before aggregation. The candidate production metadata path omits optional
+  optimizer statistics before invoking that legacy aggregate (unknown, never zero).
+  `listViews`/`getView` fetch active view/tag joins;
+  `getColumnComments` fetches all active column tags and `getTableComment` fetches
+  unbounded text. These old delegated surfaces are **not newly qualified as bounded**.
+  Needed APIs are view/tag pages and bounded comment/setting point/text lookups;
+  bounded file-column statistics would permit restoring optimizer estimates. Silently
+  returning no existing views/comments would be wrong; broad metadata qualification
+  remains blocked rather than claiming those surfaces were fixed here.
+- Actual PostgreSQL cancellation/deadline-before-unlock and one-connection recovery
+  remain required checks. A worker page source cannot receive `close()` while its
+  synchronous construction has not returned; coordinator `cleanupQuery` does not
+  remotely register cancellation in another node's adapter. No helper/kill/retry or
+  invented task hook is introduced. Other-driver interruption remains unqualified.
+- Pool acquisition, connection setup/prepare/network stalls, callback computation,
+  global query/cross-node budgets, immutable physical retention/leases, approved 0.4
+  fixtures and multi-process/fleet qualification remain explicit operator/architecture
+  boundaries. A metadata page is not a physical lease.
+
+Strict native R02=3/R03=1/R04=1/M01=6+4 and Doris long-path1 remain unwaived.
+No push, release/publication/deployment, default-on, migration, connector1.1 writes,
+physical cleanup, repin, exclusion/golden rewrite, new skip or full corpus run.
+
+### Verification
+
+Final candidate: **143 JUnit tests across eight classes, zero failures/errors/skips**,
+plus detekt, including **62 R07 tests** and six change-feed page-source controls.
+The nine new R07 cases cover local/PostgreSQL repeated same-ID versions with zero
+live rows, authored zero-lifetime suppression, retained expired conflict history,
+NULL composite-MAP payload rejection, oversize-byte refusal/recovery, nested terminal/
+sticky work budgets, exact retained positional lookup/refusal, and fractional physical
+footer refusal/recovery. Existing two-worker SQL retains five-route mixed scans,
+four-route defaults/CDC, nested/null/blob/nanosecond evolution, merge origins,
+tagged/equal-path Parquet/Puffin windows, and actual PostgreSQL engine cancel/deadline
+**before fixture unlock**, followed by one-connection recovery. Preflight corruption
+negatives are not JDBC cancellation/fault evidence.
+
+Evidence: `/tmp/opencode/r07-payload-candidate-final.log` and
+`/tmp/opencode/r07-payload-candidate-final-xml/`. Targeted corrected oversize/recovery
+also passes with lint in `/tmp/opencode/r07-payload-oversize.log`.
+
+```sh
+GRADLE_USER_HOME=/tmp/opencode/trino-r07-gradle mise exec -- ./gradlew test \
+  --tests '*TestR07ConsumerTrial' --tests '*TestLegacyTimezonePartitions' \
+  --tests '*TestDucklakeConfig' --tests '*TestDucklakeReadOnlyMetadata' \
+  --tests '*TestDucklakeDecodedValueConverter' --tests '*TestDucklakePuffinDeleteReader' \
+  --tests '*TestDucklakeTemporalPartitionMatcher' --tests '*TestChangeFeedPageSource' \
+  detekt -Pr07CatalogCandidate=/tmp/opencode/catalog-r07-6730bb8 \
+  --no-daemon --no-configuration-cache
+```
+
+Released 0.12.0 / JDBC1.5.6.0 lane: **266 tests across the same 28 maintained classes,
+zero failures/errors/skips**, plus detekt. This is the preceding 265-test selection
+plus the physical-position/same-stable-ID transient filter unit regression. Evidence:
+`/tmp/opencode/r07-payload-released.log` (records the exact class selection) and
+`/tmp/opencode/r07-payload-released-xml/`. Current released artifact
+`build/libs/trino-ducklake-483-0.5.0-SNAPSHOT.jar` has SHA256
+`27132fd2cb536035985e2bd59f13fe4f42d8ad48121b3b03a1c308131edabf6f`;
+ZIP inspection confirms candidate adapter and budget classes are absent.
+
+Released-lane targeted `types` corpus: **11 files discovered, nine run, 81 records
+passed, zero failed**, with the same two file/three record exclusions. One JUnit
+test, zero JUnit skips. Evidence: `/tmp/opencode/r07-payload-corpus-types.log` and
+`/tmp/opencode/r07-payload-corpus-types-xml/`. The command is the existing
+`test --tests '*TestTrinoCorpusReplay' -Dducklake.corpus.dirs=types`, no candidate
+property, with the same isolated Gradle home and no-daemon/no-configuration-cache flags.
+Manifest/Java17 evidence is retained in `/tmp/opencode/r07-payload-manifest-check.log`
+and `/tmp/opencode/r07-payload-java17-check.log`. No full corpus or strict native gate
+rerun is implied.
+Preliminary compile/lint reds and the PostgreSQL oversize fixture's initial TEXT-to-
+bytea assignment failure are retained under `/tmp/opencode/r07-payload-*.log`, not
+counted as acceptance. The corrected authored fixture uses `convert_to(...,'UTF8')`
+against the actual physical storage; no connector assertion or skip was weakened.
+
 ## October 25 follow-up: public planning pages and controlled owned sessions
 
 This section supersedes the earlier candidate identity, non-NULL history discrepancy

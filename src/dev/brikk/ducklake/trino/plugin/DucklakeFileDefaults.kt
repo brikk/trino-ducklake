@@ -61,6 +61,11 @@ internal class DucklakeFileDefaults(
 
     // Optional public API boundary, like the opt-in setter: no fallback to text, SQL or guessed NULL.
     private fun decoded(columnId: Long): Any? {
+        if (catalog is DucklakeControlledReads) return try {
+            catalog.fileDefault(table.tableId, columnId, table.snapshotId)
+        } catch (e: DucklakeException) {
+            throw TrinoException(NOT_SUPPORTED, e.message ?: "Catalog refused file default projection", e)
+        }
         val method = defaultMethod()
         return try { method.invoke(catalog.jdbcCatalog(), table.tableId, columnId, table.snapshotId) }
         catch (e: InvocationTargetException) { throw projectionFailure(e) }

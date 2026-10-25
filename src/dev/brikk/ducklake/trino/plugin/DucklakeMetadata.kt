@@ -410,6 +410,9 @@ class DucklakeMetadata(
 
     override fun getTableStatistics(session: ConnectorSession, tableHandle: ConnectorTableHandle): TableStatistics
     {
+        // The legacy column-stat aggregate transfers file-column rows before aggregation.
+        // Optional optimizer estimates must not bypass the candidate's bounded read tier.
+        if (catalog is DucklakeControlledReads && catalog.getSpecVersion() == "1.1") return TableStatistics.empty()
         if (tableHandle is DucklakeMetadataTableHandle
                 || tableHandle is ChangeFeedTableHandle) {
             return TableStatistics.empty()

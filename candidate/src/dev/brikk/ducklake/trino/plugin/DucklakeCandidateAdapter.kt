@@ -12,6 +12,15 @@ package dev.brikk.ducklake.trino.plugin
 
 import dev.brikk.ducklake.catalog.DucklakeCatalog
 import dev.brikk.ducklake.catalog.DucklakeColumn
+import dev.brikk.ducklake.catalog.DucklakeChangeFeedDeletion
+import dev.brikk.ducklake.catalog.DucklakeDeletionCursor
+import dev.brikk.ducklake.catalog.DucklakeDeletionPageEntry
+import dev.brikk.ducklake.catalog.DucklakeInlineCursor
+import dev.brikk.ducklake.catalog.DucklakeInlinedChangeRow
+import dev.brikk.ducklake.catalog.DucklakeInlinedFileDelete
+import dev.brikk.ducklake.catalog.DucklakeInlinedFileDeleteCursor
+import dev.brikk.ducklake.catalog.DucklakeSnapshot
+import dev.brikk.ducklake.catalog.DucklakeSnapshotChange
 import dev.brikk.ducklake.catalog.DucklakeDataFile
 import dev.brikk.ducklake.catalog.DucklakeDataFileCursor
 import dev.brikk.ducklake.catalog.DucklakeDataFilePageEntry
@@ -89,13 +98,16 @@ internal class PagedDucklakeCatalog(
 
     private fun budget(): PlanningBudget = owned.get()?.budget ?: error("No owned planning budget")
 
+    private fun refuse(reason: String): Nothing = budget().abort(planningFailure(reason))
+
     /** Empty terminal fetch is charged too. Never infer completion from a short/non-live page. */
     private fun <C, R> drain(fetch: (C?, Int) -> List<R>, cursor: (R) -> C, charge: (R) -> Unit): List<R> {
         val result = mutableListOf<R>()
         var after: C? = null
         while (true) {
             budget().page()
-            val page = fetch(after, config.getReadPageSize())
+            budget().work(config.getReadPageSize() + 1) // SQL lookahead, including terminal calls
+            val page = budget().attempt { fetch(after, config.getReadPageSize()) }
             if (page.isEmpty()) return result
             page.forEach { row -> budget().node(); charge(row); result.add(row) }
             val next = cursor(page.last())
@@ -111,6 +123,25 @@ internal class PagedDucklakeCatalog(
     override fun listTables(schemaId: Long, snapshotId: Long): List<DucklakeTable> = if (!paged()) jdbc.listTables(schemaId, snapshotId) else
         drain<Long, DucklakeTable>({ after, limit -> jdbc.readPlanningMetadata().listTablesPage(schemaId, snapshotId, after, limit) },
             { it.tableId }, { budget().text(it.tableName); budget().path(it.path) })
+
+    override fun getSchema(schemaName: String, snapshotId: Long): DucklakeSchema? = if (!paged()) jdbc.getSchema(schemaName, snapshotId)
+        else listSchemas(snapshotId).filter { it.schemaName.equals(schemaName, ignoreCase = true) }.unique("schema name")
+
+    override fun getTable(schemaName: String, tableName: String, snapshotId: Long): DucklakeTable? {
+        if (!paged()) return jdbc.getTable(schemaName, tableName, snapshotId)
+        val schema = getSchema(schemaName, snapshotId) ?: return null
+        return listTables(schema.schemaId, snapshotId).filter { it.tableName.equals(tableName, ignoreCase = true) }.unique("table name")
+    }
+
+    override fun getTableById(tableId: Long, snapshotId: Long): DucklakeTable? {
+        if (!paged()) return jdbc.getTableById(tableId, snapshotId)
+        return listSchemas(snapshotId).flatMap { listTables(it.schemaId, snapshotId) }.filter { it.tableId == tableId }.unique("table ID")
+    }
+
+    private fun <T> List<T>.unique(identity: String): T? {
+        if (size > 1) refuse("duplicate $identity")
+        return singleOrNull()
+    }
 
     override fun getAllColumnsWithParentage(tableId: Long, snapshotId: Long): List<DucklakeColumn> {
         if (!paged()) return jdbc.getAllColumnsWithParentage(tableId, snapshotId)
@@ -173,7 +204,7 @@ internal class PagedDucklakeCatalog(
     override fun getDataFilesAddedBetween(tableId: Long, startSnapshot: Long, endSnapshot: Long): List<DucklakeDataFile> =
         if (!paged()) jdbc.getDataFilesAddedBetween(tableId, startSnapshot, endSnapshot) else drain<DucklakeAddedFileCursor, DucklakeAddedFilePageEntry>(
             { after, limit -> jdbc.getDataFilesAddedBetweenPage(tableId, startSnapshot, endSnapshot, after, limit) },
-            { it.cursor }, { chargeFile(it.dataFile) }
+            { it.cursor }, { chargeFile(it.dataFile); budget().events(it.dataFile.recordCount, config.getReadMaxCdcEvents()) }
         ).map { it.dataFile }
 
     private fun chargeFile(file: DucklakeDataFile) {
@@ -182,6 +213,91 @@ internal class PagedDucklakeCatalog(
         budget().path(file.path, file.deleteFilePath)
         budget().text(file.fileFormat, file.deleteFileFormat)
     }
+
+    override fun inlineRows(tableId: Long, version: Long, snapshot: Long, ids: List<Long>): List<DucklakeInlinedChangeRow> {
+        check(paged()) { "Decoded identity pages require final 1.1" }
+        return drain<DucklakeInlineCursor, DucklakeInlinedChangeRow>({ after, limit ->
+            reserveProjection(ids.size)
+            jdbc.readInlinedDataDecodedPage(tableId, version, snapshot, ids, after, limit)
+        }, { DucklakeInlineCursor(it.rowId, it.beginSnapshot) }, { chargeInline(it, false) })
+    }
+
+    override fun readInlinedDataDecoded(tableId: Long, schemaVersion: Long, snapshotId: Long, columns: List<DucklakeColumn>): List<List<Any?>> =
+        if (!paged()) jdbc.readInlinedDataDecoded(tableId, schemaVersion, snapshotId, columns)
+        else inlineRows(tableId, schemaVersion, snapshotId, columns.map { it.columnId }).map { it.values }
+
+    override fun getInlinedChangesBetweenDecoded(
+        tableId: Long, schemaVersion: Long, startSnapshot: Long, endSnapshot: Long, columnIds: List<Long>,
+    ): List<DucklakeInlinedChangeRow> = if (!paged())
+        jdbc.getInlinedChangesBetweenDecoded(tableId, schemaVersion, startSnapshot, endSnapshot, columnIds)
+    else drain<DucklakeInlineCursor, DucklakeInlinedChangeRow>({ after, limit ->
+        reserveProjection(columnIds.size)
+        jdbc.getInlinedChangesBetweenDecodedPage(tableId, schemaVersion, startSnapshot, endSnapshot, columnIds, after, limit)
+    }, { DucklakeInlineCursor(it.rowId, it.beginSnapshot) }, { chargeInline(it, true) })
+
+    private fun reserveProjection(width: Int) {
+        // Two bounded 4096-node schemas plus physical/default-history probes. Reserve before
+        // entering library code; even empty terminal pages perform these internal preflights.
+        budget().work(8192 + width * 8)
+    }
+
+    private fun chargeInline(row: DucklakeInlinedChangeRow, cdc: Boolean) {
+        budget().logicalRow(config.getReadMaxRows())
+        if (cdc) budget().events(2, config.getReadMaxCdcEvents())
+        budget().value(row.values)
+    }
+
+    override fun fileDefault(tableId: Long, columnId: Long, snapshot: Long): Any? {
+        check(paged()) { "Decoded file defaults require final 1.1" }
+        reserveProjection(1)
+        return budget().attempt { jdbc.getMissingFileColumnDefaultDecoded(tableId, columnId, snapshot) }.also { budget().value(it) }
+    }
+
+    override fun getDeletionsBetween(tableId: Long, startSnapshot: Long, endSnapshot: Long): List<DucklakeChangeFeedDeletion> =
+        if (!paged()) jdbc.getDeletionsBetween(tableId, startSnapshot, endSnapshot)
+        else drain<DucklakeDeletionCursor, DucklakeDeletionPageEntry>({ after, limit ->
+            // Up to two main arms, a lookahead, and LIMIT2 predecessor per candidate.
+            budget().work(2 + (limit + 1) * 3)
+            jdbc.getDeletionsBetweenPage(tableId, startSnapshot, endSnapshot, after, limit)
+        }, { it.cursor }, {
+            val d = it.deletion
+            budget().file(config.getReadMaxFiles())
+            budget().physical(d.recordCount, config.getReadMaxRows())
+            budget().events(d.recordCount, config.getReadMaxCdcEvents())
+            budget().path(d.dataFilePath, d.currentDeletePath, d.previousDeletePath)
+            budget().text(d.dataFileFormat, d.currentDeleteFormat, d.previousDeleteFormat)
+        }).map { it.deletion }
+
+    override fun getInlinedFileDeletesBetween(tableId: Long, startSnapshot: Long, endSnapshot: Long): List<DucklakeInlinedFileDelete> =
+        if (!paged()) jdbc.getInlinedFileDeletesBetween(tableId, startSnapshot, endSnapshot)
+        else drain<DucklakeInlinedFileDeleteCursor, DucklakeInlinedFileDelete>({ after, limit ->
+            jdbc.getInlinedFileDeletesBetweenPage(tableId, startSnapshot, endSnapshot, after, limit)
+        }, { DucklakeInlinedFileDeleteCursor(it.dataFileId, it.position, it.snapshotId) }, {
+            budget().events(1, config.getReadMaxCdcEvents())
+        })
+
+    override fun getInlinedDeletes(tableId: Long, snapshotId: Long): Map<Long, Set<Long>> =
+        if (!paged()) jdbc.getInlinedDeletes(tableId, snapshotId)
+        else getInlinedFileDeletesBetween(tableId, 0, snapshotId).groupBy { it.dataFileId }
+            .mapValues { (_, rows) -> rows.mapTo(mutableSetOf()) { it.position } }
+
+    override fun getDataFilesByIds(tableId: Long, dataFileIds: Collection<Long>): List<DucklakeDataFile> {
+        if (!paged()) return jdbc.getDataFilesByIds(tableId, dataFileIds)
+        if (dataFileIds.size > config.getReadMaxFiles()) refuse("file lookup input budget")
+        return dataFileIds.toSet().chunked(config.getReadPageSize()).flatMap { ids ->
+            budget().page()
+            budget().work(ids.size + 1)
+            budget().attempt { jdbc.getDataFilesByIdsBatch(tableId, ids) }.onEach { budget().node(); chargeFile(it) }
+        }
+    }
+
+    override fun listSnapshots(): List<DucklakeSnapshot> = if (!paged()) jdbc.listSnapshots() else
+        drain<Long, DucklakeSnapshot>({ after, limit -> jdbc.listSnapshotsPage(after, limit) }, { it.snapshotId }, {}).asReversed()
+
+    override fun listSnapshotChanges(): List<DucklakeSnapshotChange> = if (!paged()) jdbc.listSnapshotChanges() else
+        drain<Long, DucklakeSnapshotChange>({ after, limit -> jdbc.listSnapshotChangesPage(after, limit) }, { it.snapshotId }, {
+            budget().text(it.changesMade, it.author, it.commitMessage, it.commitExtraInfo)
+        }).asReversed()
 
     override fun getPartitionSpecs(tableId: Long, snapshotId: Long): List<DucklakePartitionSpec> {
         if (!paged()) return jdbc.getPartitionSpecs(tableId, snapshotId)
@@ -235,7 +351,7 @@ internal class PagedDucklakeCatalog(
 
 /** Shared totals across ALL paged scopes in an outer view, not per-list post-fetch checks. */
 private class PlanningBudget {
-    private var failure: TrinoException? = null
+    private var failure: RuntimeException? = null
     private var pages = 0
     private var nodes = 0
     private var paths = 0
@@ -243,8 +359,20 @@ private class PlanningBudget {
     private var work = 0
     private var files = 0
     private var rows = 0L
+    private var events = 0L
     private val rowFiles = mutableSetOf<Pair<Long, Long>>()
     fun checkComplete() { failure?.let { throw it } }
+    fun abort(exception: RuntimeException): Nothing {
+        if (failure == null) failure = exception
+        throw exception
+    }
+    // A failed page cannot be swallowed into a successful incomplete drain, regardless of
+    // which supported driver/library exception type supplied the original diagnostic.
+    @Suppress("TooGenericExceptionCaught")
+    fun <T> attempt(action: () -> T): T {
+        checkComplete()
+        return try { action() } catch (e: RuntimeException) { abort(e) }
+    }
     private fun refuse(reason: String): Nothing {
         val exception = planningFailure(reason)
         failure = exception
@@ -253,11 +381,11 @@ private class PlanningBudget {
     fun rows(file: DucklakeDataFile, maximum: Long) {
         if (file.recordCount < 0) refuse("negative file row count")
         if (rowFiles.add(file.tableId to file.dataFileId)) {
-            if (file.recordCount > maximum - rows) refuse("total physical row budget")
-            rows += file.recordCount
+            physical(file.recordCount, maximum)
         }
     }
     fun page() {
+        checkComplete()
         if (++pages > 1024) refuse("total planning page budget")
         work()
     }
@@ -265,7 +393,35 @@ private class PlanningBudget {
         if (++nodes > 16384) refuse("total planning node budget")
         work()
     }
-    fun work() { if (++work > 131072) refuse("total planning work budget") }
+    fun work(amount: Int = 1) {
+        checkComplete()
+        if (amount < 0 || amount > 131072 - work) refuse("total planning work budget")
+        work += amount
+    }
+    fun physical(amount: Long, maximum: Long) {
+        if (amount < 0 || amount > maximum - rows) refuse("total physical rows budget")
+        rows += amount
+    }
+    fun logicalRow(maximum: Long) = physical(1, maximum)
+    fun events(amount: Long, maximum: Long) {
+        if (amount < 0 || amount > maximum - events) refuse("total CDC events budget")
+        events += amount
+    }
+    fun value(value: Any?, depth: Int = 0) {
+        if (depth > 64) refuse("decoded value depth budget")
+        node()
+        when (value) {
+            is String -> text(value)
+            is ByteArray -> byteCount(value.size.toLong())
+            is List<*> -> value.forEach { value(it, depth + 1) }
+            is Map<*, *> -> value.forEach { (key, item) -> value(key, depth + 1); value(item, depth + 1) }
+            else -> byteCount(32)
+        }
+    }
+    private fun byteCount(amount: Long) {
+        bytes += amount
+        if (bytes > 16L * 1024 * 1024) refuse("total planning byte budget")
+    }
     fun file(maximum: Int) { if (++files > maximum) refuse("total file descriptor budget") }
     fun path(vararg values: String?) {
         values.filterNotNull().forEach {
@@ -276,13 +432,10 @@ private class PlanningBudget {
     fun text(vararg values: String?) {
         values.filterNotNull().forEach {
             // UTF-8 upper bound, checked before allocating a second encoded copy.
-            bytes += it.length.toLong() * 3
-            if (bytes > 16L * 1024 * 1024) refuse("total planning byte budget")
+            byteCount(it.length.toLong() * 3)
         }
     }
 }
-
-private fun refuse(reason: String): Nothing = throw planningFailure(reason)
 
 private fun planningFailure(reason: String) =
     TrinoException(NOT_SUPPORTED, "DuckLake read budget exceeded or metadata invalid: $reason; incomplete plan")

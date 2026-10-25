@@ -122,6 +122,18 @@ class TestChangeFeedPageSource {
     }
 
     @Test
+    fun transientPositionFilteringKeepsOtherVersionsOfTheSameStableId() {
+        val columns = changeColumns()
+        val unit = ChangeFeedUnit(
+                baseSource = basePage(arrayOf("transient", "committed"), longArrayOf(0L, 1L)),
+                snapshotId = 9L, rowIdStart = null, lineageRowIds = longArrayOf(42L,42L),
+                keepPositions = null, updatedRowids = setOf(42L), isDelete = false,
+                excludedPositions = setOf(0L))
+        val rows = readRows(ChangeFeedPageSource(listOf(unit),columns,listOf(valColumn),true),columns)
+        assertThat(rows).containsExactly(listOf(9L,42L,"update_postimage","committed"))
+    }
+
+    @Test
     fun embeddedLineagePairsUpdatePreAndPostImage() {
         val columns = changeColumns()
         // Mirrors a lineage-preserving UPDATE of rowid 1:

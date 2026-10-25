@@ -163,6 +163,7 @@ class DucklakePageSourceProvider @Inject constructor(
                 .map(DucklakeColumnHandle::class.java::cast)
                 .collect(toImmutableList())
 
+
         // Split the hidden virtuals: CONSTANT virtuals ($path, $snapshot_id) are injected by the
         // outer wrapper below; POSITIONAL virtuals ($file_row_number, $row_id) stay in the column
         // list passed to the readers so they are injected in-pipeline before delete filtering
@@ -331,6 +332,9 @@ class DucklakePageSourceProvider @Inject constructor(
                 .map(DucklakeColumnHandle::class.java::cast)
                 .collect(toImmutableList())
 
+        if (catalog is DucklakeControlledReads && catalog.getSpecVersion() == "1.1")
+            return createPagedInlinePageSource(inlinedSplit, ducklakeColumns, catalog)
+
         // Real (catalog-resident) columns are read from the inlined table; virtuals are woven in
         // per row below. Inlined data has no backing file, so $path / $file_row_number / $row_id
         // are NULL; $snapshot_id is each row's own begin_snapshot (inlined rows are versioned
@@ -398,6 +402,32 @@ class DucklakePageSourceProvider @Inject constructor(
 
         log.debug("Created inlined page source with %d rows for tableId=%d", rowCount, inlinedSplit.tableId)
         return RecordPageSource(InMemoryRecordSet(outputTypes, outputRows))
+    }
+
+    private fun createPagedInlinePageSource(
+            split: DucklakeInlinedSplit,
+            columns: List<DucklakeColumnHandle>,
+            controlled: DucklakeControlledReads): ConnectorPageSource {
+        val real = columns.filterNot { it.isVirtual() }
+        val target = catalog.getTableColumns(split.tableId, split.snapshotId).associateBy { it.columnId }
+        real.forEach { column ->
+            val fresh = target[column.columnId] ?: throw TrinoException(NOT_SUPPORTED, "Missing inline target field ${column.columnId}")
+            if (column.columnType != typeConverter.toTrinoType(fresh.columnType)) throw TrinoException(NOT_SUPPORTED,
+                    "Inline projection type differs from fresh target metadata for field ${column.columnId}")
+        }
+        // One physical version stream supplies both values and virtual snapshots. Empty IDs
+        // mean identity-only, not an arbitrary unqualified payload or a separate live count.
+        val rows = controlled.inlineRows(split.tableId, split.schemaVersion, split.snapshotId, real.map { it.columnId })
+        val converted = convertInlinedRows(split, real, real.map { it.columnType }, rows.map { it.values })
+        val output = rows.mapIndexed { index, row ->
+            var channel = 0
+            columns.map { column -> when (column.virtualKind()) {
+                null -> converted[index][channel++]
+                VirtualKind.SNAPSHOT_ID -> row.beginSnapshot
+                else -> null
+            } }
+        }
+        return RecordPageSource(InMemoryRecordSet(columns.map { it.columnType }, output))
     }
 
     private fun createMetadataPageSource(metadataSplit: DucklakeMetadataSplit, columns: List<ColumnHandle>): ConnectorPageSource
@@ -472,19 +502,13 @@ class DucklakePageSourceProvider @Inject constructor(
             catalog.getDataFilesAddedBetween(table.tableId, table.startSnapshot, table.endSnapshot)
         else
             emptyList()
-        val deletions: List<DucklakeChangeFeedDeletion> = if (table.feedType != ChangeFeedType.INSERTIONS)
+        val deletions: List<DucklakeChangeFeedDeletion> = if (final11Reads || table.feedType != ChangeFeedType.INSERTIONS)
             catalog.getDeletionsBetween(table.tableId, table.startSnapshot, table.endSnapshot)
         else
             emptyList()
         readWorkLimits.files(insertFiles)
         readWorkLimits.descriptors(insertFiles.size.toLong() + deletions.size)
-        val physicalCandidates = if (final11Reads) {
-            val deleteRows = deletions.fold(0L) { n, deletion -> Math.addExact(n, deletion.recordCount) }
-            val insertRows = insertFiles.distinctBy { it.dataFileId }.fold(0L) { n, file -> Math.addExact(n, file.recordCount) }
-            readWorkLimits.rows(Math.addExact(deleteRows, insertRows))
-            readWorkLimits.events(Math.addExact(deleteRows, insertRows))
-            Math.addExact(deleteRows, insertRows)
-        } else 0L
+        val physicalCandidates = changeFeedPhysicalWork(insertFiles, deletions)
 
         // Read DuckLake's embedded row-lineage column (parquet field-id 2147483540) for each file
         // that carries it (UPDATE/compaction output); otherwise a present start supplies identity.
@@ -500,8 +524,9 @@ class DucklakePageSourceProvider @Inject constructor(
 
         // Delete side: newly-deleted positions per deletion event, mapped to lineage-aware rowids.
         val deletedRowidsBySnapshot: MutableMap<Long, MutableSet<Long>> = mutableMapOf()
+        val transientPositions = mutableMapOf<String, MutableSet<Long>>()
         val resolvedDeletions: List<ResolvedChangeFeedDeletion> =
-                resolveChangeFeedDeletions(table, fileSystem, tableDataPath, deletions, deletedRowidsBySnapshot)
+                resolveChangeFeedDeletions(table, fileSystem, tableDataPath, deletions, deletedRowidsBySnapshot, transientPositions)
 
         // Inlined data: small writes DuckDB keeps in ducklake_inlined_* tables. Inlined-row
         // insert/delete events (case 1/2) + inline file-position deletes (case 3), all folded into
@@ -509,7 +534,7 @@ class DucklakePageSourceProvider @Inject constructor(
         val inlined = InlinedChangeCollector(physicalCandidates)
         collectInlinedDataEvents(table, requestedDataColumns, inlined, deletedRowidsBySnapshot)
         val inlineFileDeleteGroups: List<InlineFileDeleteGroup> =
-                collectInlineFileDeleteGroups(fileSystem, tableDataPath, table, deletedRowidsBySnapshot)
+                collectInlineFileDeleteGroups(fileSystem, tableDataPath, table, deletedRowidsBySnapshot, transientPositions)
 
         // Update pairing across ALL sources (file inserts + inlined inserts vs. every delete).
         val updatedBySnapshot: Map<Long, Set<Long>> = computeUpdatedRowids(
@@ -518,13 +543,14 @@ class DucklakePageSourceProvider @Inject constructor(
 
         val units: MutableList<ChangeFeedUnit> = mutableListOf()
         for (file in insertFiles) {
+            val excluded = transientPositions[pathResolver.resolveFilePath(file.path, file.pathIsRelative, tableDataPath)].orEmpty()
             units.addAll(insertUnitsForFile(session, table, tableDataPath, requestedDataColumns, file,
-                    insertLineage[file.dataFileId], insertOriginSnapshots[file.dataFileId], updatedBySnapshot))
+                    insertLineage[file.dataFileId], insertOriginSnapshots[file.dataFileId], updatedBySnapshot).map { excluding(it, excluded) })
         }
-        for (resolved in resolvedDeletions) {
+        for (resolved in resolvedDeletions.filter { table.feedType != ChangeFeedType.INSERTIONS }) {
             units.add(deleteUnit(session, table, requestedDataColumns, resolved, updatedBySnapshot))
         }
-        for (group in inlineFileDeleteGroups) {
+        for (group in inlineFileDeleteGroups.filter { table.feedType != ChangeFeedType.INSERTIONS }) {
             units.add(inlineFileDeleteUnit(session, table, tableDataPath, requestedDataColumns, group, updatedBySnapshot))
         }
         for ((snapshotId, events) in inlined.insertEventsBySnapshot) {
@@ -537,6 +563,20 @@ class DucklakePageSourceProvider @Inject constructor(
         readWorkLimits.events(units.size.toLong())
         if (final11Reads) readWorkLimits.rows(units.fold(physicalCandidates) { n, unit -> Math.addExact(n, unit.physicalRows) })
         return ChangeFeedPageSource(units, requestedColumns, requestedDataColumns, table.feedType.hasChangeType)
+    }
+
+    private fun excluding(unit: ChangeFeedUnit, positions: Set<Long>): ChangeFeedUnit =
+        ChangeFeedUnit(unit.baseSource, unit.snapshotId, unit.rowIdStart, unit.lineageRowIds, unit.keepPositions,
+                unit.updatedRowids, unit.isDelete, unit.physicalRows, positions)
+
+    private fun changeFeedPhysicalWork(files: List<DucklakeDataFile>, deletions: List<DucklakeChangeFeedDeletion>): Long {
+        if (!final11Reads) return 0L
+        val deleteRows = deletions.fold(0L) { n, deletion -> Math.addExact(n, deletion.recordCount) }
+        val insertRows = files.distinctBy { it.dataFileId }.fold(0L) { n, file -> Math.addExact(n, file.recordCount) }
+        val total = Math.addExact(deleteRows, insertRows)
+        readWorkLimits.rows(total)
+        readWorkLimits.events(total)
+        return total
     }
 
     /** One inlined change row for the in-memory base source: its rowid + projected data values. */
@@ -574,6 +614,9 @@ class DucklakePageSourceProvider @Inject constructor(
             collector.candidateCount = Math.addExact(collector.candidateCount, Math.multiplyExact(rows.size.toLong(), 2L))
             readWorkLimits.events(collector.candidateCount)
             for (row in rows) {
+                // A zero-lifetime version never existed in a committed state. Do not turn
+                // it into a spurious paired update (even for a deletion-only projection).
+                if (row.endSnapshot == row.beginSnapshot) continue
                 if (wantInserts && row.beginSnapshot in window) {
                     collector.insertEventsBySnapshot.getOrPut(row.beginSnapshot) { mutableListOf() }
                             .add(InlinedEvent(row.rowId, row.values))
@@ -594,8 +637,9 @@ class DucklakePageSourceProvider @Inject constructor(
             fileSystem: TrinoFileSystem,
             tableDataPath: String,
             table: ChangeFeedTableHandle,
-            deletedRowidsBySnapshot: MutableMap<Long, MutableSet<Long>>): List<InlineFileDeleteGroup> {
-        if (table.feedType == ChangeFeedType.INSERTIONS) {
+            deletedRowidsBySnapshot: MutableMap<Long, MutableSet<Long>>,
+            transientPositions: MutableMap<String, MutableSet<Long>>): List<InlineFileDeleteGroup> {
+        if (!final11Reads && table.feedType == ChangeFeedType.INSERTIONS) {
             return emptyList()
         }
         val fileDeletes = catalog.getInlinedFileDeletesBetween(table.tableId, table.startSnapshot, table.endSnapshot)
@@ -606,9 +650,14 @@ class DucklakePageSourceProvider @Inject constructor(
                 table.tableId, fileDeletes.map { it.dataFileId }.toSet()).associateBy { it.dataFileId }
         val groups: MutableList<InlineFileDeleteGroup> = mutableListOf()
         for ((key, dels) in fileDeletes.groupBy { it.dataFileId to it.snapshotId }) {
-            val dataFile = dataFilesById[key.first] ?: continue
-            val positions: Set<Long> = dels.mapTo(mutableSetOf()) { it.position }
+            val dataFile = dataFilesById[key.first] ?: throw TrinoException(NOT_SUPPORTED,
+                    "Missing required retained CDC data file ${key.first}")
+            if (dels.any { it.position < 0 || it.position >= dataFile.recordCount })
+                throw TrinoException(NOT_SUPPORTED, "Inline CDC delete position outside physical file")
             val resolvedPath = pathResolver.resolveFilePath(dataFile.path, dataFile.pathIsRelative, tableDataPath)
+            val origins = readPhysicalOrigins(fileSystem, resolvedPath, dataFile.fileFormat, dataFile.footerSize)
+            val positions = committedPositions(dels.mapTo(mutableSetOf()) { it.position }, key.second,
+                    dataFile.beginSnapshot, origins, resolvedPath, transientPositions)
             val lineage = readLineage(fileSystem, resolvedPath, dataFile.fileFormat, dataFile.footerSize)
             positions.forEach { deletedRowidsBySnapshot.getOrPut(key.second) { mutableSetOf() }
                     .add(rowIdForPosition(lineage, dataFile.rowIdStart, it)) }
@@ -710,8 +759,8 @@ class DucklakePageSourceProvider @Inject constructor(
 
     /**
      * Per insert-file embedded `_ducklake_internal_snapshot_id` array (keyed by data_file_id) — the
-     * ORIGIN snapshot of each row, in file order. Read ONLY for partial files (see [isPartialFile]);
-     * ordinary files map to null and every row is attributed to the file's `begin_snapshot`. Parquet
+     * ORIGIN snapshot of each row, in file order. Physical presence is authoritative;
+     * an ordinary file without the field maps to null and uses its `begin_snapshot`. Parquet
      * only — the non-parquet formats this connector writes never carry the column, and compaction
      * output is always parquet.
      */
@@ -721,13 +770,12 @@ class DucklakePageSourceProvider @Inject constructor(
             insertFiles: List<DucklakeDataFile>): Map<Long, LongArray?> {
         val origins: MutableMap<Long, LongArray?> = mutableMapOf()
         for (file in insertFiles) {
-            if (!isPartialFile(file) || !DucklakeSessionProperties.FORMAT_PARQUET.equals(file.fileFormat, ignoreCase = true)) {
-                continue
-            }
             val resolvedPath: String = pathResolver.resolveFilePath(file.path, file.pathIsRelative, tableDataPath)
             origins[file.dataFileId] = try {
-                DucklakeDeleteFileReader.readInternalSnapshotIds(
-                        fileSystem, resolvedPath, file.footerSize, parquetReaderOptions, fileFormatDataSourceStats)
+                readPhysicalOrigins(fileSystem, resolvedPath, file.fileFormat, file.footerSize).also {
+                    if (isPartialFile(file) && it == null) throw TrinoException(NOT_SUPPORTED,
+                            "Partial data file is missing its origin snapshot column: $resolvedPath")
+                }
             }
             catch (e: IOException) {
                 throw TrinoException(GENERIC_INTERNAL_ERROR, "Failed to read partial-file origin snapshots: $resolvedPath", e)
@@ -743,7 +791,8 @@ class DucklakePageSourceProvider @Inject constructor(
         }
         return try {
             DucklakeDeleteFileReader.readInternalRowIds(
-                    fileSystem, resolvedPath, footerSize, parquetReaderOptions, fileFormatDataSourceStats)
+                    fileSystem, resolvedPath, footerSize, parquetReaderOptions, fileFormatDataSourceStats,
+                    { rows -> if (final11Reads) readWorkLimits.rows(rows) })
         }
         catch (e: IOException) {
             throw TrinoException(GENERIC_INTERNAL_ERROR, "Failed to read row lineage: $resolvedPath", e)
@@ -768,14 +817,18 @@ class DucklakePageSourceProvider @Inject constructor(
             fileSystem: TrinoFileSystem,
             tableDataPath: String,
             deletions: List<DucklakeChangeFeedDeletion>,
-            deletedRowidsBySnapshot: MutableMap<Long, MutableSet<Long>>): List<ResolvedChangeFeedDeletion> {
+            deletedRowidsBySnapshot: MutableMap<Long, MutableSet<Long>>,
+            transientPositions: MutableMap<String, MutableSet<Long>>): List<ResolvedChangeFeedDeletion> {
         val resolved: MutableList<ResolvedChangeFeedDeletion> = mutableListOf()
         for (deletion in deletions) {
             val resolvedPath: String = pathResolver.resolveFilePath(
                     deletion.dataFilePath, deletion.dataFilePathIsRelative, tableDataPath)
             val lineage: LongArray? = readLineage(fileSystem, resolvedPath, deletion.dataFileFormat, deletion.dataFileFooterSize)
+            val origins = readPhysicalOrigins(fileSystem, resolvedPath, deletion.dataFileFormat, deletion.dataFileFooterSize)
 
-            for ((eventSnapshot, positions) in newlyDeletedPositionsBySnapshot(fileSystem, tableDataPath, table, deletion)) {
+            for ((eventSnapshot, candidates) in newlyDeletedPositionsBySnapshot(fileSystem, tableDataPath, table, deletion)) {
+                val positions = committedPositions(candidates, eventSnapshot, deletion.dataFileBeginSnapshot,
+                        origins, resolvedPath, transientPositions)
                 if (positions.isEmpty()) {
                     continue
                 }
@@ -785,6 +838,24 @@ class DucklakePageSourceProvider @Inject constructor(
             }
         }
         return resolved
+    }
+
+    private fun readPhysicalOrigins(fileSystem: TrinoFileSystem, path: String, format: String, footer: Long): LongArray? =
+        if (!format.equals("parquet", ignoreCase = true)) null else DucklakeDeleteFileReader.readInternalSnapshotIdsIfPresent(
+                fileSystem, path, footer, parquetReaderOptions, fileFormatDataSourceStats,
+                { rows -> if (final11Reads) readWorkLimits.rows(rows) })
+
+    private fun committedPositions(
+            positions: Set<Long>, deletedAt: Long, begin: Long, origins: LongArray?, path: String,
+            transients: MutableMap<String, MutableSet<Long>>): Set<Long> = positions.filterTo(mutableSetOf()) { position ->
+        if (position < 0 || (origins != null && position >= origins.size))
+            throw TrinoException(NOT_SUPPORTED, "CDC delete position outside physical origin array")
+        val origin = origins?.get(Math.toIntExact(position)) ?: begin
+        if (origin > deletedAt) throw TrinoException(NOT_SUPPORTED, "CDC deletion precedes physical row origin")
+        if (origin == deletedAt) {
+            transients.getOrPut(path) { mutableSetOf() }.add(position)
+            false
+        } else true
     }
 
     /**

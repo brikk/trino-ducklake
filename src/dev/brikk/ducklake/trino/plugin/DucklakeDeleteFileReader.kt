@@ -166,12 +166,14 @@ object DucklakeDeleteFileReader {
      * non-parquet formats this connector writes never carry lineage).
      */
     @Throws(IOException::class)
+    @JvmOverloads
     fun readInternalRowIds(
             fileSystem: TrinoFileSystem,
             dataFilePath: String,
             footerSizeHint: Long,
             parquetReaderOptions: ParquetReaderOptions,
-            stats: FileFormatDataSourceStats): LongArray? {
+            stats: FileFormatDataSourceStats,
+            checkRows: (Long) -> Unit = {}): LongArray? {
         val inputFile = fileSystem.newInputFile(toLocation(dataFilePath))
         val memoryContext = newSimpleAggregatedMemoryContext()
         var dataSource: ParquetDataSource? = null
@@ -180,6 +182,7 @@ object DucklakeDeleteFileReader {
             dataSource = FooterPrefetchingParquetDataSource.wrapIfHintUsable(
                     dataSource, footerSizeHint, parquetReaderOptions.maxFooterReadSize.toBytes())
             val parquetMetadata = MetadataReader.readFooter(dataSource, parquetReaderOptions, Optional.empty(), Optional.empty())
+            checkRows(parquetMetadata.blocks.fold(0L) { n, block -> Math.addExact(n, block.rowCount) })
             val schema: MessageType = parquetMetadata.fileMetaData.schema
             // The lineage column is matched by its reserved FIELD-ID (its name is not guaranteed).
             val lineageField = schema.fields.firstOrNull { it.id?.intValue() == ROW_ID_PARQUET_FIELD_ID }
@@ -305,7 +308,20 @@ object DucklakeDeleteFileReader {
             dataFilePath: String,
             footerSizeHint: Long,
             parquetReaderOptions: ParquetReaderOptions,
-            stats: FileFormatDataSourceStats): LongArray {
+            stats: FileFormatDataSourceStats): LongArray =
+        readInternalSnapshotIdsIfPresent(fileSystem, dataFilePath, footerSizeHint, parquetReaderOptions, stats)
+            ?: throw TrinoException(GENERIC_INTERNAL_ERROR,
+                "Partial data file is missing its $INTERNAL_SNAPSHOT_ID_COLUMN column: $dataFilePath")
+
+    /** Physical presence, not catalog partial_max, decides whether per-row origins exist. */
+    @Throws(IOException::class)
+    fun readInternalSnapshotIdsIfPresent(
+            fileSystem: TrinoFileSystem,
+            dataFilePath: String,
+            footerSizeHint: Long,
+            parquetReaderOptions: ParquetReaderOptions,
+            stats: FileFormatDataSourceStats,
+            checkRows: (Long) -> Unit = {}): LongArray? {
         val inputFile = fileSystem.newInputFile(toLocation(dataFilePath))
         val memoryContext = newSimpleAggregatedMemoryContext()
         var dataSource: ParquetDataSource? = null
@@ -314,13 +330,11 @@ object DucklakeDeleteFileReader {
             dataSource = FooterPrefetchingParquetDataSource.wrapIfHintUsable(
                     dataSource, footerSizeHint, parquetReaderOptions.maxFooterReadSize.toBytes())
             val parquetMetadata = MetadataReader.readFooter(dataSource, parquetReaderOptions, Optional.empty(), Optional.empty())
+            checkRows(parquetMetadata.blocks.fold(0L) { n, block -> Math.addExact(n, block.rowCount) })
             val schema = parquetMetadata.fileMetaData.schema
             val messageColumnIO = getColumnIO(schema, schema)
             val columnIO: ColumnIO = messageColumnIO.getChild(INTERNAL_SNAPSHOT_ID_COLUMN)
-                    ?: throw TrinoException(
-                            GENERIC_INTERNAL_ERROR,
-                            "Partial data file is missing its $INTERNAL_SNAPSHOT_ID_COLUMN column, which is " +
-                                    "required to attribute change-feed rows to their origin snapshot: " + dataFilePath)
+                    ?: run { dataSource.close(); memoryContext.close(); return null }
             val field: Field = DucklakeParquetTypeUtils.constructField(BIGINT, columnIO)
                     .orElseThrow { TrinoException(NOT_SUPPORTED, "Could not construct field for $INTERNAL_SNAPSHOT_ID_COLUMN") }
             val parquetReader = createParquetReader(
@@ -329,16 +343,18 @@ object DucklakeDeleteFileReader {
             return collectRowIdsInOrder(ParquetPageSource(parquetReader),
                     "Partial data file has a null value in $INTERNAL_SNAPSHOT_ID_COLUMN: $dataFilePath")
         }
-        catch (e: TrinoException) {
-            dataSource?.let { runCatching { it.close() } }
-            throw e
-        }
         catch (e: IOException) {
             throw closeAndWrap(dataSource, dataFilePath, e)
         }
         catch (e: RuntimeException) {
-            throw closeAndWrap(dataSource, dataFilePath, e)
+            throw closePreservingDiagnostic(dataSource, dataFilePath, e)
         }
+    }
+
+    private fun closePreservingDiagnostic(source: ParquetDataSource?, path: String, failure: RuntimeException): Exception {
+        if (failure !is TrinoException) return closeAndWrap(source, path, failure)
+        source?.let { runCatching { it.close() } }
+        return failure
     }
 
     /** File-local positions whose BIGINT value is strictly greater than [threshold], in file order. */

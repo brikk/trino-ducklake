@@ -45,6 +45,7 @@ class ParquetFileWriter(
     private val parquetSchema: MessageType)
         : DucklakeFileWriter {
     private val partitionValues: MutableMap<Int, String?> = partitionValues.toMutableMap()
+    private val columnTypes = columns.map { it.columnType }
     private val leafStatsTargets: List<LeafStatsTarget> =
         DucklakeStatsLeafProjector.projectFromCatalogTree(columns, allCatalogColumns)
 
@@ -62,7 +63,7 @@ class ParquetFileWriter(
     @Throws(IOException::class)
     override fun write(page: Page) {
         recordNaNs(page)
-        parquetWriter.write(page)
+        parquetWriter.write(DucklakeJsonSupport.toParquetPage(page, columnTypes))
     }
 
     private fun recordNaNs(page: Page) {

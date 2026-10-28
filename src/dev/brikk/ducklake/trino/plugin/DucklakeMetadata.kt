@@ -52,7 +52,6 @@ import io.trino.spi.connector.ColumnPosition
 import io.trino.spi.connector.ConnectorAnalyzeMetadata
 import io.trino.spi.connector.ConnectorInsertTableHandle
 import io.trino.spi.connector.ConnectorMergeTableHandle
-import io.trino.spi.connector.ConnectorMetadata
 import io.trino.spi.connector.ConnectorOutputMetadata
 import io.trino.spi.connector.ConnectorOutputTableHandle
 import io.trino.spi.connector.ConnectorPartitioningHandle
@@ -153,7 +152,7 @@ class DucklakeMetadata(
         deleteFragmentCodec: JsonCodec<DucklakeDeleteFragment>?,
         pathResolver: DucklakePathResolver?,
         temporalPartitionEncoding: DucklakeTemporalPartitionEncoding?)
-        : ConnectorMetadata
+        : DucklakeMetadataSpi()
 {
     private val catalog: DucklakeCatalog = requireNonNull(catalog, "catalog is null")!!
     private val typeConverter: DucklakeTypeConverter = requireNonNull(typeConverter, "typeConverter is null")!!
@@ -1387,12 +1386,9 @@ class DucklakeMetadata(
         return DucklakeMergeTableHandle(handle, insertHandle, dataFileRanges)
     }
 
-    override fun finishMerge(
-            session: ConnectorSession,
+    override fun finishDucklakeMerge(
             mergeTableHandle: ConnectorMergeTableHandle,
-            sourceTableHandles: List<ConnectorTableHandle>,
-            fragments: Collection<Slice>,
-            computedStatistics: Collection<ComputedStatistics>)
+            fragments: Collection<Slice>)
     {
         val mergeHandle = mergeTableHandle as DucklakeMergeTableHandle
         val tableHandle: DucklakeTableHandle = mergeHandle.tableHandle

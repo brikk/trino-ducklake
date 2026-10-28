@@ -18,7 +18,6 @@ import io.trino.parquet.ParquetReaderOptions
 import io.trino.plugin.base.metrics.FileFormatDataSourceStats
 import dev.brikk.ducklake.catalog.DucklakeCatalog
 import io.trino.plugin.hive.parquet.ParquetReaderConfig
-import io.trino.spi.connector.ConnectorPageSourceProviderFactory
 
 open class DucklakePageSourceProviderFactory @Inject constructor(
         private val fileSystemFactory: DucklakeFileSystemFactory,
@@ -27,12 +26,14 @@ open class DucklakePageSourceProviderFactory @Inject constructor(
         private val catalog: DucklakeCatalog,
         private val ducklakeConfig: DucklakeConfig,
         private val typeConverter: DucklakeTypeConverter)
-        : ConnectorPageSourceProviderFactory
+        : DucklakePageSourceProviderFactorySpi()
 {
     private val parquetReaderOptions: ParquetReaderOptions = parquetReaderConfig.toParquetReaderOptions()
 
-    override fun createPageSourceProvider(): DucklakePageSourceProvider
+    override fun createDucklakePageSourceProvider(reportMemory: (Long) -> Unit): DucklakePageSourceProvider
     {
-        return DucklakePageSourceProvider(fileSystemFactory, fileFormatDataSourceStats, parquetReaderOptions, catalog, ducklakeConfig, typeConverter)
+        return DucklakePageSourceProvider(
+                fileSystemFactory, fileFormatDataSourceStats, parquetReaderOptions,
+                catalog, ducklakeConfig, typeConverter, reportMemory)
     }
 }

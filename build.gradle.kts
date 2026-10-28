@@ -9,9 +9,13 @@ plugins {
 }
 
 group = "dev.brikk.ducklake"
-// <trino-version>-<our-release>: the leading 483 is the compatible Trino version (see
-// libs.versions.toml `trino`), so the plugin archive name tells you which Trino it targets.
-version = "483-0.5.0-SNAPSHOT"
+// Trino plugins must match the server SPI exactly. Keep 483 as the default and build
+// the other supported target with -PtrinoVersion=484, including its matching BOM.
+val trinoVersion = providers.gradleProperty("trinoVersion").getOrElse(libs.versions.trino.get())
+require(trinoVersion in setOf("483", "484")) { "Supported Trino targets: 483, 484 (got $trinoVersion)" }
+kotlin.sourceSets.main { kotlin.srcDir("trino-$trinoVersion/src") }
+// <trino-version>-<our-release>: never label a 484 build as compatible with 483.
+version = "$trinoVersion-0.5.0-SNAPSHOT"
 
 // Idiomatic-Kotlin quality gate (detekt 2.0 runs on the JDK 25 daemon; jvmTarget is read
 // from the Kotlin compilerOptions). Custom src/test layout, so point detekt at it explicitly.
@@ -19,7 +23,7 @@ detekt {
     buildUponDefaultConfig = true
     config.setFrom(rootProject.file("config/detekt/detekt.yml"))
     baseline = file("detekt-baseline.xml")
-    source.setFrom("src", "test", if (providers.gradleProperty("r07CatalogCandidate").isPresent) "candidate/src" else "released/src")
+    source.setFrom("src", "test", "trino-$trinoVersion/src", if (providers.gradleProperty("r07CatalogCandidate").isPresent) "candidate/src" else "released/src")
 }
 
 // The brikk-sql (dev.brikk.house) TEST-ONLY transpiler resolves from the Central Portal snapshots
@@ -93,8 +97,8 @@ if (r07CatalogCandidate != null) {
 // Use Trino BOM for all managed dependency versions
 dependencies {
     // BOM import — controls versions for io.trino, io.airlift, jackson, opentelemetry, etc.
-    implementation(platform(libs.trino.bom))
-    testImplementation(platform(libs.trino.bom))
+    implementation(platform("io.trino:trino-root:$trinoVersion"))
+    testImplementation(platform("io.trino:trino-root:$trinoVersion"))
     implementation(enforcedPlatform(libs.kotlin.bom)) {
         exclude(group = "org.junit")
         exclude(group = "org.junit.jupiter")
@@ -266,7 +270,11 @@ tasks.test {
 // Assemble the Trino plugin into build/trino-plugin/trino-ducklake-<version>/ as a flat set of
 // jars (this module's jar + every runtime dep). That directory is what a Trino server loads from
 // its plugin/ dir, and it's the payload for the release archives below.
-val pluginAssemble by tasks.registering(Copy::class) {
+// A library can reintroduce SPI transitively (484's JSON library does); the server provides it.
+configurations.runtimeClasspath {
+    exclude(group = "io.trino", module = "trino-spi")
+}
+val pluginAssemble by tasks.registering(Sync::class) {
     dependsOn(tasks.jar)
     into(layout.buildDirectory.dir("trino-plugin/trino-ducklake-$version"))
     from(tasks.jar)
@@ -304,10 +312,14 @@ val pluginDist by tasks.registering {
     group = "distribution"
     description = "Builds the Trino plugin release archives (.zip + .tar.gz) with SHA-256 sidecars."
     dependsOn(pluginDistZip, pluginDistTar)
-    val distDir = layout.buildDirectory.dir("distributions")
     val zipFile = pluginDistZip.flatMap { it.archiveFile }
     val tarFile = pluginDistTar.flatMap { it.archiveFile }
-    outputs.dir(distDir)
+    // Track each target's checksum files, not the shared output directory. Otherwise switching
+    // targets can mark this task up-to-date after the archive tasks run, leaving sidecars absent.
+    inputs.files(zipFile, tarFile)
+    outputs.files(listOf(zipFile, tarFile).map { archive ->
+        archive.map { File(it.asFile.parentFile, "${it.asFile.name}.sha256") }
+    })
     doLast {
         listOf(zipFile.get().asFile, tarFile.get().asFile).forEach { f ->
             val sha = MessageDigest.getInstance("SHA-256")

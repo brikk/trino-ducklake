@@ -150,4 +150,52 @@ internal class TestDucklakeCrossEngineJson : AbstractDucklakeCrossEngineTest() {
             tryDropTable(fullTrinoTable)
         }
     }
+
+    @Test
+    fun jsonUpdatePreservesNativeValuesAndNulls() {
+        val table = "test_schema.json_update"
+        try {
+            computeActual("CREATE TABLE $table (id INTEGER, doc JSON)")
+            computeActual("INSERT INTO $table VALUES (1, JSON '$doc1'), (2, NULL)")
+            computeActual("UPDATE $table SET doc = JSON '$doc2' WHERE id = 1")
+            assertColumnTypeIsJson(table)
+            assertThat(computeActual("SELECT json_format(doc) FROM $table ORDER BY id").materializedRows
+                    .map { it.getField(0) as String? }).containsExactly(doc2, null)
+            assertThat(duckdbReadDocRows(table)).containsExactly(1 to doc2, 2 to null)
+        }
+        finally {
+            tryDropTable(table)
+        }
+    }
+
+    @Test
+    fun inlinedJsonSurvivesFlushAndRewrite() {
+        val bare = "json_inlined"
+        val table = "test_schema.$bare"
+        try {
+            computeActual("CREATE TABLE $table (id INTEGER, doc JSON)")
+            createDuckdbConnection().use { conn ->
+                conn.createStatement().use { stmt ->
+                    stmt.execute("CALL ducklake_db.set_option('data_inlining_row_limit', 100, " +
+                            "schema => 'test_schema', table_name => '$bare')")
+                    stmt.execute("INSERT INTO ducklake_db.$table VALUES (1, '$doc1'), (2, '$doc2'), (3, NULL)")
+                }
+            }
+            assertRowsStayedInlined(bare, 3L)
+            fun assertDocuments() {
+                assertThat(computeActual("SELECT json_format(doc) FROM $table ORDER BY id").materializedRows
+                        .map { it.getField(0) as String? }).containsExactly(doc1, doc2, null)
+                assertThat(duckdbReadDocRows(table)).containsExactly(1 to doc1, 2 to doc2, 3 to null)
+            }
+            assertDocuments()
+            computeActual("CALL ducklake.system.flush_inlined_data(schema_name => 'test_schema', table_name => '$bare')")
+            assertRowsWrittenToParquet(bare)
+            assertDocuments()
+            computeActual("CALL ducklake.system.rewrite_data_files(schema_name => 'test_schema', table_name => '$bare')")
+            assertDocuments()
+        }
+        finally {
+            tryDropTable(table)
+        }
+    }
 }

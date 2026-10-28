@@ -7,6 +7,7 @@ top level. Superseded plans, completed trackers, and research evidence live in [
 ## Current contracts and designs
 
 - [CATALOG-BACKENDS.md](CATALOG-BACKENDS.md) — metadata backend behavior and support.
+- [TRINO-COMPATIBILITY.md](TRINO-COMPATIBILITY.md) — exact 483/484 build and SPI boundaries.
 - [DESIGN-maintenance.md](DESIGN-maintenance.md) — shipped maintenance invariants and limits.
 - [DESIGN-shared-file-ownership.md](DESIGN-shared-file-ownership.md) — bounded retained-owner safety.
 - [DESIGN-virtual-columns.md](DESIGN-virtual-columns.md) — hidden metadata-column behavior.

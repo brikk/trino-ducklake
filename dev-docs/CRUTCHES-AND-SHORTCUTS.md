@@ -3,6 +3,20 @@
 This inventory records the safety restrictions introduced for RV-03 and RV-04. It is not an audit
 claim that all older debt is listed here; see [the review](REVIEW-2026-09-05.md) for that assessment.
 
+## Trino 484 retained-memory reporting
+
+The 484 SPI contexts receive conservative reservations for the merge sink's retained delete
+positions, lineage cache and insert sinks, plus the scan provider's bounded column-tree cache.
+These are retained-state estimates, not a bound on temporary allocations while loading prior
+deletes/lineage or serializing output. Maintenance CALLs have no scan memory context and keep
+their existing maintenance limits. 483 exposes neither new SPI context and retains its previous
+engine accounting contract. The new JSON text-block conversion allocates per output page;
+nested JSON writes retain the existing explicit unsupported restriction. See
+[Trino compatibility](TRINO-COMPATIBILITY.md) for the compile-time adapter boundary.
+Native-row source reservations conservatively count shared values more than once and
+measure inline JSON using a temporary single-value block. Page production is byte-budgeted;
+this does not retroactively bound the released catalog's older list-returning inline reads.
+
 ## R07: Temporary Candidate, Explicit Opt-in Qualification Only
 
 ### Legacy TIMESTAMPTZ partition safety

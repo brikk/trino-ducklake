@@ -31,7 +31,6 @@ import io.trino.spi.connector.ConnectorMergeTableHandle
 import io.trino.spi.connector.ConnectorOutputTableHandle
 import io.trino.spi.connector.ConnectorPageSink
 import io.trino.spi.connector.ConnectorPageSinkId
-import io.trino.spi.connector.ConnectorPageSinkProvider
 import io.trino.spi.connector.ConnectorSession
 import io.trino.spi.connector.ConnectorTableCredentials
 import io.trino.spi.connector.ConnectorTransactionHandle
@@ -49,7 +48,7 @@ class DucklakePageSinkProvider @Inject constructor(
     private val pageSorter: PageSorter,
     private val config: DucklakeConfig
 )
-        : ConnectorPageSinkProvider {
+        : DucklakePageSinkProviderSpi() {
     private val parquetReaderOptions: ParquetReaderOptions = parquetReaderConfig.toParquetReaderOptions()
     private val trinoVersion: String = nodeVersion.toString()
 
@@ -69,12 +68,10 @@ class DucklakePageSinkProvider @Inject constructor(
             pageSinkId: ConnectorPageSinkId): ConnectorPageSink =
             createPageSink(insertTableHandle as DucklakeWritableTableHandle, session)
 
-    override fun createMergeSink(
-            transactionHandle: ConnectorTransactionHandle,
+    override fun createDucklakeMergeSink(
             session: ConnectorSession,
             mergeHandle: ConnectorMergeTableHandle,
-            tableCredentials: Optional<ConnectorTableCredentials>,
-            pageSinkId: ConnectorPageSinkId): ConnectorMergeSink {
+            reportMemory: (Long) -> Unit): ConnectorMergeSink {
         requireWritesAllowed()
         val ducklakeMergeHandle = mergeHandle as DucklakeMergeTableHandle
 
@@ -109,7 +106,8 @@ class DucklakePageSinkProvider @Inject constructor(
                 trinoVersion,
                 DucklakeSessionProperties.isWriteDeletionVectors(session),
                 insertSink,
-                lineageSink)
+                lineageSink,
+                reportMemory)
     }
 
     private fun createPageSink(

@@ -13,8 +13,11 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
+import io.airlift.slice.Slice
+import io.trino.spi.Page
 import io.trino.spi.type.StandardTypes
 import io.trino.spi.type.Type
+import io.trino.spi.type.TypeUtils.readNativeValue
 import io.trino.spi.type.VarcharType
 
 /**
@@ -24,9 +27,8 @@ import io.trino.spi.type.VarcharType
  *
  *   - [isJson] identifies the type by its type-signature base string (`"json"`), which is stable
  *       and requires neither a class import nor a `TypeManager` handle.
- *   - JSON is a UTF-8-`Slice`-backed [io.trino.spi.type.AbstractVariableWidthType]; every value
- *       read/write path treats it exactly like VARCHAR via the SPI `Type.getSlice` /
- *       `Type.writeSlice` methods (both declared on the `trino-spi` `Type` interface).
+ *   - 483 JSON uses UTF-8 Slice blocks; 484 uses native JSON blocks. The SPI's `getSlice` /
+ *       `writeSlice` text boundary works with both. Never hand a 484 JSON block to a VARCHAR writer.
  *   - [toParquetWriteType] swaps a top-level JSON column for VARCHAR when building the *physical*
  *       parquet write schema: `io.trino.parquet.writer.ParquetSchemaConverter` / `ParquetWriters`
  *       reject `JsonType`, and DuckLake/DuckDB itself stores JSON in parquet as a plain UTF-8
@@ -37,6 +39,31 @@ import io.trino.spi.type.VarcharType
  */
 object DucklakeJsonSupport {
     fun isJson(type: Type): Boolean = type.baseName == StandardTypes.JSON
+
+    fun nativeValue(type: Type, text: Slice): Any {
+        if (type.javaType == Slice::class.java) return text
+        val builder = type.createBlockBuilder(null, 1)
+        type.writeSlice(builder, text)
+        return requireNotNull(readNativeValue(type, builder.build(), 0))
+    }
+
+    /** Convert only JSON channels requiring a different physical block (484), preserving text and NULLs. */
+    fun toParquetPage(page: Page, types: List<Type>): Page {
+        val jsonChannels = types.indices.filter { isJson(types[it]) && types[it].javaType != Slice::class.java }
+        if (jsonChannels.isEmpty()) return page
+        val blocks = Array(page.channelCount) { page.getBlock(it) }
+        for (channel in jsonChannels) {
+            val type = types[channel]
+            val block = blocks[channel]
+            val builder = VarcharType.VARCHAR.createBlockBuilder(null, page.positionCount)
+            for (position in 0 until page.positionCount) {
+                if (block.isNull(position)) builder.appendNull()
+                else VarcharType.VARCHAR.writeSlice(builder, type.getSlice(block, position))
+            }
+            blocks[channel] = builder.build()
+        }
+        return Page(page.positionCount, *blocks)
+    }
 
     /**
      * The physical Trino type to hand the parquet writer for [type]: a top-level JSON column

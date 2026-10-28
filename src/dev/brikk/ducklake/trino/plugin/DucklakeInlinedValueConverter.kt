@@ -83,6 +83,9 @@ object DucklakeInlinedValueConverter {
     }
 
     private fun convertScalar(jdbcValue: Any, trinoType: Type): Any {
+        if (DucklakeJsonSupport.isJson(trinoType)) {
+            return DucklakeJsonSupport.nativeValue(trinoType, Slices.utf8Slice(toStringValue(jdbcValue)))
+        }
         if (trinoType == BOOLEAN) {
             return toBoolean(jdbcValue)
         }

@@ -22,7 +22,12 @@ concurrency:
 
 jobs:
   full-corpus-replay:
+    name: Trino ${{ matrix.trino }} corpus
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        trino: ['483', '484']
     # The full corpus is large; give it a generous ceiling.
     timeout-minutes: 180
     steps:
@@ -55,6 +60,7 @@ jobs:
         # self-skip via assumeTrue. No secrets needed.
         run: >-
           ./gradlew test
+          -PtrinoVersion=${{ matrix.trino }}
           --tests dev.brikk.ducklake.trino.plugin.TestTrinoCorpusReplay
           -Dducklake.corpus.dirs=all
           --stacktrace
@@ -64,7 +70,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: corpus-nightly-reports
+          name: corpus-nightly-reports-trino-${{ matrix.trino }}
           path: |
             build/reports
             build/test-results

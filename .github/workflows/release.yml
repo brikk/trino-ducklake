@@ -3,7 +3,9 @@
 # Triggered by pushing a version tag (e.g. v483-1-ALPHA) or manual dispatch. Produces
 # trino-ducklake-<version>.zip and .tar.gz (each expands to a single trino-ducklake-<version>/
 # directory of jars — drop it into a Trino coordinator/worker `plugin/` dir), plus .sha256
-# sidecars, and publishes them as assets on the GitHub Release for the tag.
+# sidecars for BOTH supported Trino targets (483 and 484), and publishes them as
+# assets on the GitHub Release for the tag. The connector release suffix is shared;
+# each archive's leading version identifies its exact Trino server target.
 #
 # No secrets required: this is a plain artifact release (not a Maven publish). The shared
 # dev.brikk.ducklake:ducklake-catalog dependency resolves from Maven Central.
@@ -42,7 +44,10 @@ jobs:
         uses: gradle/actions/setup-gradle@v6
 
       - name: Build plugin distribution archives
-        run: ./gradlew pluginDist --stacktrace
+        run: |
+          for trino in 483 484; do
+            ./gradlew pluginDist -PtrinoVersion="$trino" --stacktrace
+          done
 
       - name: Attach archives to the GitHub Release
         uses: softprops/action-gh-release@v2

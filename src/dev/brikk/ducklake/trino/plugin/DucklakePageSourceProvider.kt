@@ -106,7 +106,8 @@ class DucklakePageSourceProvider @Inject constructor(
         private val parquetReaderOptions: ParquetReaderOptions,
         private val catalog: DucklakeCatalog,
         ducklakeConfig: DucklakeConfig,
-        private val typeConverter: DucklakeTypeConverter)
+        private val typeConverter: DucklakeTypeConverter,
+        private val reportSharedMemory: (Long) -> Unit = {})
         : ConnectorPageSourceProvider
 {
     // Resolves relative catalog file paths (data/delete files) to full paths for the change feed,
@@ -123,14 +124,24 @@ class DucklakePageSourceProvider @Inject constructor(
 
     private data class FileColumnNamesKey(val tableId: Long, val beginSnapshot: Long)
 
+    private var columnTreeCacheBytes = 0L
+
+    @Synchronized
     private fun columnTree(tableId: Long, snapshotId: Long): List<DucklakeColumn> {
         val key = FileColumnNamesKey(tableId, snapshotId)
         columnTreeCache[key]?.let { return it }
         if (columnTreeCache.size >= MAX_FILE_COLUMN_NAME_CACHE_ENTRIES) {
             columnTreeCache.clear()
+            columnTreeCacheBytes = 0L
         }
         val tree: List<DucklakeColumn> = catalog.getAllColumnsWithParentage(tableId, snapshotId)
         columnTreeCache[key] = tree
+        // Conservative retained-size reservation: map/key/list/record/boxed fields plus UTF-16
+        // string storage (also covers compact strings). Serialized under the same lock as updates.
+        columnTreeCacheBytes += 256L + tree.sumOf { column ->
+            256L + 2L * (column.columnName.length + column.columnType.length + (column.initialDefault?.length ?: 0))
+        }
+        reportSharedMemory(columnTreeCacheBytes)
         return tree
     }
 
@@ -401,7 +412,7 @@ class DucklakePageSourceProvider @Inject constructor(
         }
 
         log.debug("Created inlined page source with %d rows for tableId=%d", rowCount, inlinedSplit.tableId)
-        return RecordPageSource(InMemoryRecordSet(outputTypes, outputRows))
+        return DucklakeNativeRowsPageSource(outputTypes, outputRows)
     }
 
     private fun createPagedInlinePageSource(
@@ -427,7 +438,7 @@ class DucklakePageSourceProvider @Inject constructor(
                 else -> null
             } }
         }
-        return RecordPageSource(InMemoryRecordSet(columns.map { it.columnType }, output))
+        return DucklakeNativeRowsPageSource(columns.map { it.columnType }, output)
     }
 
     private fun createMetadataPageSource(metadataSplit: DucklakeMetadataSplit, columns: List<ColumnHandle>): ConnectorPageSource
@@ -720,7 +731,7 @@ class DucklakePageSourceProvider @Inject constructor(
             row.add(event.rowId)
             row
         }
-        RecordPageSource(InMemoryRecordSet(types, rows))
+        DucklakeNativeRowsPageSource(types, rows)
     }
 
     private class ResolvedChangeFeedDeletion(

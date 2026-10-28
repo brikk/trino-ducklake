@@ -17,7 +17,6 @@ import com.google.common.collect.ImmutableList
 import dev.brikk.ducklake.catalog.DucklakeColumn
 import io.trino.parquet.Field
 import io.trino.parquet.GroupField
-import io.trino.parquet.ParquetTypeUtils.getArrayElementColumn
 import io.trino.parquet.ParquetTypeUtils.getMapKeyValueColumn
 import io.trino.parquet.PrimitiveField
 import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
@@ -144,7 +143,7 @@ object DucklakeParquetTypeUtils {
         if (groupColumnIO.childrenCount != 1) {
             return Optional.empty()
         }
-        val elementColumnIO = getArrayElementColumn(groupColumnIO.getChild(0))
+        val elementColumnIO = DucklakeTrinoApi.arrayElementColumn(arrayType.elementType, groupColumnIO.getChild(0))
         val elementIdentity = identity?.let { context?.children(it.columnId)?.singleOrNull() }
         val elementField = constructField(arrayType.elementType, elementColumnIO, elementIdentity, context)
         return Optional.of(groupField(arrayType, groupColumnIO, ImmutableList.of(elementField)))

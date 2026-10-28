@@ -41,8 +41,6 @@ import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
 import io.trino.spi.StandardErrorCode.TRANSACTION_CONFLICT
 import io.trino.spi.TrinoException
 import io.trino.spi.connector.ConnectorSession
-import io.trino.spi.connector.InMemoryRecordSet
-import io.trino.spi.connector.RecordPageSource
 import io.trino.spi.procedure.Procedure
 import io.trino.spi.type.BigintType.BIGINT
 import io.trino.spi.type.Type
@@ -400,9 +398,8 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
 
         var fragment: DucklakeWriteFragment? = null
         try {
-            // Reuse the in-memory record-set → page path (the same machinery the inlined READ
-            // path uses) to turn rows into Pages, then stream them through the Parquet writer.
-            RecordPageSource(InMemoryRecordSet(writeTypes, rowsWithLineage)).use { source ->
+            // Use the same native-row → bounded-page path as inlined reads (including 484 JSON).
+            DucklakeNativeRowsPageSource(writeTypes, rowsWithLineage).use { source ->
                 while (!source.isFinished) {
                     val sourcePage = source.nextSourcePage ?: continue
                     writer.write(sourcePage.page)

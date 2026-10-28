@@ -29,7 +29,12 @@ concurrency:
 
 jobs:
   build-and-test:
+    name: Trino ${{ matrix.trino }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        trino: ['483', '484']
     # detekt + the full test suite (incl. Testcontainers PostgreSQL and the corpus
     # replay starter set) fit comfortably on the default runner.
     timeout-minutes: 60
@@ -63,7 +68,7 @@ jobs:
       # heavy phases peak simultaneously, which risks OOM on a 2-core/7 GB runner.
       # Sequential steps bound peak memory and give clean failure attribution.
       - name: detekt (quality gate)
-        run: ./gradlew detekt --stacktrace
+        run: ./gradlew detekt -PtrinoVersion=${{ matrix.trino }} --stacktrace
 
       - name: tests
         # `test` includes dev.brikk.ducklake.trino.plugin.TestTrinoCorpusReplay. We do NOT
@@ -79,14 +84,17 @@ jobs:
         # (INSTALL ducklake/postgres). On a fully air-gapped runner these self-skip via
         # JUnit assumeTrue; ubuntu-latest has outbound network, so they execute. No secrets
         # or external services are required.
-        run: ./gradlew test -PtestJavaVersion=26 --stacktrace
+        run: ./gradlew test -PtrinoVersion=${{ matrix.trino }} -PtestJavaVersion=26 --stacktrace
+
+      - name: Build plugin distribution archives
+        run: ./gradlew pluginDist -PtrinoVersion=${{ matrix.trino }} --stacktrace
 
       - name: Upload test & detekt reports
         # Only on failure — the reports are the useful artifact when something breaks.
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: build-and-test-reports
+          name: build-and-test-reports-trino-${{ matrix.trino }}
           path: |
             build/reports
             build/test-results

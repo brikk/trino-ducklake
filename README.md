@@ -733,13 +733,19 @@ Requires **JDK 25**. The repo pins it via [mise](https://mise.jdx.dev) (`mise.to
 ### Build the plugin distribution
 
 ```shell
-./gradlew pluginDist
+./gradlew pluginDist                     # Trino 483 (default)
+./gradlew pluginDist -PtrinoVersion=484   # Trino 484
 ```
 
 Produces `build/distributions/trino-ducklake-<version>.{zip,tar.gz}` (+ `.sha256`), each
 expanding to a `trino-ducklake-<version>/` directory of jars — the same artifacts attached to a
 GitHub Release. For just the exploded plugin dir (no archive), use `./gradlew pluginAssemble`
 (output under `build/trino-plugin/trino-ducklake-<version>/`).
+
+Trino **483 and 484** are separate build targets: the selected target controls the Trino BOM,
+compile/test dependencies, and archive prefix (`483-…` or `484-…`). Install the archive matching
+your server exactly; the connector enforces strict SPI version matching. CI builds and tests
+both targets. Add `-PtrinoVersion=484` to test commands to exercise that target locally too.
 
 ### Local dev stack (Docker Compose)
 
@@ -761,8 +767,9 @@ the `ducklake.test.catalog-backend` system property:
 ### Releasing
 
 Push a `v<version>` tag (e.g. `v483-0.5.0`); the [`release.yml`](.github/workflows/release.yml)
-workflow builds `pluginDist` and attaches the archives + checksums to the GitHub Release for
-that tag.
+workflow builds `pluginDist` for **both 483 and 484** and attaches both sets of archives +
+checksums to the GitHub Release for that tag. Update the shared connector release suffix in
+`build.gradle.kts` before tagging; the Trino prefix is selected by each build.
 
 ## Additional Documentation
 

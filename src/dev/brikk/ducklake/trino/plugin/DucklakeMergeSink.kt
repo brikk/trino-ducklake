@@ -74,7 +74,8 @@ open class DucklakeMergeSink(
          * (readers reject malformed lineage), so the two row kinds
          * cannot share a file. Null = lineage disabled by the legacy opt-out.
          */
-        private val lineageInsertSink: ConnectorPageSink? = null)
+        private val lineageInsertSink: ConnectorPageSink? = null,
+        private val reportMemory: (Long) -> Unit = {})
     : ConnectorMergeSink
 {
     private val dataColumnCount: Int = mergeHandle.insertHandle.columns.size
@@ -86,15 +87,24 @@ open class DucklakeMergeSink(
     // physical and resolves directly by data_file_id, without synthesizing catalog row-ID ranges.
     private val filesById: Map<Long, DataFileRange> = mergeHandle.dataFileRanges.associateBy { it.dataFileId }
 
+    private fun reportRetainedMemory() {
+        // Reserve conservatively for boxed delete positions/list capacity and per-file map entries.
+        val deletes = deletesByDataFile.values.sumOf { 128L + 40L * it.size }
+        val lineage = lineageBySourceFile.values.sumOf { 128L + 8L * (it?.size ?: 0) }
+        reportMemory(128L * filesById.size + deletes + lineage + insertSink.memoryUsage + (lineageInsertSink?.memoryUsage ?: 0L))
+    }
+
     override fun storeMergedRows(page: Page) {
         val mergePage: MergePage = MergePage.createDeleteAndInsertPages(page, dataColumnCount)
 
         mergePage.deletionsPage.ifPresent { p -> this.processDeletes(p) }
         if (lineageInsertSink == null) {
             mergePage.insertionsPage.ifPresent { insertPage -> insertSink.appendPage(insertPage) }
+            reportRetainedMemory()
             return
         }
         routeInsertsWithLineage(page, lineageInsertSink)
+        reportRetainedMemory()
     }
 
     /**
@@ -153,6 +163,7 @@ open class DucklakeMergeSink(
             catch (e: IOException) {
                 throw UncheckedIOException("Failed to read row lineage from ${file.dataFilePath}", e)
             }
+            reportRetainedMemory()
         }
         return DucklakeRowIdentity.rowId(lineageBySourceFile[file.dataFileId], file.rowIdStart, locator.position)
     }

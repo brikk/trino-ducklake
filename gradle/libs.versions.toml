@@ -10,6 +10,7 @@ jackson = "2.21.2"
 java-uuid-generator = "5.0.0"
 junit = "5.12.2"
 assertj = "3.27.3"
+# Default server target; -PtrinoVersion=484 selects the other supported BOM/SPI source set.
 trino = "483"
 # Published DuckLake catalog + corpus-replay coordinates (dev.brikk.ducklake). Bump in lockstep
 # when consuming a new catalog release; -SNAPSHOT resolves from the Central Portal snapshots repo.

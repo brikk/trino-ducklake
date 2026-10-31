@@ -1,5 +1,6 @@
 [versions]
-kotlin = "2.3.10"
+# Match brikk-sql 0.21.0's published Kotlin runtime instead of forcing an older stdlib.
+kotlin = "2.4.10"
 adbc = "0.21.0"
 duckdb = "1.5.6.0"
 quack-jdbc = "0.3.0"
@@ -28,10 +29,8 @@ lance-core = "6.0.0"
 # brikk-sql: TEST-ONLY SQL transpiler (corpus-replay dialect gate). Releases (e.g. 0.2.0) are on
 # Maven Central; -SNAPSHOTs live in the Central Portal snapshots repo (wired in the
 # buildlogic.kotlin.brikk convention). Flip this ONE value between a release and a -SNAPSHOT.
-# On 0.3.0-SNAPSHOT pending release: adds Finding.areas + TranspileReport.okAccepting {} and tiers
-# the DATE+INTERVAL hazard (provably-DATE→REFUSAL, bare-column→WARNING). See the gate policy in
-# TrinoCorpusDialect + the 0.3.0 migration note in dev-docs/NOTE-transpile-first-corpus-gate.md.
-brikk-sql = "0.18.0"
+# 0.21.0 includes the Trino 484 catalog and native-grammar verifier.
+brikk-sql = "0.21.0"
 
 [libraries]
 kotlin-bom = { module = "org.jetbrains.kotlin:kotlin-bom", version.ref = "kotlin" }
@@ -93,7 +92,8 @@ jooq-meta = { module = "org.jooq:jooq-meta-extensions", version.ref = "jooq" }
 # brikk-sql (dev.brikk.house) — TEST-ONLY. KMP JVM artifacts; see buildlogic.kotlin.brikk.
 brikk-sql = { module = "dev.brikk.house:brikk-sql-jvm", version.ref = "brikk-sql" }
 brikk-sql-metadata = { module = "dev.brikk.house:brikk-sql-metadata-jvm", version.ref = "brikk-sql" }
-brikk-sql-verify = { module = "dev.brikk.house:brikk-sql-verify", version.ref = "brikk-sql" }
+# Only the Trino verifier is used; the umbrella also brings unrelated engine verifiers.
+brikk-sql-verify = { module = "dev.brikk.house:brikk-sql-verify-trino", version.ref = "brikk-sql" }
 
 [bundles]
 jooq = [

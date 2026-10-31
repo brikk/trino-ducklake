@@ -19,6 +19,7 @@ import dev.brikk.house.sql.shape.Severity
 import dev.brikk.house.sql.shape.SqlFragment
 import dev.brikk.house.sql.shape.certify
 import dev.brikk.house.sql.verify.TrinoVerifier
+import dev.brikk.house.sql.verify.VerifyResult
 
 /**
  * Transpile-first corpus dialect gate for the DuckLake corpus-replay adapter
@@ -122,11 +123,15 @@ object TrinoCorpusDialect {
 
         // Extra signal: the transpiled SQL must re-parse under Trino's real grammar. A failure is
         // a brikk-sql emission bug — skip it (and report upstream) rather than fail at execute time.
-        val verify = verifier.verify(sql)
-        if (!verify.accepted) {
-            return Skip("transpiled SQL not parseable by Trino grammar: ${verify.error?.let { firstLineOf(it) }}")
-        }
-        return Run(sql)
+        return nativeGrammarGate(sql, verifier.verify(sql))
+    }
+
+    internal fun nativeGrammarGate(sql: String, verify: VerifyResult): Gate = when (verify) {
+        VerifyResult.Accepted -> Run(sql)
+        is VerifyResult.Rejected ->
+            Skip("transpiled SQL not parseable by Trino grammar: ${firstLineOf(verify.error.message)}")
+        is VerifyResult.Unavailable -> error("Trino verifier unavailable: ${verify.reason}")
+        is VerifyResult.Unverified -> error("Trino verifier returned no grammar verdict: ${verify.reason}")
     }
 
     /**

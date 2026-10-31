@@ -26,8 +26,8 @@ detekt {
     source.setFrom("src", "test", "trino-$trinoVersion/src", if (providers.gradleProperty("r07CatalogCandidate").isPresent) "candidate/src" else "released/src")
 }
 
-// The brikk-sql (dev.brikk.house) TEST-ONLY transpiler resolves from the Central Portal snapshots
-// repo, wired centrally by the buildlogic.kotlin.brikk convention plugin (applied above).
+// The brikk-sql (dev.brikk.house) TEST-ONLY tooling uses Maven Central releases; optional snapshots
+// resolve from the Central Portal repo wired by the buildlogic.kotlin.brikk convention plugin.
 repositories {
     // dev.brikk.ducklake catalog + corpus-replay: released versions resolve from mavenCentral;
     // -SNAPSHOTs from ~/.m2 (local two-repo dev loop) then the Central Portal snapshots repo —
@@ -170,11 +170,15 @@ dependencies {
     // brikk-sql: DuckDB→Trino SQL transpiler powering the corpus-replay dialect gate
     // (transpile-first — run what transpiles + is mappable, engine-skip the rest). TEST-ONLY:
     // the production connector never sees raw SQL (Trino parses it). The -jvm artifacts are the
-    // JVM target of the Kotlin-Multiplatform library; brikk-sql-verify's TrinoVerifier re-parses
+    // JVM target of the Kotlin-Multiplatform library; brikk-sql-verify-trino's TrinoVerifier re-parses
     // transpiled SQL under Trino's real grammar as an extra gate signal.
     testImplementation(libs.brikk.sql)
     testImplementation(libs.brikk.sql.metadata)
     testImplementation(libs.brikk.sql.verify)
+    testImplementation("io.trino:trino-parser") {
+        version { strictly(trinoVersion) }
+        because("The native verifier must use the selected server's grammar, not its default Trino 484 parser")
+    }
 
     // Shared Testcontainer fixture (TestingDucklakePostgreSqlCatalogServer) lives in
     // ducklake-catalog's java-test-fixtures source set, published as the -test-fixtures

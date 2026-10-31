@@ -18,6 +18,22 @@ CI and nightly corpus jobs have independent target lanes; the release workflow b
 and attaches both distributions to the same release. The default Compose stack stays on 483;
 set both `TRINO_VERSION=484` and the matching `PLUGIN_VERSION` to use the other archive.
 
+## Corpus SQL tooling
+
+`brikk-sql-jvm`, `brikk-sql-metadata-jvm` and `brikk-sql-verify-trino` use **0.21.0**.
+They are `testImplementation` dependencies for corpus transpilation, schema-aware MAP
+adaptation and native-grammar verification, never production plugin dependencies. The
+Trino-specific verifier replaces the umbrella artifact so unrelated engine verifiers
+are not loaded. The compiler and enforced Kotlin BOM use **2.4.10**, matching the
+new artifacts' published runtime instead of forcing their stdlib back to 2.3.10.
+
+The verifier requests parser 484 by default. Tests explicitly constrain `trino-parser`
+to the selected target: allowing Gradle to upgrade only the parser would mix a 483
+engine with a 484 AST/grammar. A regression checks the parser/SPI manifest versions
+and `JSON_SERIALIZE`'s changed reserved-keyword behavior. The new sealed verifier API
+admits only `Accepted`; native `Rejected` results retain their diagnostic, and an
+unavailable/unverified parser fails loudly instead of turning into a corpus skip.
+
 ## API differences
 
 - 484 `finishMerge` returns optional output metadata. The adapter commits using the same
@@ -53,3 +69,12 @@ DistributedQueryRunner with the existing PostgreSQL/DuckDB fixtures, not a produ
 Sequential 483 → 484 packaging was checked for both ZIP and tar.gz: one flat plugin root,
 only matching-version Trino implementation jars, no bundled SPI or test-only DuckDB JDBC,
 and matching SHA-256 sidecars. Both distributions coexist under `build/distributions`.
+
+### SQL tooling update verification (2026-10-31)
+
+With brikk-sql 0.21.0 and Kotlin 2.4.10, **248 tests across 20 focused classes** passed
+on each target, with no failures or JUnit skips. This adds corpus-gate, MAP adaptation,
+actual MAP/ROW mirror and nested geometry regressions to the earlier focused coverage;
+corpus replay remains limited to `general`, not the full corpus. Both targets pass detekt.
+Both ZIP/tar.gz sets and checksums were rebuilt and checked: matching Trino jars and
+Kotlin stdlib 2.4.10, with no brikk-sql tooling, SPI or test-only DuckDB JDBC bundled.

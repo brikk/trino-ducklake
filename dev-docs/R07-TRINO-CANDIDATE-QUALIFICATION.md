@@ -1,5 +1,11 @@
 # R07 Trino candidate qualification — October 23–25, 2026
 
+**November 1 update:** the [published read-correctness handoff](HANDOFF-CATALOG-72aae19.md)
+supersedes the local-bundle selection instructions below. Use `-Pr07CatalogCandidate`
+for exact snapshot `0.13.0-20261101.082015-33`; old bundle-path values are rejected.
+The older evidence remains historical, not evidence for the new bytes. Default 0.12
+and default-off final-1.1 reads remain unchanged; this does not close broad R07 rollout gates.
+
 ## October 25 bounded quality repair: QG-01 and QG-05
 
 Both defects are repaired using the unchanged catalog `6730bb8` bundle below.

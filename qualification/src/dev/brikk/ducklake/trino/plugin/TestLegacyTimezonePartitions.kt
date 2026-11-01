@@ -87,7 +87,7 @@ class TestLegacyTimezonePartitions {
     }
 
     private class Fixture : AutoCloseable {
-        val root = Files.createTempDirectory(Path.of("/tmp/opencode"), "trino-tz-")
+        val root = Files.createTempDirectory(Path.of(System.getProperty("java.io.tmpdir", "/tmp/opencode")), "trino-tz-")
         val db = root.resolve("meta.db")
         val data = Files.createDirectories(root.resolve("data"))
         fun native(version: String, sql: String, migrate: Boolean = false) = DriverManager.getConnection("jdbc:duckdb:").use { c ->

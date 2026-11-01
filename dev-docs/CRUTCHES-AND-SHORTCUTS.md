@@ -29,11 +29,34 @@ predicates remain in Trino; DATE/unzoned timestamp and identity pruning are unch
 Cost: extra files may be scanned. Removal requires a real file-specific transform/
 writer-zone attestation, not a version check or a future native upgrade.
 
-`-Pr07CatalogCandidate=<bundle>` exclusively selects the local catalog/SLT/replay
-0.13.0-SNAPSHOT candidate, checks the four resolved runtime/fixture jar hashes and
-adds `qualification/src` to tests. It also selects test-only DuckDB JDBC 2.0.0.0
+`-Pr07CatalogCandidate` exclusively selects the published catalog/SLT/replay
+`0.13.0-20261101.082015-33` candidate (source `72aae19`), checks all four resolved
+runtime/fixture JAR hashes against `gradle/r07-catalog-snapshot.sha256`, and adds
+`qualification/src` to tests. Strict constraints pin all three modules, including
+fixture self-dependencies; no local repository or JAR substitution is used.
+Historical local bundle paths now fail explicitly instead of silently selecting
+different bytes. Candidate output versions carry `-r07`, separate from released artifacts.
+It also selects test-only DuckDB JDBC 2.0.0.0
 and Java Quack JDBC 0.8.0. Omitting the property restores released 0.12.0 dependencies
 and the existing producer lane. This is not a release pin or supported plugin distribution.
+
+N03's bounded public type-signature parser is compiled only in the candidate source
+set. The released 0.12 converter remains unchanged. The candidate preserves quoted
+field names while reusing existing scalar mappings; parsing is not storage/type admission.
+See [the published handoff](HANDOFF-CATALOG-72aae19.md) for exact checks and remaining scope.
+
+Legacy native nested JDBC values now use standard STRUCT/ARRAY/MAP conversion, not
+`toString()` parsing. Native STRUCTs require source-era field order from the existing
+complete identity mapping; no positional target-schema guess or fabricated names are
+used. Text-backed payloads retain their path. This does not retroactively bound legacy
+list-returning reads or broaden composite-key admission. Native Trino's textual ROW
+case canonicalization is separately controlled; source/SPI names and quoted SQL values
+remain exact requirements. Rename fixtures use fresh readers, not a concurrency claim.
+
+The November 1 verification uses a workspace-local `java.io.tmpdir` because actual
+Kotlin backup writes failed with `Disk quota exceeded` under `/tmp`. Qualification
+fixtures honor that standard JVM setting. This is build/test scratch only, not a
+production staging path or a shared-filesystem assumption; tests/native pins are unchanged.
 
 October 24 adds `ducklake.experimental.enable-final-1.1-reads=false` by default.
 The opt-in calls only the candidate's actual public flag setter. A small reflective

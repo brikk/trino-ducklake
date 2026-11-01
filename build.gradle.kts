@@ -13,9 +13,14 @@ group = "dev.brikk.ducklake"
 // the other supported target with -PtrinoVersion=484, including its matching BOM.
 val trinoVersion = providers.gradleProperty("trinoVersion").getOrElse(libs.versions.trino.get())
 require(trinoVersion in setOf("483", "484")) { "Supported Trino targets: 483, 484 (got $trinoVersion)" }
+val r07SnapshotVersion = libs.versions.ducklake.catalog.candidate.get()
+val r07CatalogCandidate = providers.gradleProperty("r07CatalogCandidate").orNull
+require(r07CatalogCandidate == null || r07CatalogCandidate in setOf("", r07SnapshotVersion)) {
+    "Use -Pr07CatalogCandidate (or =$r07SnapshotVersion) for the published candidate; local bundle paths are no longer accepted"
+}
 kotlin.sourceSets.main { kotlin.srcDir("trino-$trinoVersion/src") }
 // <trino-version>-<our-release>: never label a 484 build as compatible with 483.
-version = "$trinoVersion-0.5.0-SNAPSHOT"
+version = "$trinoVersion-0.5.0-SNAPSHOT" + if (r07CatalogCandidate != null) "-r07" else ""
 
 // Idiomatic-Kotlin quality gate (detekt 2.0 runs on the JDK 25 daemon; jvmTarget is read
 // from the Kotlin compilerOptions). Custom src/test layout, so point detekt at it explicitly.
@@ -35,32 +40,35 @@ repositories {
     mavenCentral()
 }
 
-// Qualification only: absent this property, released dependencies and repositories are unchanged.
-// Point at the candidate bundle (README.md + SHA256SUMS + maven-repository), not ~/.m2.
-val r07CatalogCandidate = providers.gradleProperty("r07CatalogCandidate").orNull?.let(::file)
+// Qualification only: the published, timestamp-pinned candidate does not change the released lane.
 val r07Modules = setOf("ducklake-catalog", "slt-format", "ducklake-test-corpus-replay")
 kotlin.sourceSets.main { kotlin.srcDir(if (r07CatalogCandidate != null) "candidate/src" else "released/src") }
 if (r07CatalogCandidate != null) {
     repositories.exclusiveContent {
         forRepository {
             repositories.maven {
-                name = "r07CatalogCandidate"
-                url = uri(r07CatalogCandidate.resolve("maven-repository"))
-                metadataSources { gradleMetadata(); mavenPom() }
+                name = "r07PublishedCandidate"
+                url = uri("https://central.sonatype.com/repository/maven-snapshots/")
             }
         }
         filter {
-            r07Modules.forEach { includeVersion("dev.brikk.ducklake", it, "0.13.0-SNAPSHOT") }
+            r07Modules.forEach { includeModule("dev.brikk.ducklake", it) }
         }
     }
-    configurations.configureEach {
-        resolutionStrategy.eachDependency {
-            if (requested.group == "dev.brikk.ducklake" && requested.name in r07Modules) {
-                useVersion("0.13.0-SNAPSHOT")
+    dependencies {
+        constraints {
+            implementation("dev.brikk.ducklake:ducklake-catalog:$r07SnapshotVersion") {
+                version { strictly(r07SnapshotVersion) }
+            }
+            testImplementation("dev.brikk.ducklake:ducklake-test-corpus-replay:$r07SnapshotVersion") {
+                version { strictly(r07SnapshotVersion) }
+            }
+            testImplementation("dev.brikk.ducklake:slt-format:$r07SnapshotVersion") {
+                version { strictly(r07SnapshotVersion) }
             }
             // The disposable native producer must match the candidate's qualified lane.
-            if (requested.group == "org.duckdb" && requested.name == "duckdb_jdbc") {
-                useVersion("2.0.0.0")
+            testImplementation("org.duckdb:duckdb_jdbc:2.0.0.0") {
+                version { strictly("2.0.0.0") }
             }
         }
     }
@@ -68,10 +76,13 @@ if (r07CatalogCandidate != null) {
 
 val verifyR07Candidate by tasks.registering {
     group = "verification"
-    description = "Attests the explicitly selected local R07 runtime and fixture jars."
+    description = "Attests the published, timestamp-pinned R07 runtime and fixture jars."
+    val receipt = layout.projectDirectory.file("gradle/r07-catalog-snapshot.sha256")
+    inputs.file(receipt)
+    inputs.property("snapshotVersion", r07SnapshotVersion)
     doLast {
-        val bundle = requireNotNull(r07CatalogCandidate) { "Set -Pr07CatalogCandidate=<candidate bundle>" }
-        val hashes = bundle.resolve("SHA256SUMS").readLines().associate { line ->
+        check(r07CatalogCandidate != null) { "Set -Pr07CatalogCandidate to select the published candidate" }
+        val hashes = receipt.asFile.readLines().filter { it.isNotBlank() && !it.startsWith("#") }.associate { line ->
             val (hash, path) = line.split(Regex("\\s+"), limit = 2)
             path.substringAfterLast('/') to hash
         }
@@ -79,8 +90,8 @@ val verifyR07Candidate by tasks.registering {
             .filter { it.moduleVersion.id.group == "dev.brikk.ducklake" && it.name in r07Modules }
         check(artifacts.size == 4) { "Expected catalog, catalog fixtures, SLT and replay jars: $artifacts" }
         artifacts.forEach { artifact ->
-            check(artifact.moduleVersion.id.version == "0.13.0-SNAPSHOT")
             val jar = artifact.file
+            check(jar.name.contains(r07SnapshotVersion)) { "Unexpected candidate build: $jar" }
             val actual = MessageDigest.getInstance("SHA-256").digest(jar.readBytes())
                 .joinToString("") { "%02x".format(it) }
             check(actual == hashes[jar.name]) { "Candidate SHA256 mismatch: $jar ($actual)" }
@@ -203,6 +214,8 @@ tasks.withType<JavaCompile> {
 }
 
 tasks.test {
+    // The handoff's JVM-sensitive renderer checks assert the actual forked runtime, not log text.
+    systemProperty("ducklake.test.java-version", providers.gradleProperty("testJavaVersion").getOrElse("25"))
     // Compile against the repository's JDK 25 toolchain, but allow CI to execute the resulting
     // Java 25 bytecode on a newer VM for compatibility/stability checks.
     providers.gradleProperty("testJavaVersion").orNull?.let { version ->

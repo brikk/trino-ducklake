@@ -96,6 +96,7 @@ open class DucklakeTypeConverter @Inject constructor(private val typeManager: Ty
      * Convert Ducklake type string to Trino Type
      */
     open fun toTrinoType(ducklakeType: String): Type {
+        catalogCompositeType(ducklakeType, typeManager, ::toTrinoType)?.let { return it }
         val normalizedType: String = ducklakeType.trim().lowercase(Locale.ROOT)
 
         if (normalizedType.startsWith("list<") && normalizedType.endsWith(">")) {

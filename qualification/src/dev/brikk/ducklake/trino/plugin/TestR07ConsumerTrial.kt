@@ -1046,7 +1046,7 @@ class TestR07ConsumerTrial {
     }
 
     private class Fixture(val lane: Lane = Lane.LOCAL) : AutoCloseable {
-        val root = Files.createTempDirectory(Path.of("/tmp/opencode"), "trino-r07-")
+        val root = Files.createTempDirectory(Path.of(System.getProperty("java.io.tmpdir", "/tmp/opencode")), "trino-r07-")
         val db = root.resolve("metadata.db")
         val data = Files.createDirectories(root.resolve("data"))
         val pg = if (lane == Lane.POSTGRES) TestingDucklakePostgreSqlCatalogServer() else null

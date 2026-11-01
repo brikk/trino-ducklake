@@ -40,6 +40,32 @@ import java.sql.DriverManager
 class TestDucklakeCrossEngineInlinedAlter : AbstractDucklakeCrossEngineTest() {
     override fun isolatedCatalogName(): String = "xengine-inlined-alter"
 
+    @Test
+    fun legacyQuotedFieldNamesAndTextBackslashesRetainTheirNativeValues() {
+        val bare = "quoted_legacy_payload"
+        val table = "test_schema.$bare"
+        try {
+            createDuckdbConnection().use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.execute("""CREATE TABLE ducklake_db.$table(s STRUCT("back\slash" VARCHAR,"q'uote" VARCHAR))""")
+                    statement.execute("CALL ducklake_db.set_option('data_inlining_row_limit',100," +
+                        "schema => 'test_schema',table_name => '$bare')")
+                }
+                connection.prepareStatement("""INSERT INTO ducklake_db.$table VALUES(struct_pack("back\slash":=?,"q'uote":=?))""").use { insert ->
+                    insert.setString(1, "C:\\docs")
+                    insert.setString(2, "NULL")
+                    insert.executeUpdate()
+                }
+            }
+            assertRowsStayedInlined(bare, 1L)
+            assertThat(computeActual("""SELECT s."back\slash",s."q'uote" FROM $table""").materializedRows.single().fields)
+                .containsExactly("C:\\docs", "NULL")
+        }
+        finally {
+            tryDropTable(table)
+        }
+    }
+
     private fun rows(sql: String): List<MaterializedRow> = computeActual(sql).materializedRows
 
     private fun currentSnapshot(): Long {

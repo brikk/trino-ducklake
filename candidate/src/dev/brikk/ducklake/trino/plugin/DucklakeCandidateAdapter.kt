@@ -197,7 +197,7 @@ internal class PagedDucklakeCatalog(
                     if (nested.size != 2) refuse("MAP must have two children")
                     "map<${type(nested[0])},${type(nested[1])}>"
                 }
-                "struct" -> "struct<${nested.joinToString(",") { "${it.columnName}:${type(it)}" }}>"
+                "struct" -> "struct<${nested.joinToString(",") { "${catalogTypeFieldName(it.columnName)}:${type(it)}" }}>"
                 else -> {
                     if (nested.isNotEmpty()) refuse("scalar column has children")
                     row.columnType

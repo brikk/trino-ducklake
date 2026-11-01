@@ -53,6 +53,8 @@ sealed interface InlinedTextFieldMapping {
         val eraNames: List<String?>,
         val children: List<InlinedTextFieldMapping?>,
         val defaults: List<Any?>,
+        /** Complete physical source STRUCT order, including fields dropped from the target. */
+        val sourceNames: List<String>? = null,
     ) : InlinedTextFieldMapping {
         /** Lowercased era name → current field index. */
         val indexByEraName: Map<String, Int> =
@@ -82,12 +84,13 @@ object InlinedNestedFieldMapper {
     ): Map<Long, InlinedTextFieldMapping> {
         val currentByParent: Map<Long?, List<DucklakeColumn>> = currentTree.groupBy { it.parentColumn }
         val eraById: Map<Long, DucklakeColumn> = eraTree.associateBy { it.columnId }
+        val eraByParent = eraTree.groupBy { it.parentColumn }
         val result = LinkedHashMap<Long, InlinedTextFieldMapping>()
         for ((columnId, type) in columns) {
             if (!containsRow(type)) {
                 continue
             }
-            mapNode(columnId, type, currentByParent, eraById)?.let { result[columnId] = it }
+            mapNode(columnId, type, currentByParent, eraById, eraByParent)?.let { result[columnId] = it }
         }
         return result
     }
@@ -106,6 +109,7 @@ object InlinedNestedFieldMapper {
         type: Type,
         currentByParent: Map<Long?, List<DucklakeColumn>>,
         eraById: Map<Long, DucklakeColumn>,
+        eraByParent: Map<Long?, List<DucklakeColumn>>,
     ): InlinedTextFieldMapping? {
         return when (type) {
             is RowType -> {
@@ -132,13 +136,15 @@ object InlinedNestedFieldMapper {
                     }
                 val childMappings =
                     children.mapIndexed { i, child ->
-                        mapNode(child.columnId, type.fields[i].type, currentByParent, eraById)
+                        mapNode(child.columnId, type.fields[i].type, currentByParent, eraById, eraByParent)
                     }
-                InlinedTextFieldMapping.Struct(eraNames, childMappings, defaults)
+                val sourceNames = eraByParent[columnId]?.sortedWith(compareBy<DucklakeColumn> { it.columnOrder }.thenBy { it.columnId })
+                    ?.map { it.columnName }
+                InlinedTextFieldMapping.Struct(eraNames, childMappings, defaults, sourceNames)
             }
             is ArrayType -> {
                 val element = currentByParent[columnId]?.singleOrNull() ?: return null
-                val child = mapNode(element.columnId, type.elementType, currentByParent, eraById) ?: return null
+                val child = mapNode(element.columnId, type.elementType, currentByParent, eraById, eraByParent) ?: return null
                 InlinedTextFieldMapping.Container(child)
             }
             is MapType -> {
@@ -147,7 +153,7 @@ object InlinedNestedFieldMapper {
                     return null
                 }
                 // key, value in column_order.
-                val child = mapNode(children[1].columnId, type.valueType, currentByParent, eraById) ?: return null
+                val child = mapNode(children[1].columnId, type.valueType, currentByParent, eraById, eraByParent) ?: return null
                 InlinedTextFieldMapping.Container(child)
             }
             else -> null

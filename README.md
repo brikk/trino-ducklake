@@ -747,6 +747,11 @@ compile/test dependencies, and archive prefix (`483-…` or `484-…`). Install 
 your server exactly; the connector enforces strict SPI version matching. CI builds and tests
 both targets. Add `-PtrinoVersion=484` to test commands to exercise that target locally too.
 
+The published catalog read-correctness candidate remains a separate, explicit
+`-Pr07CatalogCandidate` qualification lane; normal builds still use catalog `0.12.0`.
+See [the exact snapshot handoff](dev-docs/HANDOFF-CATALOG-72aae19.md) for pins, checks,
+and the remaining default-on/1.1 rollout boundaries.
+
 ### Local dev stack (Docker Compose)
 
 For interactive hacking against a real Trino + Postgres + MinIO + DuckLake stack with optional

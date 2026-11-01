@@ -18,6 +18,7 @@ top level. Superseded plans, completed trackers, and research evidence live in [
 - [TODO-READ-MODE.md](TODO-READ-MODE.md) — concise read-path backlog.
 - [R07-TRINO-CANDIDATE-QUALIFICATION.md](R07-TRINO-CANDIDATE-QUALIFICATION.md) — exact temporary
   catalog trial, native SPI/matched-worker SQL evidence and remaining catalog/deployment gates.
+- [HANDOFF-CATALOG-72aae19.md](HANDOFF-CATALOG-72aae19.md) — published N03/H15/N19 candidate pins and Trino adoption.
 - [TODO-WRITE-MODE.md](TODO-WRITE-MODE.md) — concise write-path backlog.
 - [TODO-jayson-special-list.md](TODO-jayson-special-list.md) — strategic/cross-cutting backlog.
 - [TODO-uhoh.md](TODO-uhoh.md) — upstream risks to recheck, not committed feature work.

@@ -68,6 +68,12 @@ object DucklakeInlinedValueConverter {
         if (trinoType is ArrayType) {
             return convertArray(jdbcValue, trinoType, mapping)
         }
+        if (trinoType is RowType && (jdbcValue is java.sql.Struct || jdbcValue is Map<*, *>)) {
+            return DucklakeNativeNestedValues.row(jdbcValue, trinoType, mapping as? InlinedTextFieldMapping.Struct)
+        }
+        if (trinoType is MapType && jdbcValue is Map<*, *>) {
+            return DucklakeNativeNestedValues.map(jdbcValue, trinoType, mapping as? InlinedTextFieldMapping.Container)
+        }
         if (trinoType is RowType || trinoType is MapType) {
             // Upstream serializes nested types into VARCHAR on non-native
             // catalog backends (PG/SQLite): structs in SQL form `{'k': v}`
@@ -138,6 +144,13 @@ object DucklakeInlinedValueConverter {
 
     private fun convertArray(jdbcValue: Any, arrayType: ArrayType, mapping: InlinedTextFieldMapping? = null): Block {
         val elementType = arrayType.elementType
+        if (jdbcValue is java.sql.Array || jdbcValue is Array<*> || jdbcValue is List<*>) {
+            val elements = extractArrayElements(jdbcValue)
+            val builder = elementType.createBlockBuilder(null, elements.size)
+            val child = (mapping as? InlinedTextFieldMapping.Container)?.child
+            elements.forEach { TypeUtils.writeNativeValue(elementType, builder, convertJdbcValue(it, elementType, child)) }
+            return builder.build()
+        }
         if (elementType is ArrayType || elementType is MapType || elementType is RowType) {
             // Nested element types only ever arrive as DuckDB text (non-native
             // backends store the whole list as VARCHAR) — parse recursively.
@@ -178,6 +191,7 @@ object DucklakeInlinedValueConverter {
             @Suppress("UNCHECKED_CAST")
             return jdbcValue as Array<Any?>
         }
+        if (jdbcValue is List<*>) return jdbcValue.toTypedArray()
         if (jdbcValue is String) {
             return parseDucklakeListText(jdbcValue)
         }
@@ -566,7 +580,7 @@ internal class NestedTextParser(private val text: String) {
         if (peek() != '}') {
             while (true) {
                 skipWs()
-                val key = if (peek() == '\'') parseQuoted() else readBareToken(stopAtColon = true)
+                val key = if (peek() == '\'') parseQuoted(unescapeBackslash = true) else readBareToken(stopAtColon = true)
                 skipWs()
                 expect(':')
                 // Identity mapping (era-name → current index) when the row was
@@ -624,7 +638,7 @@ internal class NestedTextParser(private val text: String) {
                 skipWs()
                 keys +=
                         if (peek() == '\'') {
-                            DucklakeInlinedValueConverter.convertJdbcValue(parseQuoted(), type.keyType)
+                            DucklakeInlinedValueConverter.convertJdbcValue(parseQuotedText(type.keyType), type.keyType)
                         } else {
                             DucklakeInlinedValueConverter.convertJdbcValue(
                                     readBareToken(stopAtEquals = true), type.keyType)
@@ -674,7 +688,7 @@ internal class NestedTextParser(private val text: String) {
     private fun parseScalar(type: Type): Any? {
         skipWs()
         if (peek() == '\'') {
-            return DucklakeInlinedValueConverter.convertJdbcValue(parseQuoted(), type)
+            return DucklakeInlinedValueConverter.convertJdbcValue(parseQuotedText(type), type)
         }
         val token = readBareToken()
         // Same NULL-vs-blob-spelling-NULL resolution as the flat-list parser.
@@ -693,7 +707,7 @@ internal class NestedTextParser(private val text: String) {
             val c = text[pos]
             when {
                 c == '\'' -> {
-                    parseQuoted()
+                    parseQuoted(unescapeBackslash = true)
                     continue
                 }
                 c == '{' || c == '[' -> depth++
@@ -707,25 +721,37 @@ internal class NestedTextParser(private val text: String) {
         }
     }
 
-    /** Single-quoted literal; `''` unescapes to `'`; backslash is literal content (blob text). */
-    private fun parseQuoted(): String {
+    private fun parseQuotedText(type: Type): String =
+        parseQuoted(unescapeBackslash = type is VarcharType || DucklakeJsonSupport.isJson(type))
+
+    /** Names/text accept DuckDB escaped quote/backslash pairs; blob hex escapes remain literal. */
+    private fun parseQuoted(unescapeBackslash: Boolean = false): String {
         expect('\'')
         val sb = StringBuilder()
         while (pos < text.length) {
             val c = text[pos]
-            if (c == '\'') {
+            if (isQuotedBackslashEscape(c, unescapeBackslash)) {
+                sb.append(text[pos + 1])
+                pos += 2
+            } else if (c == '\'') {
                 if (pos + 1 < text.length && text[pos + 1] == '\'') {
                     sb.append('\'')
                     pos += 2
-                    continue
+                } else {
+                    pos++
+                    return sb.toString()
                 }
+            } else {
+                sb.append(c)
                 pos++
-                return sb.toString()
             }
-            sb.append(c)
-            pos++
         }
         throw IllegalArgumentException("Unterminated quoted literal in inlined nested text: $text")
+    }
+
+    private fun isQuotedBackslashEscape(c: Char, enabled: Boolean): Boolean {
+        if (!enabled || c != '\\' || pos + 1 >= text.length) return false
+        return text[pos + 1] == '\\' || text[pos + 1] == '\''
     }
 
     /** Bare token: up to a top-level delimiter (`,`, `}`, `]`, optionally `:`/`=`). */

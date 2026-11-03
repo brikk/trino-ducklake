@@ -16,6 +16,7 @@ connector.name=ducklake
 
 # PostgreSQL catalog metadata
 ducklake.catalog.database-url=jdbc:postgresql://postgresql:5432/ducklake
+ducklake.catalog.format-version=1.0
 ducklake.catalog.database-user=ducklake
 ducklake.catalog.database-password=<password>
 

@@ -75,7 +75,6 @@ class TestTrinoCorpusReplay {
                 "JSON degraded-type rendering differs between engines (F8 territory)",
             "types/floats.test" to
                 "float golden text relies on DuckDB inf/nan casts + implicit varchar comparisons (dialect)",
-            "virtualcolumns/ducklake_snapshot_id.test" to VIRTUAL_COLUMN_ALIAS,
         )
 
     @BeforeAll
@@ -111,20 +110,7 @@ class TestTrinoCorpusReplay {
         // a connection pool, so hundreds of per-file catalogs in one runner
         // exhaust PostgreSQL's max_connections. Chunking bounds the blast
         // radius and keeps memory flat on full-corpus runs.
-        val results = mutableListOf<FileResult>()
-        for (chunk in files.chunked(CHUNK_SIZE)) {
-            TrinoReplayEngine().use { engine ->
-                val runner =
-                    CorpusRunner(
-                        corpusRoot,
-                        skipList,
-                        engine = engine,
-                        metadataRewriter = engine.metadataRewriter,
-                        setupFormat = ReplaySetupFormat.DUCKLAKE_1_0,
-                    )
-                results += runner.run(chunk).files
-            }
-        }
+        val results = replay(files)
         val report = CorpusReport(results)
         println(report.summary(maxFailures = 40))
         val reportDirectory = Files.createDirectories(Path.of("build", "reports", "corpus-replay"))
@@ -140,15 +126,21 @@ class TestTrinoCorpusReplay {
         report.requireMirrorPasses(1)
     }
 
+    private fun replay(files: List<Path>): List<FileResult> =
+        files.chunked(CHUNK_SIZE).flatMap { chunk ->
+            TrinoReplayEngine().use { engine ->
+                CorpusRunner(corpusRoot, skipList, engine = engine, metadataRewriter = engine.metadataRewriter,
+                    setupFormat = ReplaySetupFormat.DUCKLAKE_1_0,
+                    mirrorFormatScope = setOf(ReplaySetupFormat.DUCKLAKE_1_0),
+                    executionFormatScope = setOf(ReplaySetupFormat.DUCKLAKE_1_0),
+                    oracleSqlBinder = engine.oracleSqlBinder).run(chunk).files
+            }
+        }
+
     companion object {
         private const val CHUNK_SIZE = 30
         private const val ENCRYPTED_LAKE =
             "encrypted lake: parquet encryption keys not threaded to the Trino reader on the " +
                 "mirror axis (footer unreadable)"
-        private const val VIRTUAL_COLUMN_ALIAS =
-            "DuckLake exposes virtual columns unprefixed (snapshot_id/rowid); the connector exposes " +
-                "them \$-prefixed (\$snapshot_id), so the verbatim replay can't resolve the bare name. " +
-                "DuckDB virtual-column name-aliases are deferred to v2 (DESIGN-virtual-columns.md \u00a7 3.1, " +
-                "TODO-READ-MODE.md)."
     }
 }

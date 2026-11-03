@@ -6,6 +6,8 @@ branch names, paths and measured test counts retain their original scope/date.
 
 ## Recent integration and qualification
 
+- [Catalog 0.14.0 / independent 1.0 acceptance](CATALOG-0.14.0-ADOPTION.md): actual
+  CI starter selection, stored-format locks, structural SQL binding and row snapshots.
 - [Catalog 0.13.2 follow-up](CATALOG-0.13.2-ADOPTION.md): byte-identical release pins
   and upstream qualification of the already selected Quack driver.
 - [Catalog 0.13.1 adoption](CATALOG-0.13.1-ADOPTION.md): released artifacts, native
@@ -20,7 +22,8 @@ branch names, paths and measured test counts retain their original scope/date.
   CDC trials. Local-bundle commands are superseded, not instructions for current pins.
 - [October Trino verification](TRINO-VERIFICATION-2026-10.md): target/tooling implementation
   evidence. Current API/build contract: [Trino compatibility](../TRINO-COMPATIBILITY.md).
-- Release notes: [483-0.3.0](RELEASE-483-0.3.0.md), [483-0.4.0](RELEASE-483-0.4.0.md).
+- Release notes: [0.5.0 — 483 and 484](RELEASE-0.5.0.md),
+  [483-0.3.0](RELEASE-483-0.3.0.md), [483-0.4.0](RELEASE-483-0.4.0.md).
 
 ## Superseded current-document snapshots
 

@@ -14,6 +14,7 @@
 package dev.brikk.ducklake.trino.plugin
 
 import dev.brikk.ducklake.catalog.DucklakeCatalogConfig
+import dev.brikk.ducklake.catalog.DucklakeCatalogFormat
 import dev.brikk.ducklake.catalog.DucklakeCleanupLimits.MAX_BATCH_SIZE
 import io.airlift.configuration.Config
 import io.airlift.configuration.ConfigDescription
@@ -24,6 +25,7 @@ import jakarta.validation.constraints.AssertTrue
 import jakarta.validation.constraints.Max
 import jakarta.validation.constraints.Min
 import jakarta.validation.constraints.NotNull
+import jakarta.validation.constraints.Pattern
 import java.time.Instant
 import java.time.format.DateTimeParseException
 import java.util.Optional
@@ -47,6 +49,7 @@ class DucklakeConfig {
     private var cleanupBatchSize: Int = 256
     private var cleanupMaxReferenceFiles: Long = 1_000_000L
     private var enableFinal11Reads: Boolean = false
+    private var catalogFormatVersion: String? = null
     private var readMaxFiles = 10_000
     private var readMaxRows = 1_000_000L
     private var readMaxCdcEvents = 100_000L
@@ -78,11 +81,30 @@ class DucklakeConfig {
     @Config("ducklake.read.max-cdc-events")
     fun setReadMaxCdcEvents(value: Long): DucklakeConfig { readMaxCdcEvents = value; return this }
 
-    fun isEnableFinal11Reads(): Boolean = enableFinal11Reads
+    @Pattern(regexp = "1\\.0|1\\.1", message = "must be 1.0 or 1.1")
+    fun getCatalogFormatVersion(): String = catalogFormatVersion ?: if (enableFinal11Reads) "1.1" else "1.0"
+
+    @Config("ducklake.catalog.format-version")
+    @ConfigDescription("Required DuckLake metadata format: 1.0 (default) or separately qualified read-only 1.1. " +
+        "A mismatch is refused; this setting never creates or migrates metadata.")
+    fun setCatalogFormatVersion(value: String): DucklakeConfig {
+        catalogFormatVersion = value
+        return this
+    }
+
+    @AssertTrue(message = "ducklake.catalog.format-version=1.0 conflicts with ducklake.experimental.enable-final-1.1-reads=true")
+    fun isCatalogFormatSelectionConsistent(): Boolean = catalogFormatVersion != "1.0" || !enableFinal11Reads
+
+    fun isEnableFinal11Reads(): Boolean = getCatalogFormatVersion() == "1.1"
+
+    internal fun validateCatalogFormatSelection() {
+        require(getCatalogFormatVersion() in setOf("1.0", "1.1")) { "ducklake.catalog.format-version must be 1.0 or 1.1" }
+        require(isCatalogFormatSelectionConsistent()) { "Conflicting DuckLake format selection: explicit 1.0 with the legacy 1.1 flag" }
+    }
 
     @Config("ducklake.experimental.enable-final-1.1-reads")
-    @ConfigDescription("Experimental read-only final-1.1 consumer; requires the separately qualified catalog candidate. " +
-            "Disables connector writes and maintenance.")
+    @ConfigDescription("Legacy developer alias selecting read-only format 1.1; prefer ducklake.catalog.format-version. " +
+            "Requires the separately qualified 1.1 build and disables connector writes and maintenance.")
     fun setEnableFinal11Reads(value: Boolean): DucklakeConfig {
         enableFinal11Reads = value
         return this
@@ -290,6 +312,7 @@ class DucklakeConfig {
     }
 
     fun toCatalogConfig(): DucklakeCatalogConfig {
+        validateCatalogFormatSelection()
         val catalogConfig = DucklakeCatalogConfig()
         catalogConfig.catalogDatabaseUrl = catalogDatabaseUrl
         catalogConfig.catalogDatabaseUser = catalogDatabaseUser
@@ -297,7 +320,12 @@ class DucklakeConfig {
         catalogConfig.dataPath = dataPath
         catalogConfig.maxCatalogConnections = maxCatalogConnections
         // The released 0.13 floor supplies the API; connector planning admission remains separate.
-        catalogConfig.enableFinal11Reads = enableFinal11Reads
+        catalogConfig.enableFinal11Reads = isEnableFinal11Reads()
+        catalogConfig.requiredCatalogFormat = when (getCatalogFormatVersion()) {
+            "1.0" -> DucklakeCatalogFormat.V1_0
+            "1.1" -> DucklakeCatalogFormat.V1_1
+            else -> error("Catalog format selection was not validated")
+        }
         return catalogConfig
     }
 }

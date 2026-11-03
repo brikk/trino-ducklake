@@ -71,9 +71,10 @@ jobs:
         run: ./gradlew detekt -PtrinoVersion=${{ matrix.trino }} --stacktrace
 
       - name: tests
-        # `test` includes dev.brikk.ducklake.trino.plugin.TestTrinoCorpusReplay. We do NOT
-        # pass -Dducklake.corpus.dirs here, so it runs only its default starter set
-        # (general,catalog,time_travel,view) to keep PR runtime bounded. The FULL corpus
+        # `test` includes dev.brikk.ducklake.trino.plugin.TestTrinoCorpusReplay. We
+        # run an explicit starter set (general,catalog,time_travel,view) matching local
+        # release acceptance. TestTrinoCorpusReplay scopes execution/mirroring to 1.0;
+        # explicit 1.1 fixtures halt visibly rather than interfering with this gate. The FULL corpus
         # (-Dducklake.corpus.dirs=all) runs in corpus-nightly.yml.
         # (Beware: the leading `d` matters. `-Dducklake.corpus.dirs=all` is correct;
         #  `-Ducklake.corpus.dirs=all` is parsed by the JVM as `-D ucklake...` and
@@ -84,7 +85,8 @@ jobs:
         # (INSTALL ducklake/postgres). On a fully air-gapped runner these self-skip via
         # JUnit assumeTrue; ubuntu-latest has outbound network, so they execute. No secrets
         # or external services are required.
-        run: ./gradlew test -PtrinoVersion=${{ matrix.trino }} -PtestJavaVersion=26 --stacktrace
+        # Match local acceptance without an extra compiler daemon beside the 3 GB test JVM.
+        run: ./gradlew test -PtrinoVersion=${{ matrix.trino }} -PtestJavaVersion=26 -Pkotlin.compiler.execution.strategy=in-process -Dducklake.corpus.dirs=general,catalog,time_travel,view --stacktrace
 
       - name: Build plugin distribution archives
         run: ./gradlew pluginDist -PtrinoVersion=${{ matrix.trino }} --stacktrace

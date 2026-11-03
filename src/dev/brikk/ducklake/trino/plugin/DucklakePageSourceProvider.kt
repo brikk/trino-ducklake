@@ -351,7 +351,7 @@ class DucklakePageSourceProvider @Inject constructor(
         // are NULL; $snapshot_id is each row's own begin_snapshot (inlined rows are versioned
         // catalog rows, each with its own begin_snapshot — so this is genuinely per-row).
         val realColumns: List<DucklakeColumnHandle> = ducklakeColumns.filterNot { it.isVirtual() }
-        val needSnapshot: Boolean = ducklakeColumns.any { it.virtualKind() == VirtualKind.SNAPSHOT_ID }
+        val needSnapshot: Boolean = ducklakeColumns.any { it.virtualKind() in INLINE_SNAPSHOT_KINDS }
         val inlineCount = if (final11Reads) catalog.countInlinedRows(
             inlinedSplit.tableId, inlinedSplit.schemaVersion, inlinedSplit.snapshotId).also { readWorkLimits.rows(it) } else null
 
@@ -405,7 +405,7 @@ class DucklakePageSourceProvider @Inject constructor(
             ducklakeColumns.map { col ->
                 when (col.virtualKind()) {
                     null -> convertedRealRows[r][realIdx++]
-                    VirtualKind.SNAPSHOT_ID -> beginSnapshots!![r]
+                    VirtualKind.SNAPSHOT_ID, VirtualKind.ROW_SNAPSHOT_ID -> beginSnapshots!![r]
                     else -> null  // PATH, FILE_ROW_NUMBER, ROW_ID are NULL on inlined data
                 }
             }
@@ -434,7 +434,7 @@ class DucklakePageSourceProvider @Inject constructor(
             var channel = 0
             columns.map { column -> when (column.virtualKind()) {
                 null -> converted[index][channel++]
-                VirtualKind.SNAPSHOT_ID -> row.beginSnapshot
+                VirtualKind.SNAPSHOT_ID, VirtualKind.ROW_SNAPSHOT_ID -> row.beginSnapshot
                 else -> null
             } }
         }
@@ -1299,7 +1299,8 @@ class DucklakePageSourceProvider @Inject constructor(
             val resolvedColumnIO = (columns + predicateColumns).distinct()
                     .filterNot { positionalColumnKind(it) != null }
                     .associateWith { column ->
-                        resolveColumnIO(
+                        if (column.virtualKind() == VirtualKind.ROW_SNAPSHOT_ID) DucklakeNativeSnapshotColumn.resolve(messageColumnIO)
+                        else resolveColumnIO(
                                 column,
                                 hasNameMap,
                                 messageColumnIO,
@@ -1379,6 +1380,19 @@ class DucklakePageSourceProvider @Inject constructor(
             var parquetColumnOrdinal = 0
 
             for (column in fileColumns) {
+                if (column.virtualKind() == VirtualKind.ROW_SNAPSHOT_ID) {
+                    val columnIO = resolvedColumnIO[column]
+                    if (columnIO == null) transforms.constantValue(DucklakeNativeSnapshotColumn.fallback(split.beginSnapshot))
+                    else {
+                        val field = DucklakeParquetTypeUtils.constructField(BIGINT, columnIO).orElseThrow {
+                            TrinoException(NOT_SUPPORTED, "Native snapshot_id field cannot be read as BIGINT")
+                        }
+                        parquetColumns.add(Column(columnIO.name, field))
+                        transforms.transform(parquetColumnOrdinal, DucklakeNativeSnapshotColumn::validate)
+                        parquetColumnOrdinal++
+                    }
+                    continue
+                }
                 defaults?.validate(column.columnId, column.columnType)
                 val columnName: String = column.columnName
                 val columnIO: ColumnIO? = resolvedColumnIO[column]
@@ -1492,7 +1506,7 @@ class DucklakePageSourceProvider @Inject constructor(
     }
 
     private fun pageSourceFailure(path: String, failure: RuntimeException): RuntimeException =
-        if (final11Reads && failure is TrinoException) failure
+        if (failure is TrinoException) failure
         else RuntimeException("Failed to create Parquet page source for file: $path", failure)
 
     private fun rejectUnsupportedPhysicalField(name: String) {
@@ -1534,6 +1548,7 @@ class DucklakePageSourceProvider @Inject constructor(
 
     companion object {
         private val log: Logger = Logger.get(DucklakePageSourceProvider::class.java)
+        private val INLINE_SNAPSHOT_KINDS = setOf(VirtualKind.SNAPSHOT_ID, VirtualKind.ROW_SNAPSHOT_ID)
 
         // Cap on the schema-evolution name cache before a wholesale clear. Keyed by
         // (tableId, begin_snapshot); only populated for tables that have actually evolved

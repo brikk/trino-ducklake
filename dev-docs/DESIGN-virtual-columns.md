@@ -13,6 +13,7 @@ Public usage and NULL behavior are in [REFERENCE.md](../REFERENCE.md#hidden-colu
 | `$file_row_number` | `-103` | `BIGINT` |
 | `$row_id` | `-104` | `BIGINT`, logical identity |
 | `$file_size_bytes` | `-105` | `BIGINT` |
+| `$insert_snapshot_id` | `-106` | `BIGINT`, native per-row insertion snapshot |
 
 Real column IDs are nonnegative. Reuse the enum/factories and `virtualKind()` /
 `isVirtual()` instead of adding sentinel checks at call sites. The hidden flag, not
@@ -28,6 +29,17 @@ physical locator, not inferred nonoverlapping ranges of logical IDs.
 ## Page-source integration
 
 - File-constant virtuals use the constant/RLE injection layer.
+- `$insert_snapshot_id` streams the native reserved Parquet snapshot field ID through the
+  normal column reader and delete filters. Only a proven-absent reserved field uses
+  the file begin snapshot. A name coincidence is not a reserved-field identity;
+  duplicate IDs, incompatible physical types and NULL/negative values reject.
+- No plain `snapshot_id` name is reserved: users can still CREATE/ADD a real column
+  with that name. Replay binds native virtual references to `$insert_snapshot_id`
+  only after proving there is no real column. The existing `$snapshot_id` retains
+  its documented file-level meaning.
+- Rewrite writers preserve both original row IDs and per-row insertion snapshots
+  with their reserved field IDs. Partial output visibility bounds describe source
+  file visibility and must not be replaced with older row insertion snapshots.
 - Physical file-position and logical-ID injection happens in-pipeline before delete
   filtering. Position-sensitive scans must not lose rows before those offsets are
   established; preserve the reader's pruning restrictions.
@@ -37,7 +49,7 @@ physical locator, not inferred nonoverlapping ranges of logical IDs.
 - File-size/path metadata does not create a physical retention lease or certify a
   file still exists when a worker opens it.
 
-Do not expose DuckDB unprefixed aliases or add `$filename`/`$file_index` by accident:
+Do not expose DuckDB unprefixed aliases or `$filename`/`$file_index` by accident:
 they are not current public names. No serialized handle shape or sentinel meaning
 may change casually. Preserve split/handle wire and nested/source identity tests.
 

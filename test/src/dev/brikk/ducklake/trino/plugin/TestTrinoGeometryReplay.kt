@@ -52,7 +52,9 @@ class TestTrinoGeometryReplay {
                     }
                 }
                 val runner = CorpusRunner(directory, emptyMap(), engine = observer, metadataRewriter = engine.metadataRewriter,
-                    setupFormat = ReplaySetupFormat.DUCKLAKE_1_0)
+                    setupFormat = ReplaySetupFormat.DUCKLAKE_1_0,
+                    mirrorFormatScope = setOf(ReplaySetupFormat.DUCKLAKE_1_0),
+                    executionFormatScope = setOf(ReplaySetupFormat.DUCKLAKE_1_0))
                 val report = runner.run(listOf(fixture))
                 assertThat(report.failures).withFailMessage { report.summary() }.isEmpty()
                 assertThat(report.crashes).withFailMessage { report.summary() }.isEmpty()

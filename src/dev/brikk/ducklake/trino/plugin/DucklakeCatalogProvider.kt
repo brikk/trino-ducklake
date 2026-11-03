@@ -22,6 +22,7 @@ import java.util.Objects.requireNonNull
 class DucklakeCatalogProvider @Inject constructor(private val config: DucklakeConfig) : Provider<DucklakeCatalog> {
 
     override fun get(): DucklakeCatalog {
+        config.validateCatalogFormatSelection()
         requireNonNull(config.getCatalogDatabaseUrl(), "ducklake.catalog.database-url is null")
         return candidateReadAdapter(config) { JdbcDucklakeCatalog(config.toCatalogConfig()) }
     }

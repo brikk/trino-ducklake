@@ -10,7 +10,7 @@ backend for a Trino cluster or a lake shared with DuckDB.
 | --- | --- |
 | Trino | **483 or 484**, with a separate plugin archive for each version |
 | DuckLake catalog format | **1.0** read/write, subject to the limits below |
-| Catalog library | **0.13.2**; this library version is not the DuckLake format version |
+| Catalog library | **0.14.0**; this library version is not the DuckLake format version |
 | DuckDB interoperability | **DuckDB 2.0.0**, JDBC **2.0.0.1**; initialize DuckLake **1.0** explicitly |
 | Data and delete files | Parquet data; Parquet positional deletes and Puffin deletion vectors |
 
@@ -32,6 +32,9 @@ compatible DuckDB JDBC driver added to the plugin directory. SQLite, Turso and
 remote Quack catalogs are not part of the normal supported deployment described here.
 
 ## Install
+
+Read the [0.5.0 upgrade notes](dev-docs/archive/RELEASE-0.5.0.md) before updating a
+lake or JDBC driver. The 483 and 484 builds are separate, target-specific archives.
 
 Download the matching ZIP or tar.gz and its checksum from
 [GitHub Releases](https://github.com/brikk/trino-ducklake/releases). Each archive
@@ -94,6 +97,7 @@ Create `etc/catalog/ducklake.properties` on the Trino nodes:
 ```properties
 connector.name=ducklake
 ducklake.catalog.database-url=jdbc:postgresql://<host>:5432/ducklake
+ducklake.catalog.format-version=1.0
 ducklake.catalog.database-user=ducklake
 ducklake.catalog.database-password=<password>
 ducklake.data-path=s3://<bucket>/<prefix>/

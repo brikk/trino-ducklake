@@ -13,11 +13,35 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
+import dev.brikk.house.sql.ast.Alias
+import dev.brikk.house.sql.ast.Column
+import dev.brikk.house.sql.dialects.Dialects
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 
 class TestTrinoMapAccessRewriter {
     private val columns = mapOf("s" to "map(varchar, integer)", "r" to "row(i integer)")
+
+    @Test
+    fun nativeSnapshotNamesBindToRowMetadataOnlyWhenTheyAreNotStoredColumns() {
+        val sql = "SELECT snapshot_id FROM lake.main.t WHERE snapshot_id > 0"
+        val virtual = TrinoMapAccessRewriter.rewrite(sql) { mapOf("id" to "integer") }
+        assertThat(virtual).contains("\$insert_snapshot_id")
+        assertThat(Dialects.TRINO.parseOne(virtual).findAll(Alias::class).map { it.text("alias") }.toList()).contains("snapshot_id")
+        val stored = TrinoMapAccessRewriter.rewrite(sql) { mapOf("snapshot_id" to "varchar") }
+        assertThat(stored).isEqualTo(sql)
+    }
+
+    @Test
+    fun cteProjectionKeepsTheNativeOutputNameAfterBindingTheInput() {
+        val result = TrinoMapAccessRewriter.rewrite(
+            "WITH q AS (SELECT snapshot_id FROM lake.main.t) SELECT q.snapshot_id FROM q") { mapOf("id" to "integer") }
+        assertThat(result).contains("\$insert_snapshot_id")
+        val tree = Dialects.TRINO.parseOne(result)
+        assertThat(tree.findAll(Alias::class).map { it.text("alias") }.toList()).contains("snapshot_id")
+        assertThat(tree.findAll(Column::class).filterIsInstance<Column>().filter { it.table == "q" }.map { it.name }.toList())
+            .containsExactly("snapshot_id")
+    }
 
     @Test
     fun mapAccessUsesElementAtButRowAccessStaysADereference() {

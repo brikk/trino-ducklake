@@ -1,6 +1,6 @@
-# Maven Central release 0.13.2, source 640b38e665d9dba7cd51373640077ad2ff5daafd.
-# https://repo.maven.apache.org/maven2/dev/brikk/ducklake/
-01ffed5abb0b970b307dd4de1b7d7ab42320e33016447896204e5a36506a3041  ducklake-catalog-0.13.2.jar
-ca33bee56b33703ea7bbe7b76153bbaccc0275478fc992d48768eb912a1a056f  ducklake-catalog-0.13.2-test-fixtures.jar
-403970a1c3fa6b6cc0cff8325f2a427eed630ae5f4f03bcf6fe0af8cddb502c5  ducklake-test-corpus-replay-0.13.2.jar
-ee37d13d863437eaaf36fe4c34f8d66cfa1cb6d1349ef661ae4f50d2e91120be  slt-format-0.13.2.jar
+# Maven Central release 0.14.0, source fd31cf2d0332d269c3ffa605c835eccd45f24817.
+# Byte-identical to accepted 0.14.0-20261103.154002-5 (f9dde22).
+31a797e94a2a9a7a9e2796cc79b71c6256283376e9a86395e4ca2f37b29343cc  ducklake-catalog-0.14.0.jar
+ca33bee56b33703ea7bbe7b76153bbaccc0275478fc992d48768eb912a1a056f  ducklake-catalog-0.14.0-test-fixtures.jar
+3b3ddd334e9eb9cd971062cc2b19b1b2d7ee535538c46f005b5db01277300c11  ducklake-test-corpus-replay-0.14.0.jar
+ee37d13d863437eaaf36fe4c34f8d66cfa1cb6d1349ef661ae4f50d2e91120be  slt-format-0.14.0.jar

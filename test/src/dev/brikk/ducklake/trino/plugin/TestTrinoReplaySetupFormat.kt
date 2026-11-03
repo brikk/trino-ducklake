@@ -35,7 +35,9 @@ class TestTrinoReplaySetupFormat {
                 }
             }
             val report = CorpusRunner(root, engine = observer, metadataRewriter = engine.metadataRewriter,
-                setupFormat = ReplaySetupFormat.DUCKLAKE_1_0).run(listOf(fixture))
+                setupFormat = ReplaySetupFormat.DUCKLAKE_1_0,
+                mirrorFormatScope = setOf(ReplaySetupFormat.DUCKLAKE_1_0),
+                executionFormatScope = setOf(ReplaySetupFormat.DUCKLAKE_1_0)).run(listOf(fixture))
             assertThat(report.failures).withFailMessage { report.summary() }.isEmpty()
             assertThat(report.crashes).withFailMessage { report.summary() }.isEmpty()
             assertThat(storedFormats).isNotEmpty().containsOnly("1.0")

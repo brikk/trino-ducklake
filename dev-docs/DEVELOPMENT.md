@@ -13,7 +13,7 @@ This is a single-project Gradle build at the repository root. Use the checked-in
 ```
 
 The catalog and replay framework are published dependencies, not source projects
-built here. The normal catalog/replay/SLT version is **0.13.2**. The SQL transpiler,
+built here. The normal catalog/replay/SLT version is **0.14.0**. The SQL transpiler,
 metadata and native verifier are **brikk-sql 0.21.0**, test-only. Compiler/BOM Kotlin
 is **2.4.10**. Production packages do not bundle DuckDB JDBC, replay, SLT, SQL tooling
 or the Trino SPI.
@@ -45,6 +45,11 @@ inspect XML failures/errors/skips, not just a green command exit.
   The corpus is pinned to `417a9117f590e8141742ac0579d02f6a90162e37`, matching
   signed DuckLake `417a9117f5`. Replay uses `ReplaySetupFormat.DUCKLAKE_1_0` to
   set the native default; corpus SQL/goldens and explicit format options are unchanged.
+  The normal suite selects both mirror and execution format scope 1.0: explicit
+  1.1 fixtures halt visibly, retaining prior outcomes and never counting as passed
+  1.0. Native metadata SQL is structurally bound to known rewritten PostgreSQL
+  metadata namespaces only; real lake schemas/literals/explicit metadata schemas
+  are unchanged. Full JUnit runs use CI's actual starter set, not general-only.
   `verifyCatalogRelease` checks all four catalog/replay/SLT/fixture JAR hashes
   against `gradle/catalog-release.sha256` before tests in both build modes.
 - `-Dducklake.test.catalog-backend=DUCKDB_LOCAL` selects a local DuckDB metadata file;
@@ -88,6 +93,10 @@ it is not a fresh-clone production deployment recipe.
    JARs, and SHA-256 sidecars. Keep old JARs out of plugin directories.
 4. Commit verified work. Create/push a `v<version>` tag only when explicitly authorized.
    The release workflow builds both targets and attaches archives/checksums to that tag.
+
+From 0.5.0, tags use the shared suffix: `v0.5.0` has `483-0.5.0` and `484-0.5.0`
+archive versions. Older tags used the default target prefix (`v483-0.4.0`).
+Check the shared release suffix and both target prefixes deliberately.
 
 Tag/version agreement needs a manual check; do not assume the workflow validates it.
 Do not push a branch or publish artifacts merely because local verification passed.

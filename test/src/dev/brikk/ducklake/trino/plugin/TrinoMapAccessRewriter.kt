@@ -20,17 +20,24 @@ import dev.brikk.house.sql.ast.DataType
 import dev.brikk.house.sql.ast.Dot
 import dev.brikk.house.sql.ast.Expression
 import dev.brikk.house.sql.ast.Identifier
+import dev.brikk.house.sql.ast.Alias
+import dev.brikk.house.sql.ast.Select
+import dev.brikk.house.sql.ast.Table
+import dev.brikk.house.sql.ast.toIdentifier
 import dev.brikk.house.sql.ast.Literal
 import dev.brikk.house.sql.ast.parts
 import dev.brikk.house.sql.dialects.Dialects
 import dev.brikk.house.sql.optimizer.MappingSchema
 import dev.brikk.house.sql.optimizer.annotateTypes
 import dev.brikk.house.sql.optimizer.qualify
+import dev.brikk.house.sql.optimizer.traverseScope
+import java.util.Locale
 
 /** Test-only DuckDB string-key MAP-dot adaptation after ordinary DuckDB -> Trino transpilation. */
 object TrinoMapAccessRewriter {
     private const val ORIGINAL_NAME = "trino_corpus_original_name"
     private const val MAP_VALUE_TYPE = "trino_corpus_map_value_type"
+    private const val NATIVE_SNAPSHOT_VIRTUAL = "trino_corpus_native_snapshot_virtual"
 
     fun rewrite(
             sql: String,
@@ -40,12 +47,12 @@ object TrinoMapAccessRewriter {
         val dialect = Dialects.TRINO
         val tree = dialect.parseOne(sql)
         val hasAccess = tree.findAll(Dot::class, Column::class).any {
-            it is Dot || (it is Column && it.parts.size > 1)
+            it is Dot || (it is Column && (it.parts.size > 1 || it.name.lowercase(Locale.ROOT) == "snapshot_id"))
         }
         if (!hasAccess) return sql
         tree.findAll(Identifier::class).forEach { it.meta[ORIGINAL_NAME] = it.name }
         val schema = bindSchema(tree, defaultCatalog, defaultSchema, columns) ?: return sql
-        var changed = false
+        var changed = bindNativeSnapshots(tree)
         // Each successful pass removes at least one MAP Dot. The extra pass establishes that
         // dependent accesses in nested expressions and CTEs have all been processed.
         val maxPasses = tree.findAll(Dot::class).count() + 1
@@ -80,12 +87,35 @@ object TrinoMapAccessRewriter {
                         val orderedTypes = types.toList()
                         val previous = schemasByName.putIfAbsent(table.parts.map { it.name }, orderedTypes)
                         if (previous != null && previous != orderedTypes) conflictingSchemas = true
-                        schema.addTable(table, types)
+                        val nativeSnapshot = types.keys.none { it.lowercase(Locale.ROOT) == "snapshot_id" }
+                        table.meta[NATIVE_SNAPSHOT_VIRTUAL] = nativeSnapshot
+                        val typedColumns = if (nativeSnapshot) types + mapOf(
+                            "snapshot_id" to "bigint", VirtualKind.ROW_SNAPSHOT_ID.columnName to "bigint") else types
+                        schema.addTable(table, typedColumns)
                     }
                 })
         // MappingSchema is name-keyed, not snapshot-keyed. Do not guess when one query binds
         // different historical schemas of the same table; execute its original SQL normally.
         return schema.takeUnless { conflictingSchemas }
+    }
+
+    private fun bindNativeSnapshots(tree: Expression): Boolean {
+        var changed = false
+        for (scope in traverseScope(tree)) {
+            for (column in scope.columns.filter { it.name.lowercase(Locale.ROOT) == "snapshot_id" }) {
+                val source = scope.selectedSources[column.table]?.second as? Table
+                if (source?.meta?.get(NATIVE_SNAPSHOT_VIRTUAL) == true) {
+                    val replacement = column.copy() as Column
+                    replacement.set("this", toIdentifier(VirtualKind.ROW_SNAPSHOT_ID.columnName))
+                    val select = column.parent as? Select
+                    if (select != null && select.expressionsArg.any { it === column }) {
+                        column.replace(Alias(mapOf("this" to replacement, "alias" to (column.thisArg as Identifier).copy())))
+                    } else column.replace(replacement)
+                    changed = true
+                }
+            }
+        }
+        return changed
     }
 
     private fun isStringMapAccess(node: Expression): Boolean {

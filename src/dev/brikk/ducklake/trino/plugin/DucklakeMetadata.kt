@@ -169,9 +169,9 @@ class DucklakeMetadata(
             : this(catalog, typeConverter, snapshotResolver, null, null, null, DucklakeTemporalPartitionEncoding.CALENDAR)
 
     override fun listSchemaNames(session: ConnectorSession): List<String>
-    {
+    = catalog.queryReadSession(session.queryId) {
         val snapshotId = snapshotResolver.resolveSnapshotId(session)
-        return catalog.listSchemas(snapshotId).stream()
+        catalog.listSchemas(snapshotId).stream()
                 .map(DucklakeSchema::schemaName)
                 .collect(toImmutableList())
     }
@@ -181,7 +181,7 @@ class DucklakeMetadata(
             tableName: SchemaTableName,
             startVersion: Optional<ConnectorTableVersion>,
             endVersion: Optional<ConnectorTableVersion>): ConnectorTableHandle?
-    {
+    = catalog.queryReadSession(session.queryId) {
         if (startVersion.isPresent && endVersion.isPresent) {
             throw TrinoException(NOT_SUPPORTED, "DuckLake does not support version ranges; provide only one table version bound")
         }
@@ -206,7 +206,7 @@ class DucklakeMetadata(
         val snapshotId = snapshotResolver.resolveSnapshotId(session, querySnapshotId, querySnapshotTimestamp)
 
         val table: DucklakeTable = catalog.getTable(baseTableName.schemaName, baseTableName.tableName, snapshotId)
-            ?: return null
+            ?: return@queryReadSession null
 
         // The catalog library refuses writes into encrypted lakes because it cannot produce the
         // required per-file encryption keys. Refuse normal table reads just as early: otherwise
@@ -226,7 +226,7 @@ class DucklakeMetadata(
 
         if (metadataTable != null) {
             val parsed = metadataTable
-            return DucklakeMetadataTableHandle(
+            return@queryReadSession DucklakeMetadataTableHandle(
                     tableName.schemaName,
                     tableName.tableName,
                     parsed.baseTableName,
@@ -235,7 +235,7 @@ class DucklakeMetadata(
                     parsed.metadataTableType)
         }
 
-        return DucklakeTableHandle(
+        DucklakeTableHandle(
                 tableName.schemaName,
                 tableName.tableName,
                 table.tableId,
@@ -317,13 +317,13 @@ class DucklakeMetadata(
     }
 
     override fun listTables(session: ConnectorSession, schemaName: Optional<String>): List<SchemaTableName>
-    {
+    = catalog.queryReadSession(session.queryId) {
         val snapshotId = snapshotResolver.resolveSnapshotId(session)
         val relations: ImmutableList.Builder<SchemaTableName> = ImmutableList.builder()
 
         if (schemaName.isPresent) {
             val schema: DucklakeSchema = catalog.getSchema(schemaName.get(), snapshotId)
-                ?: return ImmutableList.of()
+                ?: return@queryReadSession ImmutableList.of()
             for (table in catalog.listTables(schema.schemaId, snapshotId)) {
                 relations.add(SchemaTableName(schemaName.get(), table.tableName))
             }
@@ -332,7 +332,7 @@ class DucklakeMetadata(
                     relations.add(SchemaTableName(schemaName.get(), view.viewName))
                 }
             }
-            return relations.build()
+            return@queryReadSession relations.build()
         }
 
         for (schema in catalog.listSchemas(snapshotId)) {
@@ -345,7 +345,7 @@ class DucklakeMetadata(
                 }
             }
         }
-        return relations.build()
+        relations.build()
     }
 
     override fun getColumnHandles(session: ConnectorSession, tableHandle: ConnectorTableHandle): Map<String, ColumnHandle>

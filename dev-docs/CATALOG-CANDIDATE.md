@@ -2,7 +2,7 @@
 
 ## Current selection
 
-Both builds consume released **0.13.2** from Maven Central, with DuckDB JDBC
+Both builds consume released **0.14.0** from Maven Central, with DuckDB JDBC
 **2.0.0.1** and test-only Java Quack JDBC **0.13.0**. This adopts the released
 library, not default-on final-1.1 planning. The historical timestamp snapshot is
 retired. All three modules remain in lockstep:
@@ -32,6 +32,14 @@ Building this lane does **not** automatically enable final-1.1 access. The separ
 catalog setting `ducklake.experimental.enable-final-1.1-reads=true` is default-off,
 read-only, and disables connector writes and maintenance procedures. It cannot be
 enabled using the normal build: its planning adapter still rejects admission.
+
+Use `ducklake.catalog.format-version=1.0` for normal validation and select `1.1`
+only for the separately qualified read-only build. The old developer flag above is
+a compatibility alias for selecting 1.1; it is not required for 1.0. A contradictory
+explicit 1.0 plus the old true flag is rejected. The required stored-format lock is
+enforced by the catalog on reads and writes, not merely inferred from the flag.
+Normal corpus tests scope execution and mirroring to 1.0, so native 1.1 feature
+SQL cannot interfere with the 1.0 release. 1.1 qualification remains a separate task.
 
 ## Implemented scope
 

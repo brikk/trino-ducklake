@@ -12,9 +12,12 @@ package dev.brikk.ducklake.trino.plugin
 
 import dev.brikk.ducklake.catalog.DucklakeCatalog
 import dev.brikk.ducklake.catalog.JdbcDucklakeCatalog
+import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
+import io.trino.spi.TrinoException
 
 /** Normal 1.0 lane; upgrading the library does not qualify final-1.1 planning. */
 internal fun candidateReadAdapter(config: DucklakeConfig, openCatalog: () -> JdbcDucklakeCatalog): DucklakeCatalog {
-    check(!config.isEnableFinal11Reads()) { "Final-1.1 planning requires the explicitly selected catalog candidate build" }
+    if (config.getCatalogFormatVersion() != "1.0") throw TrinoException(NOT_SUPPORTED,
+        "This connector build accepts DuckLake format 1.0; format 1.1 requires the separately qualified read-only build")
     return openCatalog()
 }

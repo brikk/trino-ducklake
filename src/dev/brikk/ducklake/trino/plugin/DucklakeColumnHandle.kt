@@ -89,7 +89,7 @@ data class DucklakeColumnHandle @JsonCreator constructor(
 
 /**
  * The DuckLake "virtual" (hidden) columns the connector exposes on the read path,
- * matching Trino's Iceberg/Delta `$`-prefixed convention. This enum is the single
+ * using Trino's `$` convention. This enum is the single
  * source of truth for each virtual's reserved (negative) `columnId`, hidden name, and
  * Trino type — keep the magic numbers here and nowhere else.
  *
@@ -105,16 +105,16 @@ enum class VirtualKind(
         @get:JvmName("columnId") val columnId: Long,
         @get:JvmName("columnName") val columnName: String,
         @get:JvmName("columnType") val columnType: Type,
-        // perRow=true: the value varies per row (file position based) and must be injected
-        // inside the read pipeline before delete-filtering — see DucklakePageSourceProvider's
-        // positional injector. perRow=false: constant per split (RLE block in the outer wrapper).
+        // perRow=true: read or inject the value alongside each row before delete filtering.
+        // perRow=false: constant per split (RLE block in the outer wrapper).
         @get:JvmName("perRow") val perRow: Boolean)
 {
     PATH(-101L, "\$path", VARCHAR, false),
     SNAPSHOT_ID(-102L, "\$snapshot_id", BIGINT, false),
     FILE_ROW_NUMBER(-103L, "\$file_row_number", BIGINT, true),
     ROW_ID(-104L, "\$row_id", BIGINT, true),
-    FILE_SIZE_BYTES(-105L, "\$file_size_bytes", BIGINT, false);
+    FILE_SIZE_BYTES(-105L, "\$file_size_bytes", BIGINT, false),
+    ROW_SNAPSHOT_ID(-106L, "\$insert_snapshot_id", BIGINT, true);
 
     /**
      * The hidden column handle for this virtual. Marked nullable because the

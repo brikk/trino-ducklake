@@ -13,6 +13,9 @@ package dev.brikk.ducklake.trino.plugin
 import dev.brikk.ducklake.catalog.DucklakeCatalog
 import dev.brikk.ducklake.catalog.DucklakeInlinedChangeRow
 import dev.brikk.ducklake.catalog.JdbcDucklakeCatalog
+import dev.brikk.ducklake.catalog.DucklakeUnsupportedCatalogVersionException
+import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
+import io.trino.spi.TrinoException
 import java.util.function.Supplier
 
 /** Public API adapter boundary. The released build has no candidate class references. */
@@ -24,8 +27,11 @@ internal interface DucklakeControlledReads {
     fun fileDefault(tableId: Long, columnId: Long, snapshot: Long): Any?
 }
 
-internal fun <T> DucklakeCatalog.queryReadSession(queryId: String?, action: () -> T): T =
+internal fun <T> DucklakeCatalog.queryReadSession(queryId: String?, action: () -> T): T = try {
     if (this is DucklakeControlledReads) queryRead(queryId, Supplier(action)) else readSession(Supplier(action))
+} catch (failure: DucklakeUnsupportedCatalogVersionException) {
+    throw TrinoException(NOT_SUPPORTED, failure.message, failure)
+}
 
 internal fun DucklakeCatalog.cancelReadQuery(queryId: String) {
     if (this is DucklakeControlledReads) cancelQuery(queryId)

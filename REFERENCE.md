@@ -1,6 +1,6 @@
 # Trino DuckLake reference
 
-This reference describes the normal Trino 483/484 build using catalog library 0.13.2
+This reference describes the normal Trino 483/484 build using catalog library 0.14.0
 and DuckLake 1.0 metadata. It is not a blanket physical-type or production-safety
 certification. Start with the [installation guide](README.md) and [SQL samples](SAMPLES.md).
 
@@ -16,6 +16,7 @@ Set these in `etc/catalog/<catalog>.properties` on the Trino nodes.
 | `ducklake.catalog.database-password` | Unset | Database password, as required by its authentication |
 | `ducklake.data-path` | Required | Base location of data files |
 | `ducklake.catalog.max-connections` | `10` | Catalog connection-pool limit |
+| `ducklake.catalog.format-version` | `1.0` | Required stored DuckLake format family: `1.0` (also admits the older 0.4 layout), or separately qualified read-only `1.1`; mismatch refuses reads and writes, never migrates metadata |
 | `ducklake.default-snapshot-id` | Unset | Catalog-wide read snapshot pin |
 | `ducklake.default-snapshot-timestamp` | Unset | Read pin as an ISO-8601 instant |
 | `ducklake.remove-orphan-files.min-retention` | `7d` | Minimum orphan-file age |
@@ -29,8 +30,15 @@ Set at most one catalog-level snapshot pin. Resolution precedence is query claus
 then session pin, then catalog pin, then the current snapshot. Do not change temporal
 encoding settings as a substitute for verifying the stored partition representation.
 
-The default-off final-1.1 flag and its work limits are a separate developer-only
-qualification configuration, documented in [the candidate guide](dev-docs/CATALOG-CANDIDATE.md).
+For the normal 1.0 release, set `ducklake.catalog.format-version=1.0` explicitly or
+use its default. The actual stored version is checked in each owned read view and
+before writes, including after a native engine migrates an existing catalog. The
+connector does not create, downgrade or migrate the underlying DuckLake metadata.
+Choose its format separately when initializing it with DuckDB.
+
+Format 1.1 remains a separate read-only validation/release path, documented with
+its work limits in [the developer guide](dev-docs/CATALOG-CANDIDATE.md). Selecting
+1.1 in a build that only supports 1.0 fails clearly before opening a connection.
 
 ### PostgreSQL
 
@@ -160,6 +168,7 @@ Hidden columns require explicit quoting; they do not appear in `SELECT *` or `DE
 | --- | --- | --- |
 | `$path` | `VARCHAR` | Backing file path; NULL for inlined rows |
 | `$snapshot_id` | `BIGINT` | Data-file begin snapshot; per-row begin snapshot for inline data |
+| `$insert_snapshot_id` | `BIGINT` | Native-compatible per-row insertion snapshot; uses embedded file values when present, otherwise the file's begin snapshot |
 | `$file_row_number` | `BIGINT` | Zero-based physical file position; NULL for inline data |
 | `$row_id` | `BIGINT` | Embedded logical lineage ID, or a present file start plus position; NULL for inline data |
 | `$file_size_bytes` | `BIGINT` | Backing file size; NULL for inline data |

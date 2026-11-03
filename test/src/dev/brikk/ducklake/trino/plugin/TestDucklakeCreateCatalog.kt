@@ -93,11 +93,12 @@ class TestDucklakeCreateCatalog : AbstractTestQueryFramework() {
         }
     }
 
-    private fun createDucklakeCatalogSql(name: String): String =
+    private fun createDucklakeCatalogSql(name: String, format: String = "1.0"): String =
             """
             CREATE CATALOG $name USING ducklake
             WITH (
               "ducklake.catalog.database-url" = 'jdbc:duckdb:$lakeDb',
+              "ducklake.catalog.format-version" = '$format',
               "ducklake.data-path" = '$dataDir/',
               "fs.hadoop.enabled" = 'true'
             )
@@ -119,6 +120,12 @@ class TestDucklakeCreateCatalog : AbstractTestQueryFramework() {
         finally {
             computeActual("DROP CATALOG dyn_ducklake")
         }
+    }
+
+    @Test
+    fun createCatalogWithUnknownFormatFailsBeforeItCanGuessAReader() {
+        assertThatThrownBy { computeActual(createDucklakeCatalogSql("dyn_bad_format", "auto")) }
+            .hasMessageContaining("ducklake.catalog.format-version")
     }
 
     @Test

@@ -34,8 +34,8 @@ class TestDucklakeReleasedQuack {
         val config = DucklakeConfig().setCatalogDatabaseUrl("jdbc:unsupported:no-connection-should-be-opened")
             .setEnableFinal11Reads(true)
         assertThatThrownBy { DucklakeCatalogProvider(config).get() }
-            .isInstanceOf(IllegalStateException::class.java)
-            .hasMessageContaining("explicitly selected catalog candidate build")
+            .isInstanceOf(io.trino.spi.TrinoException::class.java)
+            .hasMessageContaining("accepts DuckLake format 1.0")
     }
 
     @Test

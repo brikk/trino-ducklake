@@ -27,6 +27,35 @@ class TestTrinoReplayMapAccess {
     lateinit var directory: Path
 
     @Test
+    fun nativeSnapshotBindingDoesNotReserveAStoredColumnNameAndRefreshesAfterAddColumn() = withLake { connection, engine ->
+        connection.createStatement().use { statement ->
+            statement.execute("CREATE TABLE lake.t AS SELECT 42::INTEGER id")
+        }
+        val sql = "SELECT snapshot_id FROM lake.t"
+        assertMirror(connection, engine, sql)
+        assertMirror(connection, engine, "WITH q AS (SELECT snapshot_id FROM lake.t) SELECT snapshot_id FROM q")
+        connection.createStatement().use { statement ->
+            statement.execute("ALTER TABLE lake.t ADD COLUMN snapshot_id VARCHAR")
+            statement.execute("UPDATE lake.t SET snapshot_id='physical'")
+        }
+        assertMirror(connection, engine, sql)
+        assertThat(engine.executeQuery(sql)).containsExactly(listOf("physical"))
+    }
+
+    @Test
+    fun quotedSchemaTableAndCatalogReferencesUseTheActualTrinoCatalog() = withLake { connection, engine ->
+        connection.createStatement().use { statement ->
+            statement.execute("CREATE SCHEMA lake.\"a.b\"")
+            statement.execute("CREATE TABLE lake.\"a.b\".\"t\"\"q\" AS SELECT 42::INTEGER AS i")
+        }
+        for (sql in listOf(
+            "SELECT i FROM lake.\"a.b\".\"t\"\"q\"",
+            "SELECT lake.\"a.b\".\"t\"\"q\".i FROM lake.\"a.b\".\"t\"\"q\"",
+            "SELECT lake.i FROM lake.\"a.b\".\"t\"\"q\" AS lake",
+            "SELECT 'lake.a.b',i FROM lake.\"a.b\".\"t\"\"q\"")) assertMirror(connection, engine, sql)
+    }
+
+    @Test
     fun mapAndRowAccessesMatchDuckdbIncludingMissingKeysAndKeyCase() = withLake { connection, engine ->
         connection.createStatement().use { statement ->
             statement.execute("CREATE TABLE lake.t (id INTEGER, m MAP(VARCHAR, INTEGER), r STRUCT(i INTEGER), " +

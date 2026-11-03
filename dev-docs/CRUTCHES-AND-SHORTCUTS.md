@@ -17,11 +17,32 @@ Native-row source reservations conservatively count shared values more than once
 measure inline JSON using a temporary single-value block. Page production is byte-budgeted;
 this does not retroactively bound the released catalog's older list-returning inline reads.
 
+## Native snapshot-column compatibility
+
+The hidden `$insert_snapshot_id` uses native per-row insertion snapshots, while
+existing `$snapshot_id` keeps its file-begin/inline-row contract. No plain
+`snapshot_id` name is reserved, so CREATE/ADD of a real stored column still works.
+Replay binds that native virtual name only after checking real table metadata.
+Keeping a `$`-prefixed connector name is intentional: Trino's ADD COLUMN checks
+hidden names too, so exposing a plain hidden `snapshot_id` would wrongly prevent
+adding a real column. Regression coverage includes ADD COLUMN and identical SQL
+before/after that stored column appears, plus CTE output-name preservation.
+The row virtual reads the reserved Parquet field ID as a
+streamed BIGINT, with a file-begin fallback only when that ID is absent; malformed
+present fields reject. There is no extra whole-file snapshot array or SQL text
+substitution. Existing delete/position pruning restrictions still apply.
+Both ordinary and partial rewrite outputs preserve that streamed per-row snapshot
+under the reserved field ID. Partial file visibility bounds still use source FILE
+visibility, not the older row origins: backdating an ordinary-compacted file to
+its rows' original insertion times would duplicate historical rows. Recompaction
+checks cover both snapshot values and historical visibility. Older files without
+the reserved ID retain the native file-begin fallback; lost origins are not guessed.
+
 ## R07: Experimental Planning, Explicit Opt-in Qualification Only
 
-### Catalog 0.13.2 release adoption
+### Catalog 0.14.0 and independent format validation
 
-Both build modes now consume released catalog/replay/SLT **0.13.2**, with test-only
+Both build modes now consume released catalog/replay/SLT **0.14.0**, with test-only
 DuckDB JDBC **2.0.0.1** and direct Java Quack JDBC **0.13.0**. Native test setup
 explicitly creates DuckLake 1.0 with automatic migration disabled. This is not
 promotion of the candidate planning adapter or final-1.1 read/write admission.
@@ -32,9 +53,27 @@ the old normal 0.12 lane describe the original qualification, not today's defaul
 Replay uses the released `ReplaySetupFormat.DUCKLAKE_1_0` native default setting;
 it does not rewrite corpus ATTACH text or goldens. Explicit format choices and
 SET/RESET retain native semantics. Existing newer lakes cannot be downgraded.
-0.13.2's four JARs are byte-identical to the verified 0.13.1 artifacts; its change
-is upstream qualification of the already selected Java Quack JDBC 0.13.0. This
-does not relax experimental admission, read/work budgets or deployment restrictions.
+0.14.0's four JARs are byte-identical to accepted snapshot
+`0.14.0-20261103.154002-5`. The connector explicitly requires the selected stored
+format via `ducklake.catalog.format-version` (1.0 by default, 1.1 only in the
+separately qualified read-only build). Reads and writes refuse a mismatch, including
+after native migration. Normal metadata lookup/listing, split/source and function
+analysis use owned read sessions; unsupported-format failures retain NOT_SUPPORTED.
+This does not relax 1.1 admission, work budgets or deployment restrictions.
+
+The normal corpus suite uses both mirror and execution scope 1.0. Explicit 1.1
+files halt after positive stored-format inspection: earlier results stand, remaining
+1.1 feature SQL is not executed, and halted files never count as passed 1.0. Format
+inspection errors fail loudly. This is deliberate format selection, not a directory
+skip or downgrade. The full JUnit gate uses CI's actual 75-file starter discovery,
+not a general-only subset.
+
+PostgreSQL replay binds only the default schema qualifier of known rewritten
+metadata catalogs using the shared public oracle-SQL hook and brikk-sql AST.
+Explicit metadata schemas, logical lake schemas, literals, source files and goldens
+are unchanged. This test-only backend adaptation fixes direct native metadata SQL;
+it does not add native DuckDB-view dialect support to the production connector.
+No copied metadata database, fake schema/view or shared-storage staging is used.
 
 The November 3 experimental verification hit a kernel-confirmed global OOM kill
 (test JVM exit 137), then a real `Disk quota exceeded` during native-library
@@ -43,7 +82,8 @@ verification returns to the original 3 GiB/parallel test configuration, using
 workspace-local `java.io.tmpdir`/`TMPDIR` as documented for actual quota failures.
 This is ordinary build/test scratch, not production staging or shared storage.
 Production settings, explicit concurrency tests, admission/work limits and
-assertions are unchanged; no test is excluded. See the adoption record for scope.
+assertions were unchanged and no test was excluded from that experimental rerun.
+See the adoption record for its historical scope.
 
 Unknown-COMMIT and acknowledged-post-commit failures retain their catalog cause
 and diagnostic through the existing non-conflict Trino error mapping. They do not
@@ -71,7 +111,7 @@ Cost: extra files may be scanned. Removal requires a real file-specific transfor
 writer-zone attestation, not a version check or a future native upgrade.
 
 `-Pr07CatalogCandidate` now selects only the experimental adapter and
-`qualification/src` tests, on the same 0.13.2 release and driver pins as the normal
+`qualification/src` tests, on the same 0.14.0 release and driver pins as the normal
 build. `verifyCatalogRelease` checks all four JARs against
 `gradle/catalog-release.sha256` in both modes. Old snapshot/local-bundle values
 fail explicitly. Experimental output versions retain `-r07`; this is not a supported
@@ -108,7 +148,7 @@ multi-process/multi-host deployment or mixed-version negotiation test.
 
 The `10f81f9` qualification introduced a **typed public-API adapter** in
 `candidate/src`; the default build retains its normal 1.0 adapter in `released/src`.
-Both now consume released 0.13.2, without enabling the experimental adapter by default.
+Both now consume released 0.14.0, without enabling the experimental adapter by default.
 The candidate adapter drains SQL-keyset active/added files, schemas/tables/flat columns,
 partition fields/values, immutable name rows and inline registry versions. Each outer
 view shares totals: 1,024 page calls (including empty terminals), 16,384 returned nodes,

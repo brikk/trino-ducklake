@@ -26,6 +26,26 @@ import org.junit.jupiter.api.Test
 
 class TestDucklakeConfig {
     @Test
+    fun explicitCatalogFormatSelectionIsIndependentAndNeverGuessed() {
+        assertThat(DucklakeConfig().getCatalogFormatVersion()).isEqualTo("1.0")
+        for (version in listOf("1.0", "1.1")) {
+            ConfigurationFactory(mapOf("ducklake.catalog.database-url" to "jdbc:postgresql://example.invalid/ducklake",
+                "ducklake.catalog.format-version" to version)).use { factory ->
+                val config = factory.build(DucklakeConfig::class.java)
+                assertThat(config.getCatalogFormatVersion()).isEqualTo(version)
+                assertThat(config.isEnableFinal11Reads()).isEqualTo(version == "1.1")
+                assertThat(config.toCatalogConfig().requiredCatalogFormat).isEqualTo(
+                    if (version == "1.0") dev.brikk.ducklake.catalog.DucklakeCatalogFormat.V1_0
+                    else dev.brikk.ducklake.catalog.DucklakeCatalogFormat.V1_1)
+            }
+        }
+        assertThatThrownBy { DucklakeConfig().setCatalogFormatVersion("auto").toCatalogConfig() }
+            .hasMessageContaining("must be 1.0 or 1.1")
+        assertThatThrownBy { DucklakeConfig().setCatalogFormatVersion("1.0").setEnableFinal11Reads(true).toCatalogConfig() }
+            .hasMessageContaining("Conflicting DuckLake format")
+    }
+
+    @Test
     fun readPageAndDeadlineDefaultsAndBounds() {
         assertThat(DucklakeConfig().getReadPageSize()).isEqualTo(128)
         assertThat(DucklakeConfig().getReadTimeoutSeconds()).isEqualTo(30)

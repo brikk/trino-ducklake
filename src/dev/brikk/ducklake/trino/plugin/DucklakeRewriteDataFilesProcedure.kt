@@ -39,7 +39,6 @@ import io.trino.spi.StandardErrorCode.INVALID_PROCEDURE_ARGUMENT
 import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
 import io.trino.spi.StandardErrorCode.TRANSACTION_CONFLICT
 import io.trino.spi.TrinoException
-import io.trino.spi.block.RunLengthEncodedBlock
 import io.trino.spi.connector.ColumnHandle
 import io.trino.spi.connector.ConnectorPageSource
 import io.trino.spi.connector.ConnectorSession
@@ -330,10 +329,10 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
      * column `_ducklake_internal_row_id` (field-id 2147483540) holding each surviving row's ORIGINAL
      * rowid — sourced from the lineage-first `$row_id` read column, so recompaction of files that
      * already carry lineage preserves the original ids; upstream compaction always writes this
-     * column, and rowids now survive compaction across engines. When [partial], a
-     * `_ducklake_internal_snapshot_id` BIGINT column is also written (each row tagged with its
-     * source file's begin_snapshot; no field_id — the read path finds it by name) and per-file
-     * begin/partial_max bounds are tracked. Both internal columns are appended AFTER the data
+     * column, and rowids now survive compaction across engines. Every output also embeds the
+     * native per-row insert snapshot with its reserved field ID. In partial mode, separate
+     * begin/partial_max bounds retain SOURCE FILE visibility, not original row insertion times.
+     * Both internal columns are appended AFTER the data
      * columns, so catalog stats (leaf targets built over the table columns only) are unaffected.
      */
     private inner class GroupWriter(
@@ -361,7 +360,7 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
                 // rowid. The merged output embeds these as _ducklake_internal_row_id, the
                 // same column upstream compaction always writes — rowids survive compaction
                 // across engines.
-                val readColumns = columnHandles + VirtualKind.ROW_ID.columnHandle()
+                val readColumns = columnHandles + VirtualKind.ROW_SNAPSHOT_ID.columnHandle() + VirtualKind.ROW_ID.columnHandle()
                 for (split in splits) {
                     pageSource(session, tableHandle, split, readColumns).use { source ->
                         while (!source.isFinished) {
@@ -386,16 +385,17 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
         }
 
         private fun addPage(page: Page, sourceBegin: Long) {
+            val snapshots = page.getBlock(page.channelCount - 2)
+            if (partial && (0 until page.positionCount).any { BIGINT.getLong(snapshots, it) > sourceBegin })
+                throw TrinoException(NOT_SUPPORTED, "Cannot backdate a source file whose row snapshots exceed its visibility begin")
             if (writer == null) {
                 openNew()
             }
-            // Incoming page: data channels…, rowid (last, from the $row_id read column).
-            // Output column order: data…, [_ducklake_internal_snapshot_id], _ducklake_internal_row_id.
+            // Incoming/output order: data…, native row snapshot, logical rowid.
             val rowIdBlock = page.getBlock(page.channelCount - 1)
-            val dataBlocks = Array(page.channelCount - 1) { page.getBlock(it) }
-            var outPage = Page(page.positionCount, *dataBlocks)
+            val dataBlocks = Array(page.channelCount - 2) { page.getBlock(it) }
+            val outPage = Page(page.positionCount, *dataBlocks).appendColumn(snapshots)
             if (partial) {
-                outPage = outPage.appendColumn(RunLengthEncodedBlock.create(BIGINT, sourceBegin, page.positionCount))
                 minBegin = minOf(minBegin, sourceBegin)
                 maxBegin = maxOf(maxBegin, sourceBegin)
             }
@@ -407,17 +407,19 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
 
         private fun openNew() {
             val names = columnHandles.map { it.columnName } +
-                    (if (partial) listOf(DucklakeDeleteFileReader.INTERNAL_SNAPSHOT_ID_COLUMN) else emptyList()) +
+                    listOf(DucklakeDeleteFileReader.INTERNAL_SNAPSHOT_ID_COLUMN) +
                     listOf(DucklakePageSink.LINEAGE_COLUMN_NAME)
             // JSON columns are physically UTF-8 VARCHAR in parquet (catalog type stays 'json').
             val types = columnTypes.map { DucklakeJsonSupport.toParquetWriteType(it) } +
-                    (if (partial) listOf<Type>(BIGINT) else emptyList()) +
+                    listOf<Type>(BIGINT) +
                     listOf<Type>(BIGINT)
             val schemaConverter = ParquetSchemaConverter(types, names, false, false)
             val messageType = DucklakeParquetSchemaBuilder.buildMessageType(
                     columnHandles, allCatalogColumns, schemaConverter.messageType,
                     mapOf(DucklakePageSink.LINEAGE_COLUMN_NAME to
-                            DucklakeDeleteFileReader.ROW_ID_PARQUET_FIELD_ID.toLong()))
+                            DucklakeDeleteFileReader.ROW_ID_PARQUET_FIELD_ID.toLong(),
+                        DucklakeDeleteFileReader.INTERNAL_SNAPSHOT_ID_COLUMN to
+                            DucklakeDeleteFileReader.SNAPSHOT_ID_PARQUET_FIELD_ID.toLong()))
             val fileName = "ducklake-${UUID.randomUUID()}.parquet"
             val outputStream = fileSystem.newOutputFile(Location.of(tableDataPath).appendPath(fileName)).create()
             val parquetWriter = ParquetWriter(outputStream, messageType, schemaConverter.primitiveTypes, writerOptions,

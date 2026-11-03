@@ -20,6 +20,7 @@ import dev.brikk.ducklake.catalog.JdbcDucklakeCatalog
 import dev.brikk.ducklake.corpus.GoldenComparator
 import dev.brikk.ducklake.corpus.OracleAttachment
 import dev.brikk.ducklake.corpus.ReplayReadEngine
+import dev.brikk.ducklake.corpus.ReplayOracleSqlBinder
 import io.trino.Session
 import io.trino.testing.DistributedQueryRunner
 import io.trino.testing.TestingSession.testSessionBuilder
@@ -81,21 +82,29 @@ class TrinoReplayEngine : ReplayReadEngine {
     val metadataRewriter: (String) -> String = { _ ->
         val db = "corpus_" + counter.incrementAndGet()
         server.createDatabase(db)
-        // Fixture returns the full ATTACH uri including the `ducklake:` prefix;
-        // the driver re-adds that prefix, so hand back only the remainder.
         server.getDuckDbAttachUri(db).removePrefix("ducklake:")
+    }
+
+    val oracleSqlBinder = ReplayOracleSqlBinder { sql, context ->
+        val schemas = context.lakes.filter {
+            it.rewritten && it.explicitMetadataSchema == null && it.attachment.metadataUri.startsWith("postgres:")
+        }.associate { it.metadataCatalog to "public" }
+        TrinoReplayMetadataBindings.rewrite(sql, schemas)
     }
 
     /** Observe the real stored format in a focused replay test, not the requested setup option. */
     internal fun catalogSpecVersion(attachment: OracleAttachment): String {
-        val db = databaseName(attachment)
-        return JdbcDucklakeCatalog(DucklakeCatalogConfig().apply {
-            catalogDatabaseUrl = server.getJdbcUrl(db)
-            catalogDatabaseUser = server.getUser()
-            catalogDatabasePassword = server.getPassword()
-            dataPath = attachment.dataPath
-            maxCatalogConnections = 1
-        }).use { requireNotNull(it.getSpecVersion()) { "Replay catalog has no stored format version" } }
+        return JdbcDucklakeCatalog(catalogConfig(attachment)).use {
+            requireNotNull(it.getSpecVersion()) { "Replay catalog has no stored format version" }
+        }
+    }
+
+    private fun catalogConfig(attachment: OracleAttachment): DucklakeCatalogConfig = DucklakeCatalogConfig().apply {
+        catalogDatabaseUrl = server.getJdbcUrl(databaseName(attachment))
+        catalogDatabaseUser = server.getUser()
+        catalogDatabasePassword = server.getPassword()
+        dataPath = attachment.dataPath
+        maxCatalogConnections = 1
     }
 
     private fun databaseName(attachment: OracleAttachment): String =
@@ -105,20 +114,19 @@ class TrinoReplayEngine : ReplayReadEngine {
     override fun connect(attachment: OracleAttachment) {
         // The PG database is in the (rewritten) URI the oracle attached — never rely on
         // "the last database the rewriter minted": a re-ATTACH reuses an earlier one.
-        val db = databaseName(attachment)
+        val config = catalogConfig(attachment)
         val catalog = catalogsByLake.getOrPut(attachment.metadataUri to attachment.dataPath) {
             // Unique Trino catalog name per lake; a lake re-attached with a different DATA_PATH is
             // a different catalog (same metadata, other files), hence the composite key.
-            val name = "${db}_c${catalogsByLake.size}"
+            val name = "${databaseName(attachment)}_c${catalogsByLake.size}"
             val properties =
                 ImmutableMap.builder<String, String>()
-                    .put("ducklake.catalog.database-url", server.getJdbcUrl(db))
-                    .put("ducklake.catalog.database-user", server.getUser())
-                    .put("ducklake.catalog.database-password", server.getPassword())
+                    .put("ducklake.catalog.database-url", requireNotNull(config.catalogDatabaseUrl))
                     .put("ducklake.data-path", attachment.dataPath)
                     .put("fs.hadoop.enabled", "true")
-                    .buildOrThrow()
-            runner.createCatalog(name, "ducklake", properties)
+            config.catalogDatabaseUser?.let { properties.put("ducklake.catalog.database-user", it) }
+            config.catalogDatabasePassword?.let { properties.put("ducklake.catalog.database-password", it) }
+            runner.createCatalog(name, "ducklake", properties.buildOrThrow())
             name
         }
         currentCatalog = catalog
@@ -142,16 +150,8 @@ class TrinoReplayEngine : ReplayReadEngine {
 
     override fun accepts(sql: String): Boolean {
         val alias = currentAlias ?: return false
-        val s = sql.trim()
-        // Must reference the lake by alias — bare names may be oracle-local temp tables (harness
-        // concern, not dialect, so it stays here rather than in the transpile gate).
-        if (!Regex("\\b${Regex.escape(alias)}\\.").containsMatchIn(s)) return false
-        // Catalog-scoped table functions (`<alias>.snapshots()`, …) have no 1:1 rewrite; our
-        // equivalents are $-tables/PTFs with different names.
-        if (Regex("\\b${Regex.escape(alias)}\\.\\w+\\s*\\(").containsMatchIn(s)) return false
-        // Transpile-first gate: runnable only if brikk-sql faithfully translates duckdb→trino
-        // (replaces the former token deny-list + INTERVAL/`::`/… heuristics — see TrinoCorpusDialect).
-        return gateFor(sql) is TrinoCorpusDialect.Run
+        val run = gateFor(sql) as? TrinoCorpusDialect.Run ?: return false
+        return TrinoReplayBindings.referencesLake(run.trinoSql, alias)
     }
 
     override fun executeQuery(sql: String): List<List<String?>> {
@@ -165,9 +165,7 @@ class TrinoReplayEngine : ReplayReadEngine {
         // <catalog>.main.<t>.
         val run = gateFor(sql) as? TrinoCorpusDialect.Run
             ?: error("executeQuery on a non-runnable query: ${gateFor(sql)}")
-        var s = run.trinoSql
-        s = s.replace(Regex("\\b${Regex.escape(alias)}\\.(\\w+)\\.(\\w+)"), "$catalog.$1.$2")
-        s = s.replace(Regex("\\b${Regex.escape(alias)}\\.(\\w+)\\b(?!\\.)"), "$catalog.main.$1")
+        val s = TrinoReplayBindings.rewrite(run.trinoSql, alias, catalog)
         val result =
             try {
                 val typedSql = TrinoMapAccessRewriter.rewrite(s, catalog, session.schema.orElse(null)) { table ->

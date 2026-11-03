@@ -9,8 +9,8 @@ maintainers, not a second user manual or an append-only release diary.
 - [DEVELOPMENT.md](DEVELOPMENT.md): build/test/release commands, dependency boundaries,
   fixture prerequisites and local verification discipline.
 - [TODO.md](TODO.md): one current backlog, containing only unresolved work and watches.
-- [CATALOG-CANDIDATE.md](CATALOG-CANDIDATE.md): exact opt-in published snapshot, scoped
-  qualification and remaining 1.1/default-on gates. Normal builds use catalog 0.13.2,
+- [CATALOG-CANDIDATE.md](CATALOG-CANDIDATE.md): opt-in planning on the published release, scoped
+  qualification and remaining 1.1/default-on gates. Normal builds use catalog 0.14.0,
   without promoting experimental final-1.1 planning.
 - [REVIEW-2026-09-05.md](REVIEW-2026-09-05.md): permanent finding IDs, recorded repairs
   and unresolved security/value/history risks. Kept active because obligations remain;

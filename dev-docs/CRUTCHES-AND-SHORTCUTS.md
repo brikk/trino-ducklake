@@ -19,9 +19,9 @@ this does not retroactively bound the released catalog's older list-returning in
 
 ## R07: Experimental Planning, Explicit Opt-in Qualification Only
 
-### Catalog 0.13.1 release adoption
+### Catalog 0.13.2 release adoption
 
-Both build modes now consume released catalog/replay/SLT **0.13.1**, with test-only
+Both build modes now consume released catalog/replay/SLT **0.13.2**, with test-only
 DuckDB JDBC **2.0.0.1** and direct Java Quack JDBC **0.13.0**. Native test setup
 explicitly creates DuckLake 1.0 with automatic migration disabled. This is not
 promotion of the candidate planning adapter or final-1.1 read/write admission.
@@ -32,6 +32,9 @@ the old normal 0.12 lane describe the original qualification, not today's defaul
 Replay uses the released `ReplaySetupFormat.DUCKLAKE_1_0` native default setting;
 it does not rewrite corpus ATTACH text or goldens. Explicit format choices and
 SET/RESET retain native semantics. Existing newer lakes cannot be downgraded.
+0.13.2's four JARs are byte-identical to the verified 0.13.1 artifacts; its change
+is upstream qualification of the already selected Java Quack JDBC 0.13.0. This
+does not relax experimental admission, read/work budgets or deployment restrictions.
 
 The November 3 experimental verification hit a kernel-confirmed global OOM kill
 (test JVM exit 137), then a real `Disk quota exceeded` during native-library
@@ -68,7 +71,7 @@ Cost: extra files may be scanned. Removal requires a real file-specific transfor
 writer-zone attestation, not a version check or a future native upgrade.
 
 `-Pr07CatalogCandidate` now selects only the experimental adapter and
-`qualification/src` tests, on the same 0.13.1 release and driver pins as the normal
+`qualification/src` tests, on the same 0.13.2 release and driver pins as the normal
 build. `verifyCatalogRelease` checks all four JARs against
 `gradle/catalog-release.sha256` in both modes. Old snapshot/local-bundle values
 fail explicitly. Experimental output versions retain `-r07`; this is not a supported
@@ -105,7 +108,7 @@ multi-process/multi-host deployment or mixed-version negotiation test.
 
 The `10f81f9` qualification introduced a **typed public-API adapter** in
 `candidate/src`; the default build retains its normal 1.0 adapter in `released/src`.
-Both now consume released 0.13.1, without enabling the experimental adapter by default.
+Both now consume released 0.13.2, without enabling the experimental adapter by default.
 The candidate adapter drains SQL-keyset active/added files, schemas/tables/flat columns,
 partition fields/values, immutable name rows and inline registry versions. Each outer
 view shares totals: 1,024 page calls (including empty terminals), 16,384 returned nodes,

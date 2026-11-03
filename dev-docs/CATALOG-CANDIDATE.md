@@ -2,7 +2,7 @@
 
 ## Current selection
 
-Both builds consume released **0.13.1** from Maven Central, with DuckDB JDBC
+Both builds consume released **0.13.2** from Maven Central, with DuckDB JDBC
 **2.0.0.1** and test-only Java Quack JDBC **0.13.0**. This adopts the released
 library, not default-on final-1.1 planning. The historical timestamp snapshot is
 retired. All three modules remain in lockstep:

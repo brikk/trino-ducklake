@@ -1,6 +1,6 @@
-# Maven Central release 0.13.1, source f35e105fef69598895b11bf7320e67501ea2e623.
+# Maven Central release 0.13.2, source 640b38e665d9dba7cd51373640077ad2ff5daafd.
 # https://repo.maven.apache.org/maven2/dev/brikk/ducklake/
-01ffed5abb0b970b307dd4de1b7d7ab42320e33016447896204e5a36506a3041  ducklake-catalog-0.13.1.jar
-ca33bee56b33703ea7bbe7b76153bbaccc0275478fc992d48768eb912a1a056f  ducklake-catalog-0.13.1-test-fixtures.jar
-403970a1c3fa6b6cc0cff8325f2a427eed630ae5f4f03bcf6fe0af8cddb502c5  ducklake-test-corpus-replay-0.13.1.jar
-ee37d13d863437eaaf36fe4c34f8d66cfa1cb6d1349ef661ae4f50d2e91120be  slt-format-0.13.1.jar
+01ffed5abb0b970b307dd4de1b7d7ab42320e33016447896204e5a36506a3041  ducklake-catalog-0.13.2.jar
+ca33bee56b33703ea7bbe7b76153bbaccc0275478fc992d48768eb912a1a056f  ducklake-catalog-0.13.2-test-fixtures.jar
+403970a1c3fa6b6cc0cff8325f2a427eed630ae5f4f03bcf6fe0af8cddb502c5  ducklake-test-corpus-replay-0.13.2.jar
+ee37d13d863437eaaf36fe4c34f8d66cfa1cb6d1349ef661ae4f50d2e91120be  slt-format-0.13.2.jar

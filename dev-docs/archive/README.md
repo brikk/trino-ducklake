@@ -6,6 +6,8 @@ branch names, paths and measured test counts retain their original scope/date.
 
 ## Recent integration and qualification
 
+- [Catalog 0.13.2 follow-up](CATALOG-0.13.2-ADOPTION.md): byte-identical release pins
+  and upstream qualification of the already selected Quack driver.
 - [Catalog 0.13.1 adoption](CATALOG-0.13.1-ADOPTION.md): released artifacts, native
   setup-format selection, exact corpus alignment and scoped connector verification.
 - [Native MySQL re-probe](MYSQL-NATIVE-PROBE-2026-11-03.md): DuckDB 2.0 metadata-schema

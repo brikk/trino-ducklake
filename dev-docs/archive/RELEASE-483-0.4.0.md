@@ -1,5 +1,7 @@
 # trino-ducklake 483-0.4.0
 
+> Historical release notes, not the current build or support contract.
+
 This release targets Trino 483 and adopts the released DuckLake catalog, catalog test fixtures,
 corpus replay, and SLT format at `0.12.0`. It also includes the test-only brikk-sql `0.18.0`
 upgrade from the current main line.

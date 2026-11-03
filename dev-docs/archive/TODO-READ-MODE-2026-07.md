@@ -1,7 +1,7 @@
 # DuckLake Read Mode — historical implementation tracker
 
 **Archived:** completed implementation history and detailed 2026 research are preserved here.
-Current open read work is summarized in [`../TODO-READ-MODE.md`](../TODO-READ-MODE.md).
+Current open read work is summarized in [the active backlog](../TODO.md).
 
 The shipped read surface is summarized in the feature chart in [README](../README.md);
 this file tracks what's still open. Reuse strategy when adding to the read path:

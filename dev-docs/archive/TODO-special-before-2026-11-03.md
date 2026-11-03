@@ -1,8 +1,11 @@
 # Strategic / cross-cutting backlog
 
+> Superseded tracker: open items are consolidated in dev-docs/TODO.md. Archiving
+> this source list does not mark its unfinished work complete.
+
 This is the short list for work that does not fit a read/write feature checkbox. The original
 2026 completeness sweep, including shipped items and detailed evidence, is archived at
-[`archive/TODO-jayson-special-list-COMPLETED-2026-07.md`](archive/TODO-jayson-special-list-COMPLETED-2026-07.md).
+[`archive/TODO-jayson-special-list-COMPLETED-2026-07.md`](TODO-jayson-special-list-COMPLETED-2026-07.md).
 Data-plane DuckDB, Vortex, Lance, indexing, and pushdown work moved to
 [`brikk/duckbridge`](https://github.com/brikk/duckbridge) and is not tracked here.
 
@@ -15,8 +18,8 @@ Data-plane DuckDB, Vortex, Lance, indexing, and pushdown work moved to
 - [ ] **Finish remote DuckDB/Quack catalog qualification.** Keep local DuckDB, native Quack, and
   direct Java Quack concerns in the catalog plane. Remaining connector work is deployment
   documentation, cross-engine/concurrent-writer coverage, and CI; see
-  [TODO-WRITE-MODE.md](TODO-WRITE-MODE.md#duckdb-as-catalog-backend-local--quack) and
-  [CATALOG-BACKENDS.md](CATALOG-BACKENDS.md).
+  [TODO-WRITE-MODE.md](TODO-WRITE-MODE-before-2026-11-03.md#duckdb-as-catalog-backend-local--quack) and
+  [CATALOG-BACKENDS.md](../CATALOG-BACKENDS.md).
 - [ ] **DuckLake 1.1 transition.** Keep `1.1-dev*` read-only. Requalify the final metadata layouts,
   type/statistics semantics, migration path, and mixed-version behavior when upstream changes the
   version to final `1.1`; do not infer write support from a version-string change.

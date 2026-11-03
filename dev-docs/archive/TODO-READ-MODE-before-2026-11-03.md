@@ -1,8 +1,11 @@
 # DuckLake read path — open items
 
-The shipped surface is documented in [README.md](../README.md). Completed implementation history
-is archived at [`archive/TODO-READ-MODE-2026-07.md`](archive/TODO-READ-MODE-2026-07.md); review
-findings with stable IDs remain in [REVIEW-2026-09-05.md](REVIEW-2026-09-05.md).
+> Superseded tracker: open items are consolidated in dev-docs/TODO.md. Archiving
+> this source list does not mark its unfinished work complete.
+
+The shipped surface is documented in [README.md](../../README.md). Completed implementation history
+is archived at [`archive/TODO-READ-MODE-2026-07.md`](TODO-READ-MODE-2026-07.md); review
+findings with stable IDs remain in [REVIEW-2026-09-05.md](../REVIEW-2026-09-05.md).
 
 ## Correctness
 

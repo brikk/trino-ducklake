@@ -43,7 +43,8 @@ and the existing producer lane. This is not a release pin or supported plugin di
 N03's bounded public type-signature parser is compiled only in the candidate source
 set. The released 0.12 converter remains unchanged. The candidate preserves quoted
 field names while reusing existing scalar mappings; parsing is not storage/type admission.
-See [the published handoff](HANDOFF-CATALOG-72aae19.md) for exact checks and remaining scope.
+See [the candidate contract](CATALOG-CANDIDATE.md) for current selection and remaining scope;
+the [published handoff](archive/HANDOFF-CATALOG-72aae19.md) retains exact evidence.
 
 Legacy native nested JDBC values now use standard STRUCT/ARRAY/MAP conversion, not
 `toString()` parsing. Native STRUCTs require source-era field order from the existing
@@ -144,7 +145,8 @@ remains valid; expression-kind without that value rejects. No expression execute
 No production/default-on rollout follows from these opt-in experiments. Remaining
 gates include remaining bounded catalog transfers, broader cancellation/network faults,
 retention/lease coordination, broader route/type/legacy qualification and deployment
-testing. See [the qualification report](R07-TRINO-CANDIDATE-QUALIFICATION.md).
+testing. See [the candidate contract](CATALOG-CANDIDATE.md) and
+[retained qualification evidence](archive/R07-TRINO-CANDIDATE-QUALIFICATION.md).
 
 ## RV-03: Path Comparison Boundary
 

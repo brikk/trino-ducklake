@@ -1,5 +1,8 @@
 # Unified idiom kit — whole-codebase rationale
 
+> Historical multi-repository port rationale. Referenced source/audit artifacts remain
+> in their original working areas; this is not a current helper-extraction mandate.
+
 One-page rationale for human readers, reconciled across all three Kotlin-ported
 modules. Companions in this directory:
 

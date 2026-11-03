@@ -1,5 +1,8 @@
 # BEFORE fixes — resume handoff
 
+> Historical session handoff. Old branch, path and environment instructions are not
+> current operations; retained solely as port evidence.
+
 > Written mid-session because this Claude Code session's tool-output channel went bad
 > (Gradle runs returning stale/empty/`EXIT=127` results, fabricated file reads). The repo
 > on disk is intact — bad reads only ever caused Edits to fail safely, never corrupted files.

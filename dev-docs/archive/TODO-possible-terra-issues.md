@@ -226,7 +226,7 @@ can therefore prune a connector-written file that holds qualifying rows.
 > Trino's own NaN comparison semantics differ from DuckDB's (Trino: `NaN > 5` is
 > false; DuckDB: true), so the Trino read side is a lesser/separate concern; the
 > confirmed impact is DuckDB reading connector-written files. Copied to
-> [historical write tracker § Floating-point `contains_nan`](TODO-WRITE-MODE-2026-07.md#floating-point-contains_nan-stats--review-2026-07-13).
+> [historical write tracker § Floating-point `contains_nan`](TODO-WRITE-MODE-2026-07.md#floating-point-contains_nan-stats---done-2026-07-13-write-side).
 >
 > **✅ FIXED 2026-07-13 (write side).** All connector writers now record
 > `contains_nan = TRUE` when a REAL/DOUBLE file actually holds NaN:
@@ -306,7 +306,7 @@ storage move.
 > - Note our own docstring claims this procedure "Row count and values are
 >   preserved … Mirrors upstream DuckLake's flush_inlined_data" — the code
 >   contradicts that, so this is a genuine defect, not an accepted v1 limitation.
-> Copied to [historical write tracker § flush_inlined_data row identity](TODO-WRITE-MODE-2026-07.md#flush_inlined_data-must-preserve-row-identity--count--review-2026-07-13).
+> Copied to [historical write tracker § flush_inlined_data row identity](TODO-WRITE-MODE-2026-07.md#flush_inlined_data-must-preserve-row-identity--count---done-2026-07-13).
 >
 > **✅ FIXED 2026-07-13.** The flush now embeds each row's original global row_id as
 > `_ducklake_internal_row_id` (field id 2147483540 — new `readInlinedRowIds` +
@@ -355,7 +355,7 @@ for `/`, structurally different path.
 > `__HIVE_DEFAULT_PARTITION__` collides with the NULL sentinel — plus it
 > diverges from DuckDB, which URL-encodes. **✅ FIXED 2026-07-13** —
 > `DucklakeHivePartitionCodec` (encode+decode, key & value), see
-> [historical write tracker § Hive Partition Path Encoding](TODO-WRITE-MODE-2026-07.md#hive-partition-path-encoding-on-writes--done-2026-07-13).
+> [historical write tracker § Hive Partition Path Encoding](TODO-WRITE-MODE-2026-07.md#hive-partition-path-encoding-on-writes---done-2026-07-13).
 
 ## P1 — Do not turn present-but-unreadable data into NULL
 

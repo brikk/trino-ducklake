@@ -5,9 +5,9 @@ surfaced by upstream surveys, with stable anchors so the
 sibling [`RESEARCH-LOG.md`](RESEARCH-LOG.md) entries can link to them.
 
 These items have been folded as short bullets into the working TODOs
-([`../TODO-WRITE-MODE.md`](../TODO-WRITE-MODE.md) → "Open Research Items"
+([retained write tracker](TODO-WRITE-MODE-before-2026-11-03.md) → "Open Research Items"
 section,
-[`../TODO-READ-MODE.md`](../TODO-READ-MODE.md) → "Research / Evaluation"
+[retained read tracker](TODO-READ-MODE-before-2026-11-03.md) → "Research / Evaluation"
 section). This file remains as the longer-form rationale that the bullets
 point at.
 

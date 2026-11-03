@@ -4,8 +4,8 @@ DuckLake 1.0 was released on 2026-04-13 alongside DuckDB 1.5.2. The spec version
 jumped from 0.3 to 1.0 with backward-compatibility guarantees. This document is the
 **spec/state reference** for what 1.0 changed and what each change means for our
 connector. Actionable work items have moved into
-[TODO-READ-MODE.md](../TODO-READ-MODE.md) and
-[TODO-WRITE-MODE.md](../TODO-WRITE-MODE.md); link back here from those when spec
+[TODO-READ-MODE.md](TODO-READ-MODE-before-2026-11-03.md) and
+[TODO-WRITE-MODE.md](TODO-WRITE-MODE-before-2026-11-03.md); link back here from those when spec
 context is useful.
 
 The connector compiles and passes the test suite against DuckDB 1.5.2 with zero
@@ -78,7 +78,7 @@ same `deletedRows` set as parquet positional deletes. `DucklakeSplitManager.vali
 accepts both `parquet` and `puffin`. The `partial_max` column is still not consulted
 by either our reader or the Rust reference reader — when a compaction rewrites a delete
 file as partial we may mis-attribute deletes to older snapshots. Tracked separately in
-[COMPARE-datafusion-ducklake.md § Action items surfaced by this comparison](COMPARE-datafusion-ducklake.md#action-items-surfaced-by-this-comparison).
+[COMPARE-datafusion-ducklake.md § Action items still open](COMPARE-datafusion-ducklake.md#action-items-still-open).
 
 ## New Features in 1.0
 
@@ -111,7 +111,7 @@ dialect, non-column expression, column dropped at the snapshot)
 truncates the result to the safe prefix rather than misreporting an
 order. Writes still don't apply the sort — Trino-emitted Parquet is
 unsorted; DuckDB compaction can re-sort later. Write side tracked under
-[historical write tracker § Sorted Table Writes](TODO-WRITE-MODE-2026-07.md#sorted-table-writes).
+[historical write tracker § Sorted Table Writes](TODO-WRITE-MODE-2026-07.md#sorted-table-writes---done-2026-07-08-recommended-gated-scope).
 
 ### 3. Variant Type
 
@@ -120,14 +120,14 @@ statistics.
 
 **Impact**: variant maps to VARCHAR (degraded). Data accessible as a string but
 without variant-specific operators, shredded field access, or pushdown. Tracked under
-[TODO-READ-MODE § Type-Support Improvements](../TODO-READ-MODE.md#type-support-improvements).
+[TODO-READ-MODE § Type-Support Improvements](TODO-READ-MODE-before-2026-11-03.md#type-support-improvements).
 
 ### 4. Geometry Type
 
 **Spec**: geometry with bounding-box statistics per file.
 
 **Impact**: geometry types map to VARBINARY (degraded). No spatial pruning. Tracked
-under [TODO-READ-MODE § Type-Support Improvements](../TODO-READ-MODE.md#type-support-improvements).
+under [TODO-READ-MODE § Type-Support Improvements](TODO-READ-MODE-before-2026-11-03.md#type-support-improvements).
 
 ### 5. Deletion Vectors (Experimental) — shipped (read path)
 

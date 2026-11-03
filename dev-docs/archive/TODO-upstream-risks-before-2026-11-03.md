@@ -1,7 +1,10 @@
 # Upstream risk watch
 
+> Superseded tracker: unresolved watches are consolidated in dev-docs/TODO.md.
+> They remain risks to investigate, not confirmed new connector failures.
+
 This parking lot is for current upstream risks that are not yet actionable connector features.
-Recheck it during the upstream refresh described in [RESEARCH-upstreams.md](RESEARCH-upstreams.md).
+Recheck it during the upstream refresh described in [RESEARCH-upstreams.md](../RESEARCH-upstreams.md).
 Historical non-Parquet data-plane concerns moved to `brikk/duckbridge`; completed and triaged
 review evidence remains in `archive/`.
 

@@ -1,5 +1,8 @@
 # Kotlin port — start here (read order: this → PLAN.md → memory)
 
+> Historical port-start handoff, not current work instructions. The connector is
+> Kotlin; active maintenance obligations are in dev-docs/TODO.md and the live review.
+
 > Written by the review/orchestration agent after the BEFORE fixes landed. PLAN.md is the
 > canonical port DESIGN (slices, kit model, conventions). This doc adds what the BEFORE work
 > taught us that PLAN.md predates, plus the things most likely to bite the port specifically.

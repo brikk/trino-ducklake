@@ -1,86 +1,49 @@
-# DuckLake Catalog Backends
+# Catalog backend contract
 
-The connector talks to the DuckLake metadata catalog over JDBC (HikariCP + jOOQ) in
-`JdbcDucklakeCatalog`. The backend dialect is inferred from the JDBC URL scheme
-(`org.jooq.tools.jdbc.JDBCUtils.dialect`), and the SQL is kept to a portable subset
-(`withRenderSchema(false)`, unquoted identifiers, no `ON CONFLICT`/`RETURNING`/sequences —
-IDs are allocated app-side from the snapshot row). So adding a SQL backend is mostly a driver +
-fixture exercise, not a rewrite.
+The catalog library owns metadata JDBC access (HikariCP/jOOQ); backend selection
+comes from the URL. Trino filesystem access is a separate data-file plane. Using a
+DuckDB metadata backend does not embed DuckDB as the production query/data engine.
 
-## Bootstrap & the "not initialized" error
+## Normal deployment scope
 
-The connector never issues the catalog schema DDL — it assumes the `ducklake_*` tables already
-exist (created once by attaching the catalog from DuckDB, or by any DuckLake engine). Startup only
-opens the connection pool; the first *query* is what reads the schema. So:
-- If the database is **unreachable** (server down / wrong creds / missing database), the HikariCP
-  pool fails to open during eager connector init → the catalog fails to load.
-- If the database is reachable but **not bootstrapped** (empty DB, or a fresh auto-created local
-  `.db`), the connector loads and Trino starts, but the first catalog read fails. Rather than the
-  opaque low-level `table "ducklake_snapshot" does not exist`, `JdbcDucklakeCatalog` detects this
-  (`isMissingCatalogSchema`, cross-backend) and throws `DucklakeCatalogNotInitializedException`
-  with an actionable message; the Trino side (`DucklakeSnapshotResolver`) surfaces it as a
-  `GENERIC_USER_ERROR`. Pinned by `TestJdbcDucklakeCatalogNotInitialized`.
+| Backend | Scope and boundary |
+| --- | --- |
+| PostgreSQL | Maintained shared/multi-process and Trino/DuckDB interoperability path |
+| MySQL 8+ | Trino read/write through bundled Connector/J; DuckDB cross-engine access is not qualified |
+| Local DuckDB | One JVM; a compatible DuckDB JDBC driver must be supplied separately |
+| Native/direct-Java Quack | Experimental fixtures and scoped candidate checks; not normal deployment qualification |
+| SQLite/Turso | Not a supported Trino deployment configuration |
 
-## Support matrix
+Normal catalog/replay dependencies are **0.12.0**. The separately selected
+[candidate](CATALOG-CANDIDATE.md) has exact snapshot/fixture pins, not a moving API floor.
+Current user configuration is in [REFERENCE.md](../REFERENCE.md#catalog-configuration).
 
-| Backend | Connector read/write | Bootstrap (schema create) | Cross-engine (DuckDB reads same catalog) | Status |
-|---|---|---|---|---|
-| **PostgreSQL** | Yes | DuckDB `ATTACH ducklake:postgres:` | Yes | Primary / fully tested |
-| **DuckDB (local `.db`)** | Yes | DuckDB `ATTACH ducklake:<file>` | N/A (single-host file) | Fully tested |
-| **DuckDB (Quack RPC)** | Experimental | Quack sidecar | Partial (upstream Quack limits) | Gated; see TODO-WRITE-MODE |
-| **MySQL 8+** | **Yes** (verified) | DuckDB `ATTACH ducklake:mysql:` (one-shot) | **Deferred** — upstream DuckDB `mysql` extension is unstable | Connector-verified; cross-engine deferred |
-| **SQLite** | Not yet | — | — | Deferred (low priority) |
-| **Turso (libSQL)** | Not yet | — | — | Blocked on a formal JDBC driver in Maven Central (asked upstream) |
+## Initialization and connection failure
 
-## MySQL 8+ (added 2026-07)
+The connector does not create/migrate DuckLake metadata tables. Bootstrap a compatible
+catalog before connecting. An unreachable server/database or invalid credentials can
+fail eager pool initialization. A reachable but uninitialized catalog can load the
+connector and fail on its first metadata read; the missing-schema diagnostic should
+identify that condition rather than pretend the lake is empty.
 
-**What works and is tested:** our connector reads/writes a MySQL-backed DuckLake catalog through
-the MySQL Connector/J driver + jOOQ (dialect auto-detected as `SQLDialect.MYSQL` from the
-`jdbc:mysql:` URL). Pinned by `TestJdbcDucklakeCatalogOnMySqlSmoke` (schema + table CRUD round-trip
-against a real MySQL 8.4 Testcontainer). To use it: set `ducklake.catalog.database-url=jdbc:mysql://host:3306/db`
-plus `database-user`/`database-password`. The MySQL driver ships on the connector's runtime
-classpath; no other config change is needed.
+PostgreSQL/MySQL drivers are runtime dependencies. DuckDB JDBC and Quack drivers used
+by tests are not automatically production dependencies. Do not infer a deployable
+backend merely from a fixture accepting its JDBC URL.
 
-**Backend-specific handling that landed:**
-- `JdbcDucklakeCatalog.isDuplicateKeyViolation` now recognizes MySQL's duplicate-key signal
-  (vendor error code `1062` + SQLState `23000`, and the `"Duplicate entry"` message), so the
-  optimistic-concurrency retry (PK collision on `ducklake_snapshot.snapshot_id`) fires correctly.
-- `snapshot_time` / `schedule_start` are written via a bound app-clock `OffsetDateTime` value
-  (`nowUtc()`) instead of `DSL.currentOffsetDateTime()`. jOOQ renders the latter as
-  `cast(current_timestamp() as timestamp with time zone)`, which MySQL rejects (no
-  `TIMESTAMP WITH TIME ZONE`). The bound value is dialect-portable and verified to not regress
-  PG/DuckDB (full `ducklake-catalog` suite green).
-- jOOQ bindings for MySQL's physical types are covered by existing codegen guards: booleans are
-  `tinyint(1)` (jOOQ MYSQL maps to `Boolean`), and `*_uuid` columns are `text` — exactly the case
-  the `*_uuid` `forcedType` UUID binding was written for.
+## Process topology and qualification
 
-**Why cross-engine is deferred (verified upstream blocker).** DuckLake itself supports MySQL as a
-metadata backend — a one-shot DuckDB `ATTACH 'ducklake:mysql:...'` reliably bootstraps all 28
-`ducklake_*` tables + the initial snapshot (5/5 clean runs). DuckDB 1.5.6 remains the maintained
-connector test lane, but its `mysql` extension is **unstable reading a DuckLake-on-MySQL catalog**: clean
-single-shot round-trips failed 5/5 with `Server has gone away` / `Got packets out of order`, and it
-SIGSEGVs the JVM inside `mysql_scanner.duckdb_extension` at `ssl3_write_bytes`. Reproduced on MySQL
-8.0 and 8.4, with and without `ssl_mode=disabled`. This is an upstream DuckDB `mysql`-extension bug,
-not ours — our connector never uses that extension (it talks to MySQL directly). Consequently:
-- We bootstrap the test schema via the reliable one-shot `ATTACH`, then drive all CRUD through our
-  own JDBC path (`TestJdbcDucklakeCatalogOnMySqlSmoke`).
-- We do NOT wire MySQL into the DuckDB-driven cross-engine test fixtures
-  (`DucklakeCatalogGenerator` / `DucklakeQueryRunner` / `DucklakeTestCatalogBackend`), because those
-  generate/read data through DuckDB, which crashes on MySQL.
-- Revisit cross-engine MySQL when DuckDB's `mysql` extension stabilizes (trip-wire: re-run the
-  standalone probe on DuckDB version bumps). **TODO: file this upstream at duckdb/ducklake** (sibling
-  to the data-file `file_format` dispatch gap reported as duckdb/ducklake#1289).
+Multiple DuckDB connections in one process can share a file. A separate Trino worker
+JVM or DuckDB CLI process is another process, even on the same host. Do not propose
+shared-file mounting as a way around that backend boundary.
 
-## Turso (libSQL)
+The normal MySQL path uses direct JDBC, not DuckDB's `mysql` extension. The historical
+native-extension failures motivate its cross-engine qualification gap, but are not
+fresh reproductions on every new pin. Re-probe when assigned; do not publish an
+unverified current-crash claim or make the native extension a requirement for Trino reads.
 
-Deferred pending a formal libSQL/Turso JDBC driver in Maven Central (requested upstream). Turso is
-preferred over plain SQLite for our distributed shape (Turso cloud). When the driver lands, it
-should slot in like MySQL: a driver dependency + a fixture + the dialect inference (libSQL is
-SQLite-wire, so `SQLDialect.SQLITE` handling — including the existing SQLite duplicate-key detection
-in `isDuplicateKeyViolation` — already applies).
+Quack deployment, authentication, exact driver/server versions, concurrent writers
+and bounded CI remain [open integration work](TODO.md#backend-qualification). A remote
+catalog connection does not make host-local data files reachable by Trino workers.
 
-## SQLite
-
-Not yet wired; low priority relative to Turso (which supersedes it for our use case). The catalog
-code already recognizes SQLite's duplicate-key error (`errorCode == 19` / `UNIQUE constraint
-failed`), so the main gap is a fixture + test wiring.
+[Historical backend investigations](archive/CATALOG-BACKENDS-history.md) retain the
+old probe evidence and implementation rationale without defining the current build.

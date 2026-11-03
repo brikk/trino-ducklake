@@ -1,5 +1,7 @@
 # Kotlin Idiom-Cleanup — Misfire Report
 
+> Completed port-era follow-up and lessons. Retained as history, not an active TODO.
+
 Companion to [`IDIOM-CLEANUP-PLAN.md`](./IDIOM-CLEANUP-PLAN.md). Records the **6 of 53 apply
 units** that did not land cleanly, with **what the unit intended vs. what actually happened**,
 so the failures can be re-issued correctly in a follow-up pass.

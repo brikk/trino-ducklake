@@ -1,5 +1,8 @@
 # Kotlin Idiom-Cleanup Plan (QUALITY ONLY — no behavior change)
 
+> Historical idiom-cleanup plan. Current coding constraints and remaining hygiene
+> work are in AGENTS.md, dev-docs/TODO.md and the live review.
+
 This plan modernizes the ported Kotlin to idiomatic form and collapses tiny sibling
 files. **No behavior changes.** All public/SPI/Jackson surfaces are preserved exactly.
 Edits are grouped **by file** so each file is touched once, and ordered so that

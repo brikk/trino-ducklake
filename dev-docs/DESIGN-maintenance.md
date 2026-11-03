@@ -26,7 +26,7 @@
 | `flush_inlined_data` | table/schema/catalog | Move eligible inlined rows to Parquet while preserving identity/count |
 | `rewrite_data_files` | table | Compact through the real read path; supports ordinary and partial-emitting shapes |
 
-The public SQL signatures and current defaults live in the README procedure table. This document
+The public SQL signatures and current defaults live in the [maintenance reference](../REFERENCE.md#maintenance-procedures). This document
 records invariants, not a second copy of every argument.
 
 ## Important boundaries
@@ -37,8 +37,8 @@ records invariants, not a second copy of every argument.
   identity fails closed; simultaneous import/cleanup remains an accepted limitation.
 - A future sub-file split or row-group-pruning path must preserve authoritative physical row
   positions before enabling mutation scans.
-- Procedure result tables are not implemented; Trino's `Procedure` SPI is void and current calls
-  log counts.
+- Procedure result tables are not implemented; current calls log counts. The 483 SPI uses
+  void handles; 484 has optional procedure metrics support, which this connector has not adopted.
 
 ## Open follow-ups
 

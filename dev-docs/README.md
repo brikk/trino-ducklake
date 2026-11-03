@@ -1,37 +1,36 @@
 # Developer documentation
 
-Start with the root [README](../README.md) for the supported product surface. This directory keeps
-only current engineering contracts, active backlogs, release notes, and the latest dated review at
-top level. Superseded plans, completed trackers, and research evidence live in [`archive/`](archive/).
+User/operator instructions live in the root [README](../README.md),
+[REFERENCE](../REFERENCE.md) and [SAMPLES](../SAMPLES.md). This directory is for
+maintainers, not a second user manual or an append-only release diary.
 
-## Current contracts and designs
+## Start here
 
-- [CATALOG-BACKENDS.md](CATALOG-BACKENDS.md) — metadata backend behavior and support.
-- [TRINO-COMPATIBILITY.md](TRINO-COMPATIBILITY.md) — exact 483/484 build and SPI boundaries.
-- [DESIGN-maintenance.md](DESIGN-maintenance.md) — shipped maintenance invariants and limits.
-- [DESIGN-shared-file-ownership.md](DESIGN-shared-file-ownership.md) — bounded retained-owner safety.
-- [DESIGN-virtual-columns.md](DESIGN-virtual-columns.md) — hidden metadata-column behavior.
-- [CRUTCHES-AND-SHORTCUTS.md](CRUTCHES-AND-SHORTCUTS.md) — accepted restrictions and removal criteria.
+- [DEVELOPMENT.md](DEVELOPMENT.md): build/test/release commands, dependency boundaries,
+  fixture prerequisites and local verification discipline.
+- [TODO.md](TODO.md): one current backlog, containing only unresolved work and watches.
+- [CATALOG-CANDIDATE.md](CATALOG-CANDIDATE.md): exact opt-in published snapshot, scoped
+  qualification and remaining 1.1/default-on gates. Normal builds remain catalog 0.12.0.
+- [REVIEW-2026-09-05.md](REVIEW-2026-09-05.md): permanent finding IDs, recorded repairs
+  and unresolved security/value/history risks. Kept active because obligations remain;
+  its dated observations are not automatically fresh reproductions.
 
-## Active work
+## Current implementation contracts
 
-- [TODO-READ-MODE.md](TODO-READ-MODE.md) — concise read-path backlog.
-- [R07-TRINO-CANDIDATE-QUALIFICATION.md](R07-TRINO-CANDIDATE-QUALIFICATION.md) — exact temporary
-  catalog trial, native SPI/matched-worker SQL evidence and remaining catalog/deployment gates.
-- [HANDOFF-CATALOG-72aae19.md](HANDOFF-CATALOG-72aae19.md) — published N03/H15/N19 candidate pins and Trino adoption.
-- [TODO-WRITE-MODE.md](TODO-WRITE-MODE.md) — concise write-path backlog.
-- [TODO-jayson-special-list.md](TODO-jayson-special-list.md) — strategic/cross-cutting backlog.
-- [TODO-uhoh.md](TODO-uhoh.md) — upstream risks to recheck, not committed feature work.
-- [REVIEW-2026-09-05.md](REVIEW-2026-09-05.md) — latest repository-wide stable-ID review and
-  implementation follow-ups. It is a dated audit, not a duplicate daily TODO list.
+- [TRINO-COMPATIBILITY.md](TRINO-COMPATIBILITY.md): 483/484 BOM, SPI, parser and packaging boundaries.
+- [CATALOG-BACKENDS.md](CATALOG-BACKENDS.md): metadata connection/process topology and qualification scope.
+- [DESIGN-maintenance.md](DESIGN-maintenance.md): current maintenance invariants.
+- [DESIGN-shared-file-ownership.md](DESIGN-shared-file-ownership.md): bounded owner checks and accepted races.
+- [DESIGN-virtual-columns.md](DESIGN-virtual-columns.md): hidden handles, logical/physical identity and injection.
+- [CRUTCHES-AND-SHORTCUTS.md](CRUTCHES-AND-SHORTCUTS.md): active restrictions, costs and removal criteria.
 
-## Process and releases
+## Tools and retained evidence
 
-- [RESEARCH-upstreams.md](RESEARCH-upstreams.md) — upstream refresh procedure and current baselines.
-- `RELEASE-*.md` — release-specific compatibility and verification notes.
+- [LOCAL-STACK.md](LOCAL-STACK.md): the optional Compose workbench and its actual checkout limitations.
+- [RESEARCH-upstreams.md](RESEARCH-upstreams.md): source-backed upstream research procedure.
+- [Archive index](archive/README.md): completed handoffs/releases, superseded trackers,
+  old surveys/designs and Kotlin-port evidence.
 
-## Archive rule
-
-Move a document to `archive/` when its implementation shipped, its component moved to another
-repository, or a newer review/tracker superseded it. Keep a short status banner and update inbound
-links. Do not erase evidence from an active correctness finding merely to shorten a live tracker.
+Archive a document once it is evidence rather than current instructions. Carry all
+unfinished tasks and necessary caveats into the active backlog/contract first. A
+move to archive does not resolve a risk, qualify a route or authorize production rollout.

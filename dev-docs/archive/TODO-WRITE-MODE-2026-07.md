@@ -1,7 +1,7 @@
 # DuckLake Write Mode — historical implementation tracker
 
 **Archived:** completed implementation history and detailed 2026 research are preserved here.
-Current open write work is summarized in [`../TODO-WRITE-MODE.md`](../TODO-WRITE-MODE.md).
+Current open write work is summarized in [the active backlog](../TODO.md).
 
 The shipped write surface is summarized in the feature chart in [README](../README.md);
 this file tracks what's still open. Reuse strategy when adding to the write path:
@@ -465,7 +465,7 @@ generate new parquet files and need a similar metadata-insert path.
   the gated scope (accepted v1 trade-off, reported via `getMemoryUsage`). Pinned by
   `TestDucklakeSortedWrites` (ASC/DESC/two-key physical order via `$file_row_number` + single-file
   assert; fallback regressions for unsorted / partitioned+sorted / duckdb-format+sorted). See
-  [DUCKLAKE_1_0_IMPACT.md § Sorted Tables](DUCKLAKE_1_0_IMPACT.md#2-sorted-tables).
+  [DUCKLAKE_1_0_IMPACT.md § Sorted Tables](DUCKLAKE_1_0_IMPACT.md#2-sorted-tables--read-awareness-shipped).
   Follow-ups (not done): a Trino `sorted_by` table property; spill-based sort for large unpartitioned
   inserts; partitioned+sorted.
 
@@ -981,7 +981,7 @@ upstream defines one (free while we have no users).
 - [ ] Cross-engine sanity: after the rename, confirm stock DuckDB attached to
   the same catalog errors *cleanly* (not corruptly) on a `brikk-*` table scan,
   and skips them for maintenance ops (ties into the
-  cross-engine-cleanup-survival test in [current upstream risk watch](../TODO-uhoh.md)).
+  cross-engine-cleanup-survival test in [current upstream risk watch](../TODO.md#upstream-watches--investigate-before-changing-contracts)).
 
 ## Open Research Items
 

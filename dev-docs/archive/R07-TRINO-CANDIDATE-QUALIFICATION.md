@@ -1,5 +1,8 @@
 # R07 Trino candidate qualification — October 23–25, 2026
 
+> Historical checkpoints, including superseded local-bundle commands. These are not
+> current build instructions. Active settings and open gates are in dev-docs/CATALOG-CANDIDATE.md.
+
 **November 1 update:** the [published read-correctness handoff](HANDOFF-CATALOG-72aae19.md)
 supersedes the local-bundle selection instructions below. Use `-Pr07CatalogCandidate`
 for exact snapshot `0.13.0-20261101.082015-33`; old bundle-path values are rejected.

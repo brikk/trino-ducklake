@@ -1,5 +1,8 @@
 # DuckLake JVM → Kotlin port — working plan
 
+> Historical port-era plan, not an active migration instruction. Current unfinished
+> work is tracked in dev-docs/TODO.md and the live review; original evidence is retained.
+
 > Start-here doc for any session. Companion files in this dir:
 > - `adversarial-review-result.json` — the 73 confirmed findings (full detail/suggestion/reasoning). Source of truth for bug locations.
 > - `.claude/workflows/kotlin-port.js` — the port workflow.

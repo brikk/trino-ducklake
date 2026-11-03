@@ -4,7 +4,7 @@
 # Bootstraps (or refreshes) the vendored upstream repos this project tracks
 # for research and audit. None of these repos are built or shipped — they
 # are read-only working copies used by the upstream-tracking workflow
-# described in `jvm/trino-ducklake/dev-docs/RESEARCH-HOWTO.md`.
+# described in `dev-docs/RESEARCH-upstreams.md`.
 #
 # Usage:
 #   ./vendor/clone-related-projects.sh         # clone any missing, fetch the rest
@@ -16,7 +16,7 @@
 #
 # This script never modifies working-tree state of an existing repo
 # beyond fetching, unless --pull is explicitly passed. The
-# RESEARCH-HOWTO procedure relies on local HEAD staying at the previous
+# research procedure relies on local HEAD staying at the previous
 # baseline until the user advances it explicitly.
 
 set -euo pipefail
@@ -87,4 +87,4 @@ done
 
 echo
 echo "Done. Next: run the survey procedure in"
-echo "jvm/trino-ducklake/dev-docs/RESEARCH-HOWTO.md"
+echo "dev-docs/RESEARCH-upstreams.md"

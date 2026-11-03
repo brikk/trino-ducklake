@@ -1,245 +1,48 @@
-# Upstream Tracking — Playbook + Latest Findings
+# Upstream research procedure
 
-The repo root has a `vendor/` directory that holds **read-only working
-copies** of upstream projects we audit against. Nothing under `vendor/`
-is built or shipped, and the sub-directories themselves are git-ignored
-(see the root `.gitignore`). This file is both the playbook an agent runs
-on each refresh and a short record of where the most recent survey left
-the baselines.
+`vendor/` holds ignored, read-only research checkouts; none is built or shipped here.
+The configured projects/remotes are in [`vendor/clone-related-projects.sh`](../vendor/clone-related-projects.sh).
+The `ducklake` git submodule is a separate pinned test fixture, not a research baseline
+to update implicitly. Authoritative current dependency pins are in
+[`gradle/libs.versions.toml`](../gradle/libs.versions.toml).
 
-To bootstrap a fresh checkout (or refresh an existing one):
+## Refresh procedure
 
-```sh
-./vendor/clone-related-projects.sh          # clone any missing, fetch the rest
-./vendor/clone-related-projects.sh --pull   # additionally fast-forward
-```
+1. Read the last dated survey in [the research log](archive/RESEARCH-LOG.md) and
+   [the retained August baseline](archive/UPSTREAM-TRACKING-2026-08-26.md#latest-baselines).
+   Those are survey checkpoints, not claims about today's upstream release state.
+2. Inspect [the unresolved watches](TODO.md#upstream-watches--investigate-before-changing-contracts).
+3. Fetch missing/existing mirrors without pulling or changing their checked-out refs:
 
-Paths in this document are written **relative to the repo root**. Sibling
-docs in this same directory:
+   ```sh
+   ./vendor/clone-related-projects.sh
+   git -C vendor/ducklake log --oneline <surveyed-sha>..origin/<branch>
+   git -C vendor/ducklake diff --stat <surveyed-sha>..origin/<branch>
+   ```
 
-- Working TODOs: `TODO-WRITE-MODE.md`, `TODO-READ-MODE.md`. Research-derived
-  items get folded in there directly (each has an "Open Research Items"
-  pointer section). (The DuckDB-engine pushdown/format TODOs moved to
-  brikk/duckbridge dev-docs archive with the pushdown machinery.)
-- Parking lot: `TODO-uhoh.md` — concerns without a home yet (direction-of-travel
-  worries, protection tests, unplaceable ideas). **Glance at it on every refresh
-  run** — re-verify its "Watch" items against the new diff (e.g. server-side
-  commit trajectory, orphan-sweep `*.parquet` filter still in place).
-- Historical comparison audits:
-  [`archive/COMPARE-datafusion-ducklake.md`](archive/COMPARE-datafusion-ducklake.md) and
-  [`archive/COMPARE-pg_ducklake.md`](archive/COMPARE-pg_ducklake.md).
-- Archived historical context:
-  [`archive/RESEARCH-LOG.md`](archive/RESEARCH-LOG.md) (full append-only
-  log of prior refresh runs — what was surveyed, what was found, and the
-  SHAs each survey rested on),
-  [`archive/RESEARCH-TODO.md`](archive/RESEARCH-TODO.md) (pre-fold-in
-  research questions with the longer rationale for each item that's now
-  bulleted in the working TODOs).
+4. Inspect actual remote refs and relevant release branches; do not assume a historical
+   branch name is still the active release line. Compare submodule gitlinks explicitly
+   when they move. Fetching does not populate their working trees.
+5. Triage substantive catalog/schema, identity/history, type/encoding, pruning, inline,
+   deletion, maintenance, view, partition/sort and catalog-backend changes against
+   current code and exact artifacts. Dependency/tag announcements alone are not fixes.
+6. Classify findings as existing parity, a real gap, a source-backed risk needing
+   reproduction, or documentation-only. Preserve that distinction: no unproven skip,
+   silent type degradation or "environment variance" explanation.
+7. Add only genuinely unresolved, actionable items to [TODO.md](TODO.md), linking
+   evidence. Do not clone a parallel backlog or reopen archived work by its old label.
+   Large investigations can have a focused report in `dev-docs/` while active.
+8. Record date, exact refs/SHAs, repositories actually inspected, relevant evidence
+   and scope in an archived survey/log entry. Tag-only checks must not be described
+   as source audits, native tests or consumer qualification.
 
-The point: keep our integration aligned with the reference implementations
-without missing spec-level or correctness-impacting changes.
+## Boundaries
 
-## Tracked repos
+- Do not use `--pull`, migrate catalogs, repin a corpus/native producer, publish,
+  enable unsupported reads/writes or push merely as part of a survey.
+- Data-plane DuckDB/Vortex/Lance work is not this connector's catalog-plane backlog.
+- If library changes need consumer adoption, use exact published coordinates and
+  verify variants/transitives/bytes before claiming the connector uses those fixes.
+- A successful parser or oracle-only test is not actual engine mirror coverage.
 
-Each sub-directory under `vendor/` is its own git repo. Identify each by
-`git remote -v`:
-
-| Sub-dir | Upstream | What it is | What to watch |
-|---|---|---|---|
-| `ducklake/` | `duckdb/ducklake` | The reference C++ DuckDB extension — effectively the DuckLake spec implementation | Active release branches (currently `v1.5-variegata`); `main` is duckdb-main CI. Spec-impacting catalog/metadata changes, new catalog backends, retry/concurrency fixes, type/schema evolution. |
-| `ducklake-web/` | `duckdb/ducklake` (web) | The public DuckLake docs site (jekyll) | `docs/stable/`, `docs/0.4/`, blog posts, landing page (`index.html`) catalog list. Surfaces the publicly-supported feature set. |
-| `pg_ducklake/` | (Rely Cloud) | Postgres extension that wires `pg_duckdb` + the upstream DuckLake C++ extension into PG | PG-side glue is mostly not portable, but watch `third_party/ducklake/` (vendored DuckLake reference) for upstream bumps that pg_ducklake exposes early. Also watch the `docs/` for upstream feature signal. |
-| `datafusion-ducklake/` | `hotdata-dev/datafusion-ducklake` | Rust DataFusion extension | Spec interpretation cross-check; ideas worth stealing (e.g. footer-size hints). |
-| `duckdb-web/` | `duckdb/duckdb-web` | DuckDB's main docs site | Indirect — only check if a DuckLake-related DuckDB feature is being documented (e.g. Quack RPC, Parquet variant types). |
-
-## Per-run procedure
-
-For each tracked repo, **in this order**:
-
-### 1. Establish baseline
-
-Open [`archive/RESEARCH-LOG.md`](archive/RESEARCH-LOG.md) (or the "Latest
-baselines" section at the bottom of this file), find the most recent
-entry for this repo, and read the recorded "last-surveyed SHA" (and
-branch) for it. If no prior entry exists, the baseline is the current
-local `HEAD` before fetching.
-
-### 2. Fetch — do not pull
-
-```sh
-cd vendor/<repo>
-git fetch --all --prune
-```
-
-Or, to refresh all repos at once without pulling:
-
-```sh
-./vendor/clone-related-projects.sh
-```
-
-**Do not** `git pull` (and do not pass `--pull` to the bootstrap script)
-during a survey. The `vendor/` repos are read-only research mirrors —
-leaving them un-merged makes the diff easy to compute, and avoids
-touching submodules. The user advances the local baseline when they're
-ready, not the survey agent.
-
-### 3. Diff vs baseline
-
-For the project's main branch (and any active release branch — DuckLake's
-case is `v1.5-variegata` right now):
-
-```sh
-git log --oneline --no-merges <baseline-SHA>..origin/<branch>
-git log --merges --pretty="%h %as %s" <baseline-SHA>..origin/<branch>
-git diff --stat <baseline-SHA>..origin/<branch>
-```
-
-If a relevant submodule pointer might have moved:
-
-```sh
-git ls-tree <baseline-SHA> <submodule-path>
-git ls-tree origin/<branch> <submodule-path>
-```
-
-(`git fetch` does **not** populate submodules — `git submodule update
---init --recursive <path>` does, if you actually need the working tree.
-For diff-level survey, the pointer comparison is usually enough.)
-
-### 4. Triage each substantive change
-
-A change is **substantive** if it touches one of:
-
-- catalog/metadata schema or queries
-- snapshot / lineage / commit / retry semantics
-- type system or schema evolution
-- file layout / Parquet schema annotations / stats
-- inlined-data lifecycle
-- delete-file or position-delete encoding
-- catalog backends (DuckDB-local, SQLite, Postgres, MySQL, Quack, …)
-- maintenance ops (`flush_inlined_data`, `merge_adjacent_files`,
-  `rewrite_data_files`, `expire_snapshots`, `cleanup_*`)
-- views, macros, partitioning, sorting
-
-Skip: dependency bumps, CI tweaks, lint-only changes, comments,
-formatting, blog posts unrelated to a feature.
-
-For each substantive change, decide:
-
-- **Parity** — we already do this. Note as confirmation in the chat
-  summary; no doc change needed.
-- **Gap** — we don't do this; could matter. Add a short bullet under
-  "Open Research Items" in the appropriate working TODO
-  (`TODO-WRITE-MODE.md` or `TODO-READ-MODE.md`) with a one-line summary
-  + proposed spike size.
-- **Research** — unclear if it matters until we look closer. Same as
-  Gap — bullet in the appropriate TODO.
-- **Bug-shaped on our side** — if upstream just fixed something we may
-  also have wrong, add a high-priority item directly in the relevant
-  working TODO section (not under "Open Research Items"; this is a
-  known-need).
-- **Doc-only** — write/read mode unaffected; just update the relevant
-  `dev-docs/COMPARE-*.md` files in place (the agent has authority to
-  do this directly — these are *our* docs, not user code).
-
-### 5. Fold findings into working TODOs
-
-For each gap / research / bug-shaped item, add a short bullet under the
-target TODO's "Open Research Items" section (or directly in the relevant
-feature section if it's bug-shaped and already in scope). Bullets are
-terse; they're pointers, not full rationale. Shape:
-
-```markdown
-- **<short-anchor>** — what + where (1 sentence) + proposed spike size.
-```
-
-Don't write a separate per-item doc unless the item is substantial
-enough to need 100+ lines of analysis. In that case create a `REPORT-*`
-or `PLAN-*` sibling in `dev-docs/` and link from the bullet.
-
-### 6. Update "Latest baselines"
-
-Edit the "Latest baselines" section at the bottom of this file: bump the
-SHAs you just surveyed so the next run has the right diff anchor.
-
-If the survey was large or the user wants a permanent record, append a
-dated entry to [`archive/RESEARCH-LOG.md`](archive/RESEARCH-LOG.md)
-mirroring the older entries' shape. For routine refreshes, the in-chat
-summary plus the "Latest baselines" update is enough — don't bloat the
-log with one-line "nothing substantive" runs.
-
-### 7. Summarize to the user
-
-End the run with a concise summary in chat (not a doc):
-
-- Repos surveyed + new baseline SHAs.
-- 1-line bullets for each substantive finding.
-- Items added to working TODOs by anchor.
-- Ask the user which (if any) should be **promoted** from "Open Research
-  Items" into a real backlog item in that same TODO. Don't promote
-  without explicit user OK.
-
-## Common pitfalls
-
-- **Don't `git pull`** in the temp repos. The whole point of the diff
-  procedure is that the local HEAD stays at the previous baseline until
-  the user decides to advance it.
-- **Submodules don't fetch implicitly.** If a submodule pointer matters
-  for the survey, compare the gitlink SHAs at HEAD vs `origin/<branch>`;
-  don't assume a `git fetch` populated them.
-- **Active release branch ≠ `main`.** DuckLake's substantive work
-  currently lands on `v1.5-variegata` before back-merging to `main`. Always
-  survey the release branch in addition to `main`.
-- **`vendor/ducklake-web` and `vendor/duckdb-web` use `docs/stable/`** as
-  the single source of truth — versioned dirs (`docs/0.4/`, etc.) are
-  snapshots of older releases. When checking for new feature docs, look
-  at `stable` first.
-- **`datafusion-ducklake` releases version-tag often.** Their `CHANGELOG.md`
-  is the cheapest signal — read it before diving into the diff.
-- **`pg_ducklake` mostly ships PG-side glue.** Most diffs there are not
-  portable to us, but the vendored `third_party/ducklake/` snapshot is —
-  if that submodule/vendor bumps, treat it as a `ducklake/` survey.
-
-## Latest baselines
-
-Most-recent SHA for each tracked repo. Update these after each refresh
-run. For the long-form historical record see
-[`archive/RESEARCH-LOG.md`](archive/RESEARCH-LOG.md).
-
-| Repo | Branch | Baseline SHA | Surveyed on |
-|---|---|---|---|
-| `datafusion-ducklake/` | `main` | `v0.7.0` + unreleased (was v0.5.0; NaN-aware float pruning #203, missing-stats-keep-file #250, CDC-by-field-id #253, delete-bearing bounds inexact, tz-aware UTC min/max #260, sort order, partitioned writes) | 2026-08-26 |
-| `ducklake/` | `v1.5-variegata` | `5ef9e03d` (was `d8a1881e`; **DuckDB 1.5.5 released/tagged**; `hive_file_pattern` on flush; still catalog spec `V1_0`) | 2026-08-26 |
-| `ducklake/` | `main` | `a92e65b8` (was `2856687c`; **spec bump to `V1_1_DEV_1`** — MetadataManagerV1_1/MigrateV10, `_ducklake_` inlined cols, epoch partition transforms, expire tags on DROP COLUMN; global-stats-only-current-snapshot; column-bounds across widenings + keep-invalidated-unknown; cache-not-across-schemas; `newer_than` on merge_adjacent_files) | 2026-08-26 |
-| `ducklake-web/` | `main` | `c7b5b19` (not re-surveyed 2026-08-26) | 2026-07-18 |
-| `ducklake-web/` | `quack` | `9a8dcf9` (not re-surveyed 2026-08-26) | 2026-07-18 |
-| `pg_ducklake/` | `main` | `e43c6b8` (not diffed 2026-08-26; latest tag is now `v1.0.2`, was `v1.0.1`) | 2026-07-18 |
-| `pg_ducklake/` | `v1.0` | `6d751f5` (tag `v1.0.2` now exists; not diffed) | 2026-07-13 |
-| `duckdb-quack/` | `main` | `2cb2728` (not re-surveyed 2026-08-26; branches unchanged: `main`, `v1.5-variegata`) | 2026-07-18 |
-| `duckdb-quack/` | `v1.5-variegata` | `b2466e4` (not re-surveyed 2026-08-26) | 2026-07-18 |
-| `duckdb-web/` | `main` | `a48a99fb` (not re-surveyed 2026-08-26) | 2026-07-18 |
-| `duckdb/` (core) | `v1.5-variegata` | **`v1.5.5` tagged/released** (our pin `duckdb=1.5.5.0` is current); DECIMAL `RETURN_STATS` min/max swap fix #23693 shipped in 1.5.5 (read-side guard still tracked, see `decimal-swapped-minmax-prune-guard`) | 2026-08-26 |
-
-**Note (2026-08-26 survey):** the next DuckLake **catalog spec change** has now MATERIALIZED on
-`ducklake/main` as `DuckLakeVersion::V1_1_DEV_1` (`DUCKLAKE_LATEST_VERSION`) with a dedicated
-`DuckLakeMetadataManagerV1_1` and `MigrateV10()` migration step. It remains **main-only** — no
-`v1.6` release branch exists yet and it was **not** backported to `v1.5-variegata`, so the shipped
-**DuckDB 1.5.5** keeps the catalog on spec **v1.0** (its migration ladder tops out at `V1_0`).
-What v1.1 carries: `_ducklake_`-prefixed / centralized inlined-metadata columns,
-`epoch_year`/`epoch_month`/`epoch_day`/`epoch_hour` partition transforms (gated on DuckLake 1.1),
-and expiring column tags on `DROP COLUMN`. Read-side correctness fixes also landed on `main` this
-window (global-stats-only-on-current-snapshot, column-bounds-across-widenings +
-keep-invalidated-bounds-unknown) and were folded into `TODO-READ-MODE.md` Open Research Items.
-Track the spec bump on `main` for the DuckDB line that ships it.
-
-**Survey scope note (2026-08-26):** the `vendor/` mirrors were not present in this checkout, so
-this pass used `git ls-remote` for version/branch signal + fetched the `ducklake` submodule's
-`main` and `v1.5-variegata` for the commit-level diff, plus the published `datafusion-ducklake`
-CHANGELOG for cross-check. `ducklake-web`, `duckdb-web`, `duckdb-quack`, and `pg_ducklake` were
-checked only at the tag/branch level (versions above), not diffed commit-by-commit.
-
-Older baselines and the per-run substantive findings are preserved
-verbatim in [`archive/RESEARCH-LOG.md`](archive/RESEARCH-LOG.md). The
-research items found during those runs were folded into the working
-TODOs (see "Open Research Items" sections in `TODO-WRITE-MODE.md` and
-`TODO-READ-MODE.md`); the longer per-item rationale is in
-[`archive/RESEARCH-TODO.md`](archive/RESEARCH-TODO.md).
+Historical comparisons and earlier procedural detail are retained in [archive](archive/README.md).

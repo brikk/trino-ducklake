@@ -1,5 +1,8 @@
 # Trino + DuckLake local dev stack
 
+> Historical workbench instructions. Current prerequisites and known checkout
+> dependencies are in dev-docs/LOCAL-STACK.md; do not use the old monorepo commands.
+
 A self-contained Docker Compose stack for hacking on the `trino-ducklake` connector:
 
 - **Trino 480** with this repo's plugin mounted from `build/trino-plugin/`
@@ -16,7 +19,7 @@ traffic; host ports are exposed for local debugging tools.
 
 - Docker Desktop, Podman+Docker compose, or Colima
 - Java 25 + Gradle for assembling the plugin (see the parent
-  [README](../README.md))
+  [README](../../README.md))
 
 ## Start it
 

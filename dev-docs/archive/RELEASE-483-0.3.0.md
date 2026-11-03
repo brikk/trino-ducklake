@@ -1,5 +1,7 @@
 # trino-ducklake 483-0.3.0
 
+> Historical release notes, not the current build or support contract.
+
 This release targets Trino 483 and adopts the released DuckLake catalog, catalog test fixtures,
 corpus replay, and SLT format at `0.11.0`. Cross-engine tests align DuckDB JDBC to `1.5.6.0`.
 

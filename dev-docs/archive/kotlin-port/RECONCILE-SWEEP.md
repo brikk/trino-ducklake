@@ -1,5 +1,8 @@
 # Port closeout — reconciliation sweep
 
+> Historical reconciliation recipe. Do not treat old marker counts as a current
+> inventory; the record is retained without asserting unresolved findings are fixed.
+
 > Run once, now, on the freshly-merged green `main`. Goal: prove nothing fell through the
 > port. The 73 confirmed findings in `adversarial-review-result.json` must reconcile exactly
 > into BEFORE (fixed) + DURING (kit-applied) + AFTER (in-tree markers). If it balances, the

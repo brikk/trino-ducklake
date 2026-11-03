@@ -3,6 +3,10 @@
 Examples specific to using [DuckLake](https://ducklake.select) through Trino.
 All examples assume a catalog named `ducklake`.
 
+These examples target the normal DuckLake 1.0 configuration. See [installation](README.md)
+and the [reference](REFERENCE.md) for physical type, inlined-mutation and maintenance
+limits. Snapshot IDs shown below must exist in your catalog; they are not universal constants.
+
 ## Catalog Configuration
 
 `etc/catalog/ducklake.properties`:
@@ -22,7 +26,7 @@ ducklake.data-path=s3://my-bucket/ducklake-data/
 ducklake.catalog.max-connections=10
 
 # S3 access (if using object storage)
-fs.native-s3.enabled=true
+fs.s3.enabled=true
 s3.region=us-east-1
 ```
 
@@ -101,6 +105,10 @@ WITH (partitioned_by = ARRAY['region']) AS
 ```
 
 ## Row-Level Mutations
+
+If the table has inlined rows, first run
+`CALL ducklake.system.flush_inlined_data(schema_name => 'analytics', table_name => 'orders')`
+for the table being mutated. DELETE/UPDATE/MERGE do not tombstone inlined rows.
 
 ```sql
 -- DELETE
@@ -217,7 +225,7 @@ In DuckDB, attach the same catalog:
 INSTALL ducklake;
 LOAD ducklake;
 
-ATTACH 'ducklake:postgresql://postgresql:5432/ducklake?user=ducklake&password=<password>'
+ATTACH 'ducklake:postgres:dbname=ducklake host=postgresql port=5432 user=ducklake password=<password>'
     AS lake (DATA_PATH 's3://my-bucket/ducklake-data/');
 
 -- Read data written by Trino

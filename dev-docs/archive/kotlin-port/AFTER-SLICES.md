@@ -1,5 +1,8 @@
 # AFTER backlog — slice triage
 
+> Historical port-era triage. Marker counts and proposed slices are not a current
+> completion claim; consult dev-docs/TODO.md and the live review before reopening work.
+
 > Companion to `RECONCILE-SWEEP.md`. The reconciliation sweep confirmed that 50 in-tree
 > `TODO(review:after id=…)` markers form the AFTER backlog. Source of truth for marker
 > bodies / Java + Kotlin anchors / severity: `after-markers.json` (`markers[]`, keyed by

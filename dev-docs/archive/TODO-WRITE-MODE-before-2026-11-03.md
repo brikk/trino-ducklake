@@ -1,8 +1,11 @@
 # DuckLake write path — open items
 
-The shipped surface is documented in [README.md](../README.md). Completed implementation history
-is archived at [`archive/TODO-WRITE-MODE-2026-07.md`](archive/TODO-WRITE-MODE-2026-07.md); review
-findings with stable IDs remain in [REVIEW-2026-09-05.md](REVIEW-2026-09-05.md).
+> Superseded tracker: open items are consolidated in dev-docs/TODO.md. Archiving
+> this source list does not mark its unfinished work complete.
+
+The shipped surface is documented in [README.md](../../README.md). Completed implementation history
+is archived at [`archive/TODO-WRITE-MODE-2026-07.md`](TODO-WRITE-MODE-2026-07.md); review
+findings with stable IDs remain in [REVIEW-2026-09-05.md](../REVIEW-2026-09-05.md).
 
 ## DuckDB-as-Catalog Backend (Local + Quack)
 
@@ -31,7 +34,7 @@ findings with stable IDs remain in [REVIEW-2026-09-05.md](REVIEW-2026-09-05.md).
 ## Maintenance Operations
 
 - [ ] Return structured result counts if a suitable Trino API is adopted. Current procedures are
-  implemented and log outcomes; see [DESIGN-maintenance.md](DESIGN-maintenance.md).
+  implemented and log outcomes; see [DESIGN-maintenance.md](../DESIGN-maintenance.md).
 
 ## Catalog Namespace Hygiene
 

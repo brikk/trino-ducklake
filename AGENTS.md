@@ -2,15 +2,14 @@
 
 ## Consult before big workarounds (HARD RULE)
 Do NOT invent large workarounds, architectural crutches, or "clever" bypasses
-without checking with the user FIRST. Today we had to undo several doozies
-(a temp-Parquet-on-shared-storage inlined-data path that can't work on a
-distributed FE/BE cluster; a wrong "JDK-25 ABI break" diagnosis with an
-assume-skip; an over-engineered warehouse-dot-dir scratch scheme when the OS
-temp dir / a real fix was the answer). When you hit a wall:
+without checking with the user FIRST. Do not replace real catalog/value paths with
+shared-storage scratch, assume a JVM ABI failure without evidence, or add a
+warehouse scratch scheme where standard build/test temporary storage is sufficient.
+When you hit a wall:
 1. State the problem and the options plainly.
 2. Say which is a real fix vs a crutch, and what each costs.
 3. Ask before implementing anything that (a) writes to shared storage,
-   (b) assumes FE and BE share a filesystem, (c) skips/disables tests,
+   (b) assumes coordinator and workers share a filesystem, (c) skips/disables tests,
    (d) masquerades as another format/engine, or (e) degrades a type/semantic.
 
 ## Never blame the harness/system to turn a red bar green
@@ -20,13 +19,15 @@ skip-listing. A skip reason must be TRUE and specific, never "environment
 variance" hand-waving.
 
 ## Prefer failing loud over silently wrong
-Guards throw `DorisConnectorException` (which the corpus classifies as an
-engine-skip) rather than return wrong rows. Never silently over/under-return.
+Guards throw an appropriate `TrinoException` rather than return wrong rows. The
+corpus may classify an explicitly unsupported capability as an engine-skip; that
+is not permission to hide an implementation defect. Never silently over/under-return.
 
 ## Verify against the real thing
-The Doris FE runs JDK 17 with a curated jar set (`output/fe/lib`). Test-JVM
-classpath issues (e.g. the fat `~/.m2` fe-thrift shadowing parquet-format) are
-NOT runtime issues — prove which you're looking at before working around it.
+Trino targets 483 and 484 have separate BOMs, adapters and plugin archives. The build
+toolchain is JDK 25; CI also executes tests on JDK 26. A test-JVM classpath conflict
+is not proof of a deployed-plugin failure. Verify the selected target, actual runtime
+and resolved/packaged JARs before proposing a workaround.
 
 ## Testing discipline
 - Bound bulk maintenance reads with SQL-limited pages/batches and enforce reasonable
@@ -40,8 +41,8 @@ NOT runtime issues — prove which you're looking at before working around it.
 - Keep `dev-docs/CRUTCHES-AND-SHORTCUTS.md` current — every non-production-clean
   path goes there.
 
-See `jvm/doris-ducklake/dev-docs/` for the plan, friction log, and crutch
-inventory.
+See `dev-docs/README.md`, `dev-docs/TODO.md` and
+`dev-docs/CRUTCHES-AND-SHORTCUTS.md` for current developer guidance and restrictions.
 
 ## Commit identity (Buzz agents)
 

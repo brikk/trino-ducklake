@@ -82,7 +82,7 @@ class TestR07ConsumerTrial {
                     assertThat(profile.sqlEngineSourceId).isEqualTo("d54cbbe3df")
                     assertThat(profile.unsignedExtensionsAllowed).isFalse()
                 }
-                if (lane == Lane.JAVA_QUACK) assertThat(profile.jdbcDriverVersion).isEqualTo("0.8.0")
+                if (lane == Lane.JAVA_QUACK) assertThat(profile.jdbcDriverVersion).isEqualTo("0.13.0")
             })
             val plan = f.plan(coordinator)
             assertThat(plan.splits.filterIsInstance<DucklakeSplit>()).hasSize(1)
@@ -1067,7 +1067,9 @@ class TestR07ConsumerTrial {
         fun native(sql: String) = DriverManager.getConnection("jdbc:duckdb:").use { c -> c.createStatement().use { s ->
             val jar = Path.of(Class.forName("org.duckdb.DuckDBDriver").protectionDomain.codeSource.location.toURI())
             val hash = MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(jar)).joinToString("") { "%02x".format(it) }
-            check(hash == "5170daa90a43296705127ef3c80834ba1cd275ec9d765a9f7eee346ab0087186")
+            check(hash == "6cb8b0e0fc51b2e45aead2d2c1e1fd09dd10267db2966e69aaab0de67319f826") {
+                "Expected Maven Central DuckDB JDBC 2.0.0.1, got $jar (SHA-256 $hash)"
+            }
             s.execute("INSTALL ducklake; LOAD ducklake")
             s.executeQuery("PRAGMA version").use { r -> check(r.next()); check(r.getString(2) == "d54cbbe3df") }
             s.executeQuery("SELECT extension_version FROM duckdb_extensions() WHERE extension_name='ducklake'").use { r ->

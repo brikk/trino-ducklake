@@ -296,16 +296,8 @@ class DucklakeConfig {
         catalogConfig.catalogDatabasePassword = catalogDatabasePassword
         catalogConfig.dataPath = dataPath
         catalogConfig.maxCatalogConnections = maxCatalogConnections
-        if (enableFinal11Reads) {
-            // Optional API boundary: keep compiling/running the released 0.12 lane unchanged.
-            // Invoke only the candidate's real public setter; never emulate its read admission.
-            val setter = try {
-                catalogConfig.javaClass.getMethod("setEnableFinal11Reads", Boolean::class.javaPrimitiveType)
-            } catch (e: NoSuchMethodException) {
-                throw IllegalArgumentException("Final-1.1 reads require the checksum-qualified 0.13 catalog trial; this catalog library has no opt-in API", e)
-            }
-            setter.invoke(catalogConfig, true)
-        }
+        // The released 0.13 floor supplies the API; connector planning admission remains separate.
+        catalogConfig.enableFinal11Reads = enableFinal11Reads
         return catalogConfig
     }
 }

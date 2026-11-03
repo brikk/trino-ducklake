@@ -62,7 +62,7 @@ class TestDucklakeExpireSnapshots : AbstractTestQueryFramework() {
                 stmt.execute("INSTALL ducklake")
                 stmt.execute("LOAD ducklake")
                 stmt.execute("ATTACH '" + pg.getDuckDbAttachUri(dbName) + "' AS lake "
-                        + "(DATA_PATH '" + dataDir.toAbsolutePath() + "/')")
+                        + "(DATA_PATH '" + dataDir.toAbsolutePath() + "/', DUCKLAKE_VERSION '1.0', AUTOMATIC_MIGRATION FALSE)")
                 stmt.execute("CREATE SCHEMA lake.test_schema")
             }
         }
@@ -348,7 +348,7 @@ class TestDucklakeExpireSnapshots : AbstractTestQueryFramework() {
                 stmt.execute("LOAD postgres")
                 stmt.execute("LOAD ducklake")
                 stmt.execute("ATTACH '" + pgServer!!.getDuckDbAttachUri("ducklake_expire_snapshots_e2e")
-                        + "' AS lake (DATA_PATH '" + dataDir.toAbsolutePath() + "/')")
+                        + "' AS lake (DATA_PATH '" + dataDir.toAbsolutePath() + "/', DUCKLAKE_VERSION '1.0', AUTOMATIC_MIGRATION FALSE)")
                 stmt.execute("CALL ducklake_cleanup_old_files('lake', cleanup_all => true)")
                 stmt.executeQuery("SELECT id FROM lake.$owner").use { rs ->
                     assertThat(rs.next()).isTrue()

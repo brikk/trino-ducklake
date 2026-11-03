@@ -17,7 +17,45 @@ Native-row source reservations conservatively count shared values more than once
 measure inline JSON using a temporary single-value block. Page production is byte-budgeted;
 this does not retroactively bound the released catalog's older list-returning inline reads.
 
-## R07: Temporary Candidate, Explicit Opt-in Qualification Only
+## R07: Experimental Planning, Explicit Opt-in Qualification Only
+
+### Catalog 0.13.1 release adoption
+
+Both build modes now consume released catalog/replay/SLT **0.13.1**, with test-only
+DuckDB JDBC **2.0.0.1** and direct Java Quack JDBC **0.13.0**. Native test setup
+explicitly creates DuckLake 1.0 with automatic migration disabled. This is not
+promotion of the candidate planning adapter or final-1.1 read/write admission.
+The released shared signature parser is used in both lanes; the old 0.12 no-parser
+hook and reflective opt-in/default-method bridges have been removed. The historical
+snapshot selection is retired; experimental budgets remain unchanged. References to
+the old normal 0.12 lane describe the original qualification, not today's default.
+Replay uses the released `ReplaySetupFormat.DUCKLAKE_1_0` native default setting;
+it does not rewrite corpus ATTACH text or goldens. Explicit format choices and
+SET/RESET retain native semantics. Existing newer lakes cannot be downgraded.
+
+The November 3 experimental verification hit a kernel-confirmed global OOM kill
+(test JVM exit 137), then a real `Disk quota exceeded` during native-library
+extraction into system temp. Neither run is a pass. After the user freed memory,
+verification returns to the original 3 GiB/parallel test configuration, using
+workspace-local `java.io.tmpdir`/`TMPDIR` as documented for actual quota failures.
+This is ordinary build/test scratch, not production staging or shared storage.
+Production settings, explicit concurrency tests, admission/work limits and
+assertions are unchanged; no test is excluded. See the adoption record for scope.
+
+Unknown-COMMIT and acknowledged-post-commit failures retain their catalog cause
+and diagnostic through the existing non-conflict Trino error mapping. They do not
+authorize automatic retry or deletion. Connector-boundary tests inject each failure
+after real INSERT/CTAS/UPDATE/DELETE/MERGE publication and verify engine rollback
+leaves exactly one publication and readable registered output. This is not a JDBC
+network-fault or automated reconciliation guarantee. Operators must retain uncertain
+output and reconcile registrations on a fresh connection before retry or cleanup;
+the attempted snapshot ID alone is not proof. Existing retention/ownership gaps remain.
+
+The dependency update also re-probes native MySQL in a standalone JVM. DuckDB
+2.0 fails native metadata-schema resolution before cross-engine data access;
+Trino's direct Connector/J worker tests pass. Native interoperability remains
+unqualified, without adding a test skip or claiming the old SSL crash reproduced.
+See [the minimal native reproduction](archive/MYSQL-NATIVE-PROBE-2026-11-03.md).
 
 ### Legacy TIMESTAMPTZ partition safety
 
@@ -29,20 +67,14 @@ predicates remain in Trino; DATE/unzoned timestamp and identity pruning are unch
 Cost: extra files may be scanned. Removal requires a real file-specific transform/
 writer-zone attestation, not a version check or a future native upgrade.
 
-`-Pr07CatalogCandidate` exclusively selects the published catalog/SLT/replay
-`0.13.0-20261101.082015-33` candidate (source `72aae19`), checks all four resolved
-runtime/fixture JAR hashes against `gradle/r07-catalog-snapshot.sha256`, and adds
-`qualification/src` to tests. Strict constraints pin all three modules, including
-fixture self-dependencies; no local repository or JAR substitution is used.
-Historical local bundle paths now fail explicitly instead of silently selecting
-different bytes. Candidate output versions carry `-r07`, separate from released artifacts.
-It also selects test-only DuckDB JDBC 2.0.0.0
-and Java Quack JDBC 0.8.0. Omitting the property restores released 0.12.0 dependencies
-and the existing producer lane. This is not a release pin or supported plugin distribution.
-
-N03's bounded public type-signature parser is compiled only in the candidate source
-set. The released 0.12 converter remains unchanged. The candidate preserves quoted
-field names while reusing existing scalar mappings; parsing is not storage/type admission.
+`-Pr07CatalogCandidate` now selects only the experimental adapter and
+`qualification/src` tests, on the same 0.13.1 release and driver pins as the normal
+build. `verifyCatalogRelease` checks all four JARs against
+`gradle/catalog-release.sha256` in both modes. Old snapshot/local-bundle values
+fail explicitly. Experimental output versions retain `-r07`; this is not a supported
+plugin distribution or default-on rollout. The public bounded type-signature parser
+is shared by both modes, preserving quoted names and existing scalar mappings;
+parsing is not storage/type admission.
 See [the candidate contract](CATALOG-CANDIDATE.md) for current selection and remaining scope;
 the [published handoff](archive/HANDOFF-CATALOG-72aae19.md) retains exact evidence.
 
@@ -60,10 +92,9 @@ fixtures honor that standard JVM setting. This is build/test scratch only, not a
 production staging path or a shared-filesystem assumption; tests/native pins are unchanged.
 
 October 24 adds `ducklake.experimental.enable-final-1.1-reads=false` by default.
-The opt-in calls only the candidate's actual public flag setter. A small reflective
-optional-API boundary preserves the released 0.12 compile/runtime lane: enabling it
-there fails explicitly, never emulates admission. Remove that compatibility bridge
-only after a separately approved released catalog floor includes the API.
+The opt-in now calls the released public flag setter directly. Its former reflective
+0.12 compatibility bridge was removed at release adoption. Normal planning rejects
+the flag before allocating a catalog connection; read admission is never emulated.
 
 Read-only SPI metadata operations own sessions, materialize deferred metadata
 iterators under a limit, and reject mutations before delegation. Worker source
@@ -72,9 +103,9 @@ pool. SQL qualification uses two actual Trino workers with coordinator schedulin
 disabled, still in the same single-host DistributedQueryRunner JVM. It is not a
 multi-process/multi-host deployment or mixed-version negotiation test.
 
-The `10f81f9` qualification build selects a **typed public-API adapter** from
-`candidate/src`; the default build selects the no-candidate-symbol adapter from
-`released/src` and still consumes released 0.12. No released dependency floor changes.
+The `10f81f9` qualification introduced a **typed public-API adapter** in
+`candidate/src`; the default build retains its normal 1.0 adapter in `released/src`.
+Both now consume released 0.13.1, without enabling the experimental adapter by default.
 The candidate adapter drains SQL-keyset active/added files, schemas/tables/flat columns,
 partition fields/values, immutable name rows and inline registry versions. Each outer
 view shares totals: 1,024 page calls (including empty terminals), 16,384 returned nodes,
@@ -126,9 +157,9 @@ schema/table lookup uses ASCII-only case equivalence, preserving distinct Unicod
 identifiers and still rejecting genuine duplicate names.
 
 The `3fd75dc` candidate adds decoded, stable-ID/backend-qualified missing-file defaults.
-The connector now adopts that public API through a second narrow optional-method
-bridge (released 0.12 still compiles/runs); no missing-method fallback parses text or
-guesses NULL. Footer/stable-ID resolution proves absence before calling it. Fresh
+The connector now calls that public API directly; its former narrow optional-method
+bridge for released 0.12 was removed. No fallback parses text or guesses NULL.
+Footer/stable-ID resolution proves absence before calling it. Fresh
 target metadata validates the projected type; handle default text is never trusted.
 Nested projection rebuilds only affected container branches, retaining present stored
 NULLs, NULL parents/elements and empty containers. This costs extra block allocation

@@ -76,7 +76,7 @@ class TestDucklakeCleanupOldFiles {
             connection.createStatement().use { statement ->
                 statement.execute("INSTALL ducklake")
                 statement.execute("LOAD ducklake")
-                statement.execute("ATTACH 'ducklake:$database' AS lake (DATA_PATH '$warehouse/')")
+                statement.execute("ATTACH 'ducklake:$database' AS lake (DATA_PATH '$warehouse/', DUCKLAKE_VERSION '1.0', AUTOMATIC_MIGRATION FALSE)")
             }
         }
         config = DucklakeConfig().setCatalogDatabaseUrl("jdbc:duckdb:$database")

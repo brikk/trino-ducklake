@@ -13,8 +13,8 @@ package dev.brikk.ducklake.trino.plugin
 import dev.brikk.ducklake.catalog.DucklakeCatalog
 import dev.brikk.ducklake.catalog.JdbcDucklakeCatalog
 
-/** No candidate symbols in the released 0.12 lane. Admission remains fail closed. */
-internal fun candidateReadAdapter(catalog: JdbcDucklakeCatalog, config: DucklakeConfig): DucklakeCatalog {
+/** Normal 1.0 lane; upgrading the library does not qualify final-1.1 planning. */
+internal fun candidateReadAdapter(config: DucklakeConfig, openCatalog: () -> JdbcDucklakeCatalog): DucklakeCatalog {
     check(!config.isEnableFinal11Reads()) { "Final-1.1 planning requires the explicitly selected catalog candidate build" }
-    return catalog
+    return openCatalog()
 }

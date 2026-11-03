@@ -15,6 +15,7 @@ package dev.brikk.ducklake.trino.plugin
 
 import dev.brikk.ducklake.corpus.CorpusRunner
 import dev.brikk.ducklake.corpus.ReplayReadEngine
+import dev.brikk.ducklake.corpus.ReplaySetupFormat
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
@@ -50,7 +51,8 @@ class TestTrinoGeometryReplay {
                         return result
                     }
                 }
-                val runner = CorpusRunner(directory, emptyMap(), engine = observer, metadataRewriter = engine.metadataRewriter)
+                val runner = CorpusRunner(directory, emptyMap(), engine = observer, metadataRewriter = engine.metadataRewriter,
+                    setupFormat = ReplaySetupFormat.DUCKLAKE_1_0)
                 val report = runner.run(listOf(fixture))
                 assertThat(report.failures).withFailMessage { report.summary() }.isEmpty()
                 assertThat(report.crashes).withFailMessage { report.summary() }.isEmpty()

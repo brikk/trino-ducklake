@@ -18,7 +18,7 @@ import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Test
 import java.sql.DriverManager
 
-/** Public published replay APIs on the consumer's actual test JVM; no copied implementation. */
+/** Public released replay APIs on the consumer's actual test JVM; no copied implementation. */
 class TestPublishedReplayConformance {
     @Test
     fun requestedTestVmMatchesTheActualRuntime() {

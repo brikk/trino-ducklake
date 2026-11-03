@@ -1,6 +1,6 @@
 # Trino DuckLake reference
 
-This reference describes the normal Trino 483/484 build using catalog library 0.12.0
+This reference describes the normal Trino 483/484 build using catalog library 0.13.1
 and DuckLake 1.0 metadata. It is not a blanket physical-type or production-safety
 certification. Start with the [installation guide](README.md) and [SQL samples](SAMPLES.md).
 
@@ -50,9 +50,13 @@ when both engines need to share a catalog.
 ### Local DuckDB
 
 Use `jdbc:duckdb:/absolute/path/to/metadata.db`; username/password are not needed.
-Add the compatible `org.duckdb:duckdb_jdbc:1.5.6.0` JAR to the plugin directory:
+Add the compatible `org.duckdb:duckdb_jdbc:2.0.0.1` JAR to the plugin directory:
 it is a test dependency, not bundled with the normal plugin. Initialize the file's
 DuckLake metadata schema before starting Trino.
+
+With DuckDB 2.0, initialize using `DUCKLAKE_VERSION '1.0', AUTOMATIC_MIGRATION FALSE`.
+A 2.0 metadata write/checkpoint can upgrade the local DuckDB storage independently
+of the DuckLake format. Rollback requires a consistent backup, not a driver downgrade.
 
 Multiple connections in one JVM can share a DuckDB file. Multiple OS processes
 cannot use it concurrently, even on the same host. A separate Trino worker is

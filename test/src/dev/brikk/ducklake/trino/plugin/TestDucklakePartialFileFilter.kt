@@ -59,7 +59,7 @@ class TestDucklakePartialFileFilter : AbstractTestQueryFramework() {
             conn.createStatement().use { st ->
                 st.execute("INSTALL ducklake")
                 st.execute("LOAD ducklake")
-                st.execute("ATTACH 'ducklake:$lakeDb' AS lake (DATA_PATH '$dataDir/')")
+                st.execute("ATTACH 'ducklake:$lakeDb' AS lake (DATA_PATH '$dataDir/', DUCKLAKE_VERSION '1.0', AUTOMATIC_MIGRATION FALSE)")
                 st.execute("USE lake")
                 st.execute("CREATE SCHEMA test_schema")
                 st.execute("CREATE TABLE test_schema.t (id INTEGER, data VARCHAR)")

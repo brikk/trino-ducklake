@@ -44,8 +44,10 @@ import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.function.Supplier
 
-internal fun candidateReadAdapter(catalog: JdbcDucklakeCatalog, config: DucklakeConfig): DucklakeCatalog =
-    if (config.isEnableFinal11Reads()) PagedDucklakeCatalog(catalog, config) else catalog
+internal fun candidateReadAdapter(config: DucklakeConfig, openCatalog: () -> JdbcDucklakeCatalog): DucklakeCatalog {
+    val catalog = openCatalog()
+    return if (config.isEnableFinal11Reads()) PagedDucklakeCatalog(catalog, config) else catalog
+}
 
 /** Typed public candidate APIs only; list shapes remain compatible with the released consumer. */
 internal class PagedDucklakeCatalog(

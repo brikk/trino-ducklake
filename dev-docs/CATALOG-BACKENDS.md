@@ -14,9 +14,13 @@ DuckDB metadata backend does not embed DuckDB as the production query/data engin
 | Native/direct-Java Quack | Experimental fixtures and scoped candidate checks; not normal deployment qualification |
 | SQLite/Turso | Not a supported Trino deployment configuration |
 
-Normal catalog/replay dependencies are **0.12.0**. The separately selected
-[candidate](CATALOG-CANDIDATE.md) has exact snapshot/fixture pins, not a moving API floor.
+Normal catalog/replay dependencies are **0.13.1**. The separately selected
+[experimental planning mode](CATALOG-CANDIDATE.md) uses the same released artifacts,
+not snapshots or a moving API floor.
 Current user configuration is in [REFERENCE.md](../REFERENCE.md#catalog-configuration).
+Normal test drivers are DuckDB JDBC **2.0.0.1** and Java Quack JDBC **0.13.0**.
+The catalog's upstream driver qualification remains 0.12.1; 0.13.0 coverage here
+is this connector's scoped worker/session qualification, not an inherited upstream verdict.
 
 ## Initialization and connection failure
 
@@ -40,6 +44,9 @@ The normal MySQL path uses direct JDBC, not DuckDB's `mysql` extension. The hist
 native-extension failures motivate its cross-engine qualification gap, but are not
 fresh reproductions on every new pin. Re-probe when assigned; do not publish an
 unverified current-crash claim or make the native extension a requirement for Trino reads.
+The [November 3 native probe](archive/MYSQL-NATIVE-PROBE-2026-11-03.md) on DuckDB
+2.0.0/JDBC 2.0.0.1 fails in native metadata-schema resolution, not a reproduced
+SSL crash. New real worker tests cover the connector's separate Connector/J path.
 
 Quack deployment, authentication, exact driver/server versions, concurrent writers
 and bounded CI remain [open integration work](TODO.md#backend-qualification). A remote

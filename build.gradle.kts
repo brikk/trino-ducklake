@@ -13,10 +13,10 @@ group = "dev.brikk.ducklake"
 // the other supported target with -PtrinoVersion=484, including its matching BOM.
 val trinoVersion = providers.gradleProperty("trinoVersion").getOrElse(libs.versions.trino.get())
 require(trinoVersion in setOf("483", "484")) { "Supported Trino targets: 483, 484 (got $trinoVersion)" }
-val r07SnapshotVersion = libs.versions.ducklake.catalog.candidate.get()
+val catalogVersion = libs.versions.ducklake.catalog.get()
 val r07CatalogCandidate = providers.gradleProperty("r07CatalogCandidate").orNull
-require(r07CatalogCandidate == null || r07CatalogCandidate in setOf("", r07SnapshotVersion)) {
-    "Use -Pr07CatalogCandidate (or =$r07SnapshotVersion) for the published candidate; local bundle paths are no longer accepted"
+require(r07CatalogCandidate == null || r07CatalogCandidate in setOf("", catalogVersion)) {
+    "Use -Pr07CatalogCandidate (or =$catalogVersion) for experimental planning on the released catalog; local bundles and snapshots are not accepted"
 }
 kotlin.sourceSets.main { kotlin.srcDir("trino-$trinoVersion/src") }
 // <trino-version>-<our-release>: never label a 484 build as compatible with 483.
@@ -28,7 +28,7 @@ detekt {
     buildUponDefaultConfig = true
     config.setFrom(rootProject.file("config/detekt/detekt.yml"))
     baseline = file("detekt-baseline.xml")
-    source.setFrom("src", "test", "trino-$trinoVersion/src", if (providers.gradleProperty("r07CatalogCandidate").isPresent) "candidate/src" else "released/src")
+    source.setFrom("src", "test", "trino-$trinoVersion/src", if (providers.gradleProperty("r07CatalogCandidate").isPresent) "candidate/src" else "released")
 }
 
 // The brikk-sql (dev.brikk.house) TEST-ONLY tooling uses Maven Central releases; optional snapshots
@@ -40,48 +40,30 @@ repositories {
     mavenCentral()
 }
 
-// Qualification only: the published, timestamp-pinned candidate does not change the released lane.
+// Both planning modes consume the same released artifacts; only final-1.1 planning is opt-in.
 val r07Modules = setOf("ducklake-catalog", "slt-format", "ducklake-test-corpus-replay")
 kotlin.sourceSets.main { kotlin.srcDir(if (r07CatalogCandidate != null) "candidate/src" else "released/src") }
-if (r07CatalogCandidate != null) {
-    repositories.exclusiveContent {
-        forRepository {
-            repositories.maven {
-                name = "r07PublishedCandidate"
-                url = uri("https://central.sonatype.com/repository/maven-snapshots/")
-            }
+dependencies {
+    constraints {
+        implementation("dev.brikk.ducklake:ducklake-catalog:$catalogVersion") {
+            version { strictly(catalogVersion) }
         }
-        filter {
-            r07Modules.forEach { includeModule("dev.brikk.ducklake", it) }
+        testImplementation("dev.brikk.ducklake:ducklake-test-corpus-replay:$catalogVersion") {
+            version { strictly(catalogVersion) }
         }
-    }
-    dependencies {
-        constraints {
-            implementation("dev.brikk.ducklake:ducklake-catalog:$r07SnapshotVersion") {
-                version { strictly(r07SnapshotVersion) }
-            }
-            testImplementation("dev.brikk.ducklake:ducklake-test-corpus-replay:$r07SnapshotVersion") {
-                version { strictly(r07SnapshotVersion) }
-            }
-            testImplementation("dev.brikk.ducklake:slt-format:$r07SnapshotVersion") {
-                version { strictly(r07SnapshotVersion) }
-            }
-            // The disposable native producer must match the candidate's qualified lane.
-            testImplementation("org.duckdb:duckdb_jdbc:2.0.0.0") {
-                version { strictly("2.0.0.0") }
-            }
+        testImplementation("dev.brikk.ducklake:slt-format:$catalogVersion") {
+            version { strictly(catalogVersion) }
         }
     }
 }
 
-val verifyR07Candidate by tasks.registering {
+val verifyCatalogRelease by tasks.registering {
     group = "verification"
-    description = "Attests the published, timestamp-pinned R07 runtime and fixture jars."
-    val receipt = layout.projectDirectory.file("gradle/r07-catalog-snapshot.sha256")
+    description = "Attests the published catalog, replay, SLT and fixture jars in either planning mode."
+    val receipt = layout.projectDirectory.file("gradle/catalog-release.sha256")
     inputs.file(receipt)
-    inputs.property("snapshotVersion", r07SnapshotVersion)
+    inputs.property("catalogVersion", catalogVersion)
     doLast {
-        check(r07CatalogCandidate != null) { "Set -Pr07CatalogCandidate to select the published candidate" }
         val hashes = receipt.asFile.readLines().filter { it.isNotBlank() && !it.startsWith("#") }.associate { line ->
             val (hash, path) = line.split(Regex("\\s+"), limit = 2)
             path.substringAfterLast('/') to hash
@@ -91,18 +73,25 @@ val verifyR07Candidate by tasks.registering {
         check(artifacts.size == 4) { "Expected catalog, catalog fixtures, SLT and replay jars: $artifacts" }
         artifacts.forEach { artifact ->
             val jar = artifact.file
-            check(jar.name.contains(r07SnapshotVersion)) { "Unexpected candidate build: $jar" }
+            check(artifact.moduleVersion.id.version == catalogVersion) { "Unexpected catalog build: $jar" }
             val actual = MessageDigest.getInstance("SHA-256").digest(jar.readBytes())
                 .joinToString("") { "%02x".format(it) }
-            check(actual == hashes[jar.name]) { "Candidate SHA256 mismatch: $jar ($actual)" }
-            println("R07 SHA256 $actual  ${jar.absolutePath}")
+            check(actual == hashes[jar.name]) { "Catalog release SHA256 mismatch: $jar ($actual)" }
+            println("CATALOG SHA256 $actual  ${jar.absolutePath}")
         }
     }
 }
+val verifyR07Candidate by tasks.registering {
+    group = "verification"
+    description = "Checks experimental planning selection and attests its released catalog artifacts."
+    dependsOn(verifyCatalogRelease)
+    doFirst { check(r07CatalogCandidate != null) { "Set -Pr07CatalogCandidate to select experimental planning" } }
+}
 if (r07CatalogCandidate != null) {
     kotlin.sourceSets.test { kotlin.srcDir("qualification/src") }
-    dependencies.add("testRuntimeOnly", "dev.brikk.duckdb:quack-jdbc:0.8.0")
     tasks.test { dependsOn(verifyR07Candidate) }
+} else {
+    kotlin.sourceSets.test { kotlin.srcDir("released/test") }
 }
 
 // Use Trino BOM for all managed dependency versions
@@ -177,6 +166,7 @@ dependencies {
     // process (jdbc:duckdb:) that writes/reads parquet DuckLake tables through the shared catalog,
     // to prove Trino and DuckDB agree. The production connector no longer embeds DuckDB.
     testImplementation(libs.duckdb.jdbc)
+    testRuntimeOnly(libs.quack.jdbc)
 
     // brikk-sql: DuckDB→Trino SQL transpiler powering the corpus-replay dialect gate
     // (transpile-first — run what transpiles + is mappable, engine-skip the rest). TEST-ONLY:
@@ -214,6 +204,7 @@ tasks.withType<JavaCompile> {
 }
 
 tasks.test {
+    dependsOn(verifyCatalogRelease)
     // The handoff's JVM-sensitive renderer checks assert the actual forked runtime, not log text.
     systemProperty("ducklake.test.java-version", providers.gradleProperty("testJavaVersion").getOrElse("25"))
     // Compile against the repository's JDK 25 toolchain, but allow CI to execute the resulting

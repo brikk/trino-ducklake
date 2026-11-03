@@ -57,7 +57,7 @@ class TestDucklakeRewriteDataFiles : AbstractTestQueryFramework() {
                 stmt.execute("INSTALL ducklake")
                 stmt.execute("LOAD ducklake")
                 stmt.execute("ATTACH '" + pg.getDuckDbAttachUri(dbName) + "' AS lake "
-                        + "(DATA_PATH '" + dataDir.toAbsolutePath() + "/')")
+                        + "(DATA_PATH '" + dataDir.toAbsolutePath() + "/', DUCKLAKE_VERSION '1.0', AUTOMATIC_MIGRATION FALSE)")
                 stmt.execute("CREATE SCHEMA lake.test_schema")
             }
         }

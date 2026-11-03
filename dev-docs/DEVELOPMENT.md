@@ -13,15 +13,15 @@ This is a single-project Gradle build at the repository root. Use the checked-in
 ```
 
 The catalog and replay framework are published dependencies, not source projects
-built here. The normal catalog/replay version is **0.12.0**. The SQL transpiler,
+built here. The normal catalog/replay/SLT version is **0.13.1**. The SQL transpiler,
 metadata and native verifier are **brikk-sql 0.21.0**, test-only. Compiler/BOM Kotlin
 is **2.4.10**. Production packages do not bundle DuckDB JDBC, replay, SLT, SQL tooling
 or the Trino SPI.
 
 The Trino BOM, parser, implementation JARs and selected `trino-<version>/src` adapter
 must match one target. See [Trino compatibility](TRINO-COMPATIBILITY.md). Experimental
-catalog qualification is a separate [candidate lane](CATALOG-CANDIDATE.md), not an
-implicit dependency upgrade.
+final-1.1 planning remains a separate [opt-in mode](CATALOG-CANDIDATE.md), not a
+capability enabled by the dependency upgrade.
 
 ## Tests
 
@@ -39,7 +39,14 @@ cross-engine tests install DuckDB extensions and need network access or an exist
 compatible extension cache. Required fixtures and actual JUnit execution matter:
 inspect XML failures/errors/skips, not just a green command exit.
 
-- The default native JDBC producer is **1.5.6.0**, with PostgreSQL fixtures.
+- The default native JDBC producer is **2.0.0.1**, with PostgreSQL fixtures. Native
+  setup selects DuckLake **1.0**, with automatic migration disabled. The optional
+  direct-Java Quack fixture uses **quack-jdbc 0.13.0**; neither driver is bundled.
+  The corpus is pinned to `417a9117f590e8141742ac0579d02f6a90162e37`, matching
+  signed DuckLake `417a9117f5`. Replay uses `ReplaySetupFormat.DUCKLAKE_1_0` to
+  set the native default; corpus SQL/goldens and explicit format options are unchanged.
+  `verifyCatalogRelease` checks all four catalog/replay/SLT/fixture JAR hashes
+  against `gradle/catalog-release.sha256` before tests in both build modes.
 - `-Dducklake.test.catalog-backend=DUCKDB_LOCAL` selects a local DuckDB metadata file;
   `DUCKDB_QUACK` selects an experimental transport fixture, not a production guarantee.
 - Add `-PtrinoVersion=484` for that target and `-PtestJavaVersion=26` for the other test VM.

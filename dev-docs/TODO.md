@@ -75,8 +75,8 @@ port, feature and release history is not an instruction to redo shipped work.
 ## Catalog 1.1 and rollout
 
 - [ ] Keep development-format writes and all final-1.1 connector writes disabled.
-- [ ] Keep [candidate qualification](CATALOG-CANDIDATE.md) separate from the default
-  catalog 0.12 lane. A final artifact does not automatically authorize promotion.
+- [ ] Keep [candidate qualification](CATALOG-CANDIDATE.md) separate from the normal
+  catalog 0.13 / DuckLake 1.0 lane. Library adoption does not authorize final-1.1 promotion.
 - [ ] Complete the remaining bounded transfers/accounting, cancellation/network,
   legacy/type/route, retention and deployment gates before broad read enablement.
 - [ ] Qualify schema migration, hierarchy, exactness, row-group metadata, ABI/wire,
@@ -85,6 +85,9 @@ port, feature and release history is not an instruction to redo shipped work.
 
 ## Architecture and delivery hygiene
 
+- [ ] Add shared replay support for `require-env`: the pinned native metadata-logging
+  fixture is currently a visible unsupported-directive file-skip, even with
+  `DUCKLAKE_CI=1`. Keep SQL/goldens intact and require real Trino mirrors when enabled.
 - [ ] Decompose `DucklakeMetadata`/`DucklakePageSourceProvider` by concern while
   preserving SPI and handle shapes: metadata tables, CDC, inline/Parquet sources,
   and statistics are useful boundaries.

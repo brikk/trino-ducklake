@@ -97,7 +97,7 @@ class TestTrinoReplayMapAccess {
         val uri = engine.metadataRewriter(name)
         val dataPath = directory.resolve(name).toString()
         connection.createStatement().use { statement ->
-            statement.execute("ATTACH 'ducklake:$uri' AS lake (DATA_PATH '$dataPath')")
+            statement.execute("ATTACH 'ducklake:$uri' AS lake (DATA_PATH '$dataPath', DUCKLAKE_VERSION '1.0', AUTOMATIC_MIGRATION FALSE)")
             statement.execute("CALL lake.set_option('data_inlining_row_limit', 0)")
         }
         engine.connect(OracleAttachment(uri, dataPath, "lake"))

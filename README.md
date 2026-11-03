@@ -10,8 +10,8 @@ backend for a Trino cluster or a lake shared with DuckDB.
 | --- | --- |
 | Trino | **483 or 484**, with a separate plugin archive for each version |
 | DuckLake catalog format | **1.0** read/write, subject to the limits below |
-| Catalog library | **0.12.0**; this library version is not the DuckLake format version |
-| DuckDB interoperability | Tested with **DuckDB 1.5.6** |
+| Catalog library | **0.13.1**; this library version is not the DuckLake format version |
+| DuckDB interoperability | **DuckDB 2.0.0**, JDBC **2.0.0.1**; initialize DuckLake **1.0** explicitly |
 | Data and delete files | Parquet data; Parquet positional deletes and Puffin deletion vectors |
 
 Install the archive matching your Trino version **exactly**. Do not mix JARs from
@@ -72,7 +72,9 @@ Development and verification instructions are in [dev-docs](dev-docs/README.md).
 
 The metadata database must already contain a compatible DuckLake schema. Trino
 does **not** initialize or migrate that schema. Use a DuckDB/DuckLake version
-compatible with DuckLake 1.0; the maintained interoperability version is DuckDB 1.5.6.
+compatible with DuckLake 1.0; the maintained interoperability version is DuckDB 2.0.0.
+New DuckDB 2.0 lakes otherwise default to 1.1. Disable automatic migration and select
+1.0 explicitly; do not edit a stored catalog version string.
 The bootstrap DuckDB process also needs its own access and credentials for the data storage.
 
 For example, initialize an empty PostgreSQL metadata database from DuckDB:
@@ -83,7 +85,7 @@ LOAD ducklake;
 INSTALL postgres;
 LOAD postgres;
 ATTACH 'ducklake:postgres:dbname=ducklake host=<host> port=5432 user=ducklake password=<password>'
-    AS lake (DATA_PATH 's3://<bucket>/<prefix>/');
+    AS lake (DATA_PATH 's3://<bucket>/<prefix>/', DUCKLAKE_VERSION '1.0', AUTOMATIC_MIGRATION FALSE);
 DETACH lake;
 ```
 

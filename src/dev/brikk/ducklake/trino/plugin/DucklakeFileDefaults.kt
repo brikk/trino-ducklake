@@ -16,7 +16,6 @@ package dev.brikk.ducklake.trino.plugin
 import dev.brikk.ducklake.catalog.DucklakeCatalog
 import dev.brikk.ducklake.catalog.DucklakeColumn
 import dev.brikk.ducklake.catalog.DucklakeException
-import dev.brikk.ducklake.catalog.JdbcDucklakeCatalog
 import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
 import io.trino.spi.TrinoException
 import io.trino.spi.block.Block
@@ -28,7 +27,6 @@ import io.trino.spi.type.RowType
 import io.trino.spi.type.Type
 import io.trino.spi.type.TypeUtils.readNativeValue
 import io.trino.spi.type.TypeUtils.writeNativeValue
-import java.lang.reflect.InvocationTargetException
 
 /** Per-footer projection. Only the physical resolver may register an absent stable field. */
 internal class DucklakeFileDefaults(
@@ -59,29 +57,12 @@ internal class DucklakeFileDefaults(
         return writeNativeValue(column.columnType, defaults[column.columnId])
     }
 
-    // Optional public API boundary, like the opt-in setter: no fallback to text, SQL or guessed NULL.
-    private fun decoded(columnId: Long): Any? {
-        if (catalog is DucklakeControlledReads) return try {
-            catalog.fileDefault(table.tableId, columnId, table.snapshotId)
-        } catch (e: DucklakeException) {
-            throw TrinoException(NOT_SUPPORTED, e.message ?: "Catalog refused file default projection", e)
-        }
-        val method = defaultMethod()
-        return try { method.invoke(catalog.jdbcCatalog(), table.tableId, columnId, table.snapshotId) }
-        catch (e: InvocationTargetException) { throw projectionFailure(e) }
-    }
-
-    private fun defaultMethod(): java.lang.reflect.Method = try {
-        JdbcDucklakeCatalog::class.java.getMethod("getMissingFileColumnDefaultDecoded",
-            Long::class.javaPrimitiveType, Long::class.javaPrimitiveType, Long::class.javaPrimitiveType)
-    } catch (e: NoSuchMethodException) {
-        throw TrinoException(NOT_SUPPORTED, "Final-1.1 file evolution requires the decoded catalog default API", e)
-    }
-
-    private fun projectionFailure(failure: InvocationTargetException): Throwable {
-        val cause = failure.targetException
-        return if (cause is DucklakeException) TrinoException(NOT_SUPPORTED, cause.message ?: "Catalog refused file default projection", cause)
-        else cause
+    // Released public API; no fallback to text, SQL or guessed NULL.
+    private fun decoded(columnId: Long): Any? = try {
+        if (catalog is DucklakeControlledReads) catalog.fileDefault(table.tableId, columnId, table.snapshotId)
+        else catalog.jdbcCatalog().getMissingFileColumnDefaultDecoded(table.tableId, columnId, table.snapshotId)
+    } catch (e: DucklakeException) {
+        throw TrinoException(NOT_SUPPORTED, e.message ?: "Catalog refused file default projection", e)
     }
 
     fun needsRewrite(columnId: Long): Boolean = columnId in defaults || children[columnId].orEmpty().any { needsRewrite(it.columnId) }

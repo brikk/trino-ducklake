@@ -28,7 +28,7 @@ private val SIMPLE_CATALOG_FIELD = Regex("[A-Za-z_][A-Za-z0-9_]*")
 internal fun catalogTypeFieldName(name: String): String =
     if (SIMPLE_CATALOG_FIELD.matches(name)) name else DucklakeQuotedList.encodeValue(name)
 
-/** Use the candidate's public bounded grammar, never a connector-side approximation of it. */
+/** Use the catalog's public bounded grammar, never a connector-side approximation of it. */
 internal fun catalogCompositeType(signature: String, typeManager: TypeManager, scalar: (String) -> Type): Type? {
     val keyword = signature.trimStart().takeWhile { it.isLetterOrDigit() || it == '_' }.lowercase(Locale.ROOT)
     if (keyword !in setOf("struct", "list", "map")) return null

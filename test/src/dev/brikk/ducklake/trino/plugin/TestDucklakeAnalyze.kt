@@ -25,7 +25,7 @@ import org.junit.jupiter.api.parallel.ExecutionMode
  * `ANALYZE` — refreshes DuckLake's cached table-level statistics. The connector declares only the
  * table ROW_COUNT for the engine to collect (the engine's authoritative live count); the per-column
  * aggregates are rebuilt in the catalog from the authoritative per-file stats. Because DuckLake
- * maintains these aggregates incrementally on every write, ANALYZE is observably a no-op on a
+ * maintains these aggregates incrementally on every write, ANALYZE leaves the same stats on a
  * never-drifted table — so the meaningful test deliberately drifts `record_count` in the catalog
  * and asserts ANALYZE recomputes it from a full scan, overwriting the wrong cached value.
  *
@@ -44,7 +44,9 @@ class TestDucklakeAnalyze : AbstractDucklakeIntegrationTest() {
 
             // Before this connector wired the statistics-collection SPI, ANALYZE threw
             // "This connector does not support analyze". It must now run cleanly.
+            val before = getCurrentSnapshotIdFromCatalog()
             computeActual("ANALYZE $table")
+            assertThat(getCurrentSnapshotIdFromCatalog()).isEqualTo(before + 1)
 
             assertThat(showStatsRowCount(table)).isEqualTo(5.0)
             // The column exposes low/high bounds to the planner (sourced from per-file stats). Exact

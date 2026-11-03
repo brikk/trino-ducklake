@@ -14,10 +14,12 @@
 package dev.brikk.ducklake.trino.plugin
 
 import dev.brikk.ducklake.catalog.DucklakeCatalogCorruptionException
+import dev.brikk.ducklake.catalog.DucklakeCommitOutcomeUnknownException
 import dev.brikk.ducklake.catalog.DucklakeEncryptedCatalogUnsupportedException
 import dev.brikk.ducklake.catalog.DucklakeEntityAlreadyExistsException
 import dev.brikk.ducklake.catalog.DucklakeEntityNotFoundException
 import dev.brikk.ducklake.catalog.DucklakeInvalidOperationException
+import dev.brikk.ducklake.catalog.DucklakePostCommitException
 import dev.brikk.ducklake.catalog.DucklakeSchemaNotEmptyException
 import dev.brikk.ducklake.catalog.DucklakeUnsupportedCatalogVersionException
 import dev.brikk.ducklake.catalog.LogicalConflictException
@@ -36,6 +38,21 @@ import io.trino.spi.StandardErrorCode.TABLE_NOT_FOUND
 import io.trino.spi.StandardErrorCode.TRANSACTION_CONFLICT
 
 class TestDucklakeCatalogExceptionMapping {
+    @Test
+    fun uncertainAndAcknowledgedCommitsNeverBecomeRetryableConflicts() {
+        val lostReply = java.sql.SQLException("connection lost after COMMIT", "08006")
+        val unknown = DucklakeCommitOutcomeUnknownException("INSERT", 42L, lostReply)
+        val acknowledged = DucklakePostCommitException("INSERT", lostReply)
+        for (failure in listOf(unknown, acknowledged)) {
+            assertMapped(failure, GENERIC_INTERNAL_ERROR)
+            val mapped = DucklakeMetadata.translateCatalogException(failure)
+            assertThat(mapped.message).contains("do not retry or delete output files")
+            assertThat(mapped.cause!!.cause).isSameAs(lostReply)
+        }
+        assertThat(unknown.message).contains("outcome is unknown", "attempted snapshot 42")
+        assertThat(acknowledged.message).contains("COMMIT succeeded", "finalization failed")
+    }
+
     @Test
     fun typedCatalogExceptionsMapToStableTrinoCodes()
     {

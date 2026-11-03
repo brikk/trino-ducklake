@@ -9,7 +9,7 @@ Catalog source: `72aae19d0deaf05a6c61e6782a6d263325ff23dd` (N03, H15, N19).
 Repository: `https://central.sonatype.com/repository/maven-snapshots/`.
 All three modules use **`0.13.0-20261101.082015-33`**: `ducklake-catalog`,
 `ducklake-test-corpus-replay`, and `slt-format`, including catalog test fixtures.
-All four JAR hashes are tracked in [`gradle/r07-catalog-snapshot.sha256`](../../gradle/r07-catalog-snapshot.sha256).
+All four historical JAR hashes are retained in [the archived receipt](catalog-72aae19.sha256).
 
 ```sh
 ./gradlew verifyR07Candidate -Pr07CatalogCandidate

@@ -83,7 +83,7 @@ abstract class AbstractDucklakeCrossEngineTest : AbstractTestQueryFramework() {
             stmt.execute("INSTALL postgres")
             stmt.execute("LOAD postgres")
             stmt.execute("ATTACH '" + catalog.duckDbAttachUri + "' AS ducklake_db " +
-                    "(DATA_PATH '" + catalog.dataDir.toAbsolutePath() + "')")
+                    "(DATA_PATH '" + catalog.dataDir.toAbsolutePath() + "', DUCKLAKE_VERSION '1.0', AUTOMATIC_MIGRATION FALSE)")
         }
         return conn
     }

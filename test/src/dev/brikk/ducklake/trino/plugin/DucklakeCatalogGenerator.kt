@@ -170,7 +170,7 @@ object DucklakeCatalogGenerator {
                 stmt.execute(
                     "ATTACH '" + server.getDucklakeAttachUri() + "' AS lake " +
                         "(DATA_PATH '" + escapeSql(dataDir.toAbsolutePath().toString()) +
-                        "', METADATA_CATALOG '" + metadataCatalog + "')",
+                        "', METADATA_CATALOG '" + metadataCatalog + "', DUCKLAKE_VERSION '1.0', AUTOMATIC_MIGRATION FALSE)",
                 )
                 // Touch the catalog so DuckLake materialises its metadata schema in the
                 // remote DuckDB before any reader hits it. CREATE SCHEMA on the lake
@@ -223,7 +223,7 @@ object DucklakeCatalogGenerator {
             deleteDirectory(catalogDirectory)
         }
 
-        println("Creating test catalog with DuckDB 1.5 + Ducklake extension...")
+        println("Creating DuckLake 1.0 test catalog with DuckDB + Ducklake extension...")
         println()
 
         // Create catalog directory and data directory
@@ -250,7 +250,7 @@ object DucklakeCatalogGenerator {
                 // Attach Ducklake catalog
                 println("Attaching Ducklake catalog...")
                 val attachSql = "ATTACH '" + escapeSql(ducklakeAttachUri) + "' AS ducklake_db (DATA_PATH '" +
-                    escapeSql(dataDir.toAbsolutePath().toString()) + "')"
+                    escapeSql(dataDir.toAbsolutePath().toString()) + "', DUCKLAKE_VERSION '1.0', AUTOMATIC_MIGRATION FALSE)"
                 stmt.execute(attachSql)
 
                 // Create test schema in Ducklake

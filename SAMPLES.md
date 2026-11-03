@@ -226,7 +226,7 @@ INSTALL ducklake;
 LOAD ducklake;
 
 ATTACH 'ducklake:postgres:dbname=ducklake host=postgresql port=5432 user=ducklake password=<password>'
-    AS lake (DATA_PATH 's3://my-bucket/ducklake-data/');
+    AS lake (DATA_PATH 's3://my-bucket/ducklake-data/', DUCKLAKE_VERSION '1.0', AUTOMATIC_MIGRATION FALSE);
 
 -- Read data written by Trino
 SELECT * FROM lake.analytics.orders;

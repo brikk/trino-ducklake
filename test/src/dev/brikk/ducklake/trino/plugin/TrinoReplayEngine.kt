@@ -15,6 +15,8 @@ package dev.brikk.ducklake.trino.plugin
 
 import com.google.common.collect.ImmutableMap
 import dev.brikk.ducklake.catalog.TestingDucklakePostgreSqlCatalogServer
+import dev.brikk.ducklake.catalog.DucklakeCatalogConfig
+import dev.brikk.ducklake.catalog.JdbcDucklakeCatalog
 import dev.brikk.ducklake.corpus.GoldenComparator
 import dev.brikk.ducklake.corpus.OracleAttachment
 import dev.brikk.ducklake.corpus.ReplayReadEngine
@@ -84,11 +86,26 @@ class TrinoReplayEngine : ReplayReadEngine {
         server.getDuckDbAttachUri(db).removePrefix("ducklake:")
     }
 
+    /** Observe the real stored format in a focused replay test, not the requested setup option. */
+    internal fun catalogSpecVersion(attachment: OracleAttachment): String {
+        val db = databaseName(attachment)
+        return JdbcDucklakeCatalog(DucklakeCatalogConfig().apply {
+            catalogDatabaseUrl = server.getJdbcUrl(db)
+            catalogDatabaseUser = server.getUser()
+            catalogDatabasePassword = server.getPassword()
+            dataPath = attachment.dataPath
+            maxCatalogConnections = 1
+        }).use { requireNotNull(it.getSpecVersion()) { "Replay catalog has no stored format version" } }
+    }
+
+    private fun databaseName(attachment: OracleAttachment): String =
+        Regex("dbname=([A-Za-z0-9_]+)").find(attachment.metadataUri)?.groupValues?.get(1)
+            ?: error("connect(): rewritten metadata URI carries no dbname: ${attachment.metadataUri}")
+
     override fun connect(attachment: OracleAttachment) {
         // The PG database is in the (rewritten) URI the oracle attached — never rely on
         // "the last database the rewriter minted": a re-ATTACH reuses an earlier one.
-        val db = Regex("dbname=([A-Za-z0-9_]+)").find(attachment.metadataUri)?.groupValues?.get(1)
-            ?: error("connect(): rewritten metadata URI carries no dbname: ${attachment.metadataUri}")
+        val db = databaseName(attachment)
         val catalog = catalogsByLake.getOrPut(attachment.metadataUri to attachment.dataPath) {
             // Unique Trino catalog name per lake; a lake re-attached with a different DATA_PATH is
             // a different catalog (same metadata, other files), hence the composite key.

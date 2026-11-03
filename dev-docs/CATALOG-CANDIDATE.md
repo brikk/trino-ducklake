@@ -1,42 +1,45 @@
-# Published catalog candidate
+# Experimental catalog planning
 
 ## Current selection
 
-The normal build consumes released catalog/replay **0.12.0**. The explicit R07 lane
-consumes **`0.13.0-20261101.082015-33`**, published from catalog source
-`72aae19d0deaf05a6c61e6782a6d263325ff23dd`:
+Both builds consume released **0.13.1** from Maven Central, with DuckDB JDBC
+**2.0.0.1** and test-only Java Quack JDBC **0.13.0**. This adopts the released
+library, not default-on final-1.1 planning. The historical timestamp snapshot is
+retired. All three modules remain in lockstep:
 
 - `dev.brikk.ducklake:ducklake-catalog`, including its test-fixtures variant;
 - `dev.brikk.ducklake:ducklake-test-corpus-replay`;
 - `dev.brikk.ducklake:slt-format`.
 
-Repository: `https://central.sonatype.com/repository/maven-snapshots/`.
-All three modules have strict timestamp pins, including base-SNAPSHOT transitives.
-All four JARs are checked against [the tracked SHA-256 receipt](../gradle/r07-catalog-snapshot.sha256).
-No sibling build, copied JAR or `mavenLocal` substitution is needed.
+Repository: `https://repo.maven.apache.org/maven2/`.
+All three modules have strict release pins, including fixture self-dependencies.
+All four JARs are checked in both builds against
+[the tracked SHA-256 receipt](../gradle/catalog-release.sha256).
+No sibling build, copied JAR, snapshot or `mavenLocal` substitution is used.
 
 ```sh
+./gradlew verifyCatalogRelease
 ./gradlew verifyR07Candidate -Pr07CatalogCandidate
 ./gradlew test -Pr07CatalogCandidate -PtrinoVersion=484 --tests '*TestPublished*'
 ```
 
 The flag without a value, or with the exact pinned version as its value, selects
-`candidate/src` and adds `qualification/src` tests. Old bundle-path values fail
+`candidate/src` and adds `qualification/src` tests. Old snapshot/bundle-path values fail
 explicitly. Outputs carry `-r07`, separate from ordinary plugin outputs. Omitting
-the flag restores `released/src`, 0.12.0 dependencies and the normal producer lane.
-The candidate producer uses DuckDB JDBC **2.0.0.0** and Java Quack JDBC **0.8.0**.
+the flag selects `released/src` and normal 1.0 planning, with identical dependencies.
 
 Building this lane does **not** automatically enable final-1.1 access. The separate
 catalog setting `ducklake.experimental.enable-final-1.1-reads=true` is default-off,
 read-only, and disables connector writes and maintenance procedures. It cannot be
-enabled using the normal 0.12 build.
+enabled using the normal build: its planning adapter still rejects admission.
 
 ## Implemented scope
 
 - Owned, controlled read sessions and the typed paged planning/inline/history APIs
   are used in the candidate's final-1.1 path. Existing work budgets remain enforced;
   legacy list APIs are not relabelled as SQL-paged.
-- The public bounded type-signature parser preserves quoted field names. Paged
+- The public bounded type-signature parser preserves quoted field names in **both**
+  build lanes since release adoption. Paged
   metadata production uses the public quote encoding too; scalar mappings and type
   refusals stay shared with the normal implementation.
 - Native nested JDBC values use source-era identity/order mapping, not `toString()`
@@ -53,7 +56,7 @@ VM. The actual runtime is asserted, not inferred from captured stdout. Follow
 
 ## Remaining qualification boundaries
 
-This is not a default dependency promotion or production/default-on approval.
+Release adoption is not experimental final-1.1 production/default-on approval.
 A stable artifact name alone does not close these gates:
 
 - Bounded admission/accounting is not complete for all point metadata, views, tags,

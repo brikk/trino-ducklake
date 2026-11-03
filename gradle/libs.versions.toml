@@ -2,8 +2,8 @@
 # Match brikk-sql 0.21.0's published Kotlin runtime instead of forcing an older stdlib.
 kotlin = "2.4.10"
 adbc = "0.21.0"
-duckdb = "1.5.6.0"
-quack-jdbc = "0.3.0"
+duckdb = "2.0.0.1"
+quack-jdbc = "0.13.0"
 arrow = "18.3.0"
 terpal-sql-plugin = "2.3.0-2.0.1.PL"
 terpal-sql-lib = "2.0.0.PL-4.4.0"
@@ -15,9 +15,7 @@ assertj = "3.27.3"
 trino = "483"
 # Published DuckLake catalog + corpus-replay coordinates (dev.brikk.ducklake). Bump in lockstep
 # when consuming a new catalog release; -SNAPSHOT resolves from the Central Portal snapshots repo.
-ducklake-catalog = "0.12.0"
-# Opt-in read-correctness handoff from catalog source 72aae19; never use a moving snapshot.
-ducklake-catalog-candidate = "0.13.0-20261101.082015-33"
+ducklake-catalog = "0.13.1"
 postgres = "42.7.8"
 mysql = "9.7.0"
 minio = "8.6.0"

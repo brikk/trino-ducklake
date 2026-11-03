@@ -16,6 +16,7 @@ package dev.brikk.ducklake.trino.plugin
 import dev.brikk.ducklake.corpus.CorpusReport
 import dev.brikk.ducklake.corpus.CorpusRunner
 import dev.brikk.ducklake.corpus.FileResult
+import dev.brikk.ducklake.corpus.ReplaySetupFormat
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.BeforeAll
@@ -119,12 +120,15 @@ class TestTrinoCorpusReplay {
                         skipList,
                         engine = engine,
                         metadataRewriter = engine.metadataRewriter,
+                        setupFormat = ReplaySetupFormat.DUCKLAKE_1_0,
                     )
                 results += runner.run(chunk).files
             }
         }
         val report = CorpusReport(results)
         println(report.summary(maxFailures = 40))
+        val reportDirectory = Files.createDirectories(Path.of("build", "reports", "corpus-replay"))
+        Files.writeString(reportDirectory.resolve("trino-summary.txt"), report.summary(maxFailures = 40))
 
         assertThat(report.failures)
             .withFailMessage { "trino corpus-mirror failures:\n" + report.summary(maxFailures = 40) }
@@ -133,6 +137,7 @@ class TestTrinoCorpusReplay {
             .withFailMessage { "harness crashes:\n" + report.summary(maxFailures = 40) }
             .isEmpty()
         assertThat(report.totalPassed).isGreaterThan(50)
+        report.requireMirrorPasses(1)
     }
 
     companion object {

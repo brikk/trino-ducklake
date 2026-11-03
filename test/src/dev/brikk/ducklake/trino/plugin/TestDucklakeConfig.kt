@@ -47,16 +47,10 @@ class TestDucklakeConfig {
         }
     }
     @Test
-    fun final11IsExplicitAndNeverEmulatedOnTheReleasedLibrary() {
+    fun final11IsExplicitOnTheReleasedLibrary() {
         assertThat(DucklakeConfig().isEnableFinal11Reads()).isFalse()
         val config = DucklakeConfig().setEnableFinal11Reads(true)
-        val api = dev.brikk.ducklake.catalog.DucklakeCatalogConfig::class.java.methods
-            .singleOrNull { it.name == "getEnableFinal11Reads" }
-        if (api == null) {
-            assertThatThrownBy { config.toCatalogConfig() }.hasMessageContaining("no opt-in API")
-        } else {
-            assertThat(api.invoke(config.toCatalogConfig())).isEqualTo(true)
-        }
+        assertThat(config.toCatalogConfig().enableFinal11Reads).isTrue()
     }
     @Test
     fun testCatalogPasswordIsRedactedInConfigurationInspection() {

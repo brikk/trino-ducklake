@@ -6,6 +6,11 @@ branch names, paths and measured test counts retain their original scope/date.
 
 ## Recent integration and qualification
 
+- [Catalog 0.13.1 adoption](CATALOG-0.13.1-ADOPTION.md): released artifacts, native
+  setup-format selection, exact corpus alignment and scoped connector verification.
+- [Native MySQL re-probe](MYSQL-NATIVE-PROBE-2026-11-03.md): DuckDB 2.0 metadata-schema
+  failure, separate from passing Trino direct-JDBC worker checks.
+
 - [Catalog 72aae19 handoff](HANDOFF-CATALOG-72aae19.md): completed N03/H15/N19 consumer
   work at `1187848`, exact bytes, scoped tests and remaining boundaries.
   Current selection/gates: [catalog candidate](../CATALOG-CANDIDATE.md).

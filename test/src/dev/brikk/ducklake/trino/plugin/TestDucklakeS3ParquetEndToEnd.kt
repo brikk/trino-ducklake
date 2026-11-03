@@ -120,7 +120,7 @@ class TestDucklakeS3ParquetEndToEnd : AbstractTestQueryFramework() {
                 stmt.execute("LOAD ducklake")
                 // No data is written here, so the bootstrap DuckDB needs no s3 credentials.
                 stmt.execute("ATTACH '" + pg.getDuckDbAttachUri(dbName) + "' AS lake "
-                        + "(DATA_PATH 's3://$BUCKET/data/')")
+                        + "(DATA_PATH 's3://$BUCKET/data/', DUCKLAKE_VERSION '1.0', AUTOMATIC_MIGRATION FALSE)")
                 stmt.execute("CREATE SCHEMA lake.test_schema")
             }
         }

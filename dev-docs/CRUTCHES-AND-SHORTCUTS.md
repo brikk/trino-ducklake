@@ -40,6 +40,19 @@ the reserved ID retain the native file-begin fallback; lost origins are not gues
 
 ## R07: Experimental Planning, Explicit Opt-in Qualification Only
 
+### Opt-in 0.15 catalog trial
+
+The normal release pin stays at 0.14.0. Only
+`-PcatalogTrialVersion=0.15.0-20261104.182540-2` enables the published consumer
+trial, separately named outputs and `trial/test`; all four hashes are checked,
+and an exclusive remote repository rule excludes local artifacts. This is not
+1.1 promotion. In 0.15, snapshot expiry commits before resumable catalog cleanup;
+an interrupted expiry must resume via `cleanUpExpiredObjects`, not retry IDs.
+That API is not yet exposed as a connector SQL procedure, and `cleanup_old_files`
+is physical queue draining, not catalog-GC recovery. Approximate API cleanup
+budgets are not advertised as strict work limits. See
+[the trial record](CATALOG-0.15-TRIAL.md).
+
 ### Catalog 0.14.0 and independent format validation
 
 Both build modes now consume released catalog/replay/SLT **0.14.0**, with test-only

@@ -1,5 +1,9 @@
 # Catalog 0.15 consumer trial
 
+> Historical trial evidence. Formal 0.15.0 is now the normal dependency; the
+> snapshot selector, trial source directory and trial hash file below are retired.
+> See [the formal adoption record](CATALOG-0.15.0-ADOPTION.md).
+
 Normal builds remain on released **0.14.0**. The opt-in
 `-PcatalogTrialVersion=0.15.0-20261104.182540-2` selects only that published
 Central Portal build (source `98d7018eafb661f7a7c3c34dc733278bb0aa7aee`).

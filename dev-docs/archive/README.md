@@ -6,6 +6,8 @@ branch names, paths and measured test counts retain their original scope/date.
 
 ## Recent integration and qualification
 
+- [Catalog 0.15.0 adoption](CATALOG-0.15.0-ADOPTION.md): formal dependency and targeted
+  expiry/maintenance checks after the [snapshot trial](CATALOG-0.15-TRIAL.md).
 - [Catalog 0.14.0 / independent 1.0 acceptance](CATALOG-0.14.0-ADOPTION.md): actual
   CI starter selection, stored-format locks, structural SQL binding and row snapshots.
 - [Catalog 0.13.2 follow-up](CATALOG-0.13.2-ADOPTION.md): byte-identical release pins

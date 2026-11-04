@@ -76,7 +76,7 @@ port, feature and release history is not an instruction to redo shipped work.
 
 - [ ] Keep development-format writes and all final-1.1 connector writes disabled.
 - [ ] Keep [candidate qualification](CATALOG-CANDIDATE.md) separate from the normal
-  catalog 0.14 / DuckLake 1.0 lane. Library adoption does not authorize final-1.1 promotion.
+  catalog 0.15 / DuckLake 1.0 lane. Library adoption does not authorize final-1.1 promotion.
 - [ ] Complete the remaining bounded transfers/accounting, cancellation/network,
   legacy/type/route, retention and deployment gates before broad read enablement.
 - [ ] Qualify schema migration, hierarchy, exactness, row-group metadata, ABI/wire,

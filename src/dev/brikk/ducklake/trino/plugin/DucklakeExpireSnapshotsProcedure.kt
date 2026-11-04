@@ -46,15 +46,16 @@ import java.time.Instant
  * `retention_threshold` (default 7d, floored by `ducklake.maintenance.min-retention` so recent
  * time-travel can't be nuked). The latest snapshot is NEVER expirable.
  *
- * Safety (see dev-docs/DESIGN-maintenance.md): this is a plain catalog transaction (no new
- * snapshot) that only **schedules** the now-dead files into `ducklake_files_scheduled_for_deletion`
+ * Safety (see dev-docs/DESIGN-maintenance.md): this mints no new snapshot and only
+ * **schedules** the now-dead files into `ducklake_files_scheduled_for_deletion`
  * — it never physically deletes (that's `cleanup_old_files`, age-gated). File liveness is the
  * half-open `[begin_snapshot, end_snapshot)` survivor test; dropped-table files are caught too, so
  * nothing leaks. `dry_run => true` lists the snapshots that would be expired and changes nothing.
  *
- * v1 reclaims the files; it does not yet GC dead *metadata* rows of fully-expired dropped
- * tables/schemas/views (harmless dangling rows — see the catalog contract). Not supported on the
- * Quack backend yet.
+ * Snapshot removal commits before paged file/metadata cleanup. If the latter fails, the catalog
+ * throws DucklakeExpiryCleanupIncompleteException: history stays expired and recovery must call
+ * cleanUpExpiredObjects, not retry these ids. Physical cleanup_old_files is a separate operation.
+ * Not supported on the Quack backend yet.
  */
 class DucklakeExpireSnapshotsProcedure @Inject constructor(
         private val catalog: DucklakeCatalog,

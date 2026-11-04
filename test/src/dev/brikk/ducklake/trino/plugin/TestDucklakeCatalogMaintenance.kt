@@ -11,11 +11,13 @@
 package dev.brikk.ducklake.trino.plugin
 
 import dev.brikk.ducklake.catalog.ExpireSnapshotsResult
+import dev.brikk.ducklake.catalog.DucklakeExpiryCleanupIncompleteException
 import dev.brikk.ducklake.catalog.JdbcDucklakeCatalog
+import io.trino.testing.connector.TestingConnectorSession.SESSION
 import io.trino.testing.DistributedQueryRunner
 import io.trino.testing.TestingSession.testSessionBuilder
 import org.assertj.core.api.Assertions.assertThat
-import org.assertj.core.api.Assertions.assertThatThrownBy
+import org.assertj.core.api.Assertions.catchThrowable
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import org.junit.jupiter.api.parallel.Execution
@@ -26,9 +28,9 @@ import java.nio.file.Path
 import java.sql.DriverManager
 import java.util.UUID
 
-/** Opt-in published 0.15 trial only; the normal build still compiles against 0.14. */
+/** Published catalog maintenance contracts, exercised through the connector and real metadata. */
 @Execution(ExecutionMode.SAME_THREAD)
-class TestDucklakeCatalogTrialMaintenance {
+class TestDucklakeCatalogMaintenance {
     @TempDir
     lateinit var data: Path
     private lateinit var config: DucklakeConfig
@@ -79,9 +81,15 @@ class TestDucklakeCatalogTrialMaintenance {
         sql("CREATE TRIGGER trial_fail_cleanup BEFORE INSERT ON ducklake_files_scheduled_for_deletion " +
             "FOR EACH ROW EXECUTE FUNCTION trial_fail_cleanup()")
         try {
-            assertThatThrownBy {
-                runner.execute("CALL system.expire_snapshots(snapshot_ids => ARRAY[${ids.joinToString(",")}])")
-            }.hasMessageContaining("trial cleanup failure")
+            val failure = catchThrowable {
+                DucklakeExpireSnapshotsProcedure(catalog, config).expireSnapshots(SESSION, null, ids.toList(), false)
+            }
+            assertThat(failure).isInstanceOf(DucklakeExpiryCleanupIncompleteException::class.java)
+                .hasMessageContaining("expiry is committed").hasMessageContaining("cleanUpExpiredObjects")
+            val incomplete = failure as DucklakeExpiryCleanupIncompleteException
+            assertThat(incomplete.expiredSnapshotCount).isEqualTo(ids.size)
+            assertThat(incomplete.scheduledFileCount).isZero()
+            assertThat(incomplete.cause).hasMessageContaining("trial cleanup failure")
             assertThat(scalar("SELECT count(*) FROM ducklake_snapshot WHERE snapshot_id IN (${ids.joinToString(",")})")).isZero()
             assertThat(scalar("SELECT count(*) FROM ducklake_data_file WHERE table_id=$table AND end_snapshot IS NOT NULL"))
                 .isEqualTo(2)
@@ -96,6 +104,51 @@ class TestDucklakeCatalogTrialMaintenance {
         runner.execute("CALL system.cleanup_old_files(retention_threshold => '0s')")
         assertThat(scalar("SELECT count(*) FROM ducklake_files_scheduled_for_deletion")).isZero()
         assertThat(runner.execute("SELECT id FROM t").onlyValue).isEqualTo(3)
+    }
+
+    @Test
+    fun dataFileDeleteFanoutObeysTheHardBudgetAndMakesProgress() = withLake { runner, catalog ->
+        runner.execute("CREATE TABLE t AS SELECT * FROM (VALUES 1,2,3,4) AS u(id)")
+        runner.execute("DELETE FROM t WHERE id=1")
+        runner.execute("DELETE FROM t WHERE id=2")
+        val table = scalar("SELECT table_id FROM ducklake_table WHERE table_name='t' AND end_snapshot IS NULL")
+        runner.execute("TRUNCATE TABLE t")
+        runner.execute("INSERT INTO t VALUES 9")
+        val deletes = scalar("SELECT count(*) FROM ducklake_delete_file WHERE table_id=$table")
+        assertThat(deletes).isGreaterThanOrEqualTo(2)
+        val expected = 1 + deletes.toInt()
+        val first = catalog.expireSnapshots(catalog.listExpirableSnapshots(null, null).toSet(), 1)
+        assertThat(first.scheduledFileCount).isEqualTo(1)
+        assertThat(first.cleanupComplete).isFalse()
+        assertThat(scalar("SELECT count(*) FROM ducklake_data_file WHERE table_id=$table AND end_snapshot IS NOT NULL"))
+            .isEqualTo(1)
+        var scheduled = first.scheduledFileCount
+        var complete = false
+        repeat(8) {
+            if (!complete) {
+                val next = catalog.cleanUpExpiredObjects(table, 1)
+                assertThat(next.scheduledFileCount).isBetween(0, 1)
+                scheduled += next.scheduledFileCount
+                complete = next.cleanupComplete
+            }
+        }
+        assertThat(complete).isTrue()
+        assertThat(scheduled).isEqualTo(expected)
+        assertThat(catalog.cleanUpExpiredObjects(1).scheduledFileCount).isZero()
+        assertThat(runner.execute("SELECT id FROM t").onlyValue).isEqualTo(9)
+    }
+
+    @Test
+    fun legacyResultCopyAndKotlinDefaultBridgeStillLink() {
+        val type = ExpireSnapshotsResult::class.java
+        val result = ExpireSnapshotsResult(2, 3, false)
+        val copy = type.getMethod("copy", Int::class.javaPrimitiveType, Int::class.javaPrimitiveType)
+        assertThat(copy.invoke(result, 4, 5)).isEqualTo(ExpireSnapshotsResult(4, 5, false))
+        val defaults = type.getMethod("copy\$default", type, Int::class.javaPrimitiveType,
+            Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, Any::class.java)
+        assertThat(defaults.invoke(null, result, 0, 6, 1, null)).isEqualTo(ExpireSnapshotsResult(2, 6, false))
+        assertThat(defaults.invoke(null, result, 7, 0, 2, null)).isEqualTo(ExpireSnapshotsResult(7, 3, false))
+        assertThat(defaults.invoke(null, result, 0, 0, 3, null)).isEqualTo(result)
     }
 
     @Test

@@ -10,10 +10,8 @@ maintainers, not a second user manual or an append-only release diary.
   fixture prerequisites and local verification discipline.
 - [TODO.md](TODO.md): one current backlog, containing only unresolved work and watches.
 - [CATALOG-CANDIDATE.md](CATALOG-CANDIDATE.md): opt-in planning on the published release, scoped
-  qualification and remaining 1.1/default-on gates. Normal builds use catalog 0.14.0,
+  qualification and remaining 1.1/default-on gates. Normal builds use catalog 0.15.0,
   without promoting experimental final-1.1 planning.
-- [CATALOG-0.15-TRIAL.md](CATALOG-0.15-TRIAL.md): exact published consumer trial,
-  resumable expiry/cleanup integration and API feedback; the normal pin stays unchanged.
 - [REVIEW-2026-09-05.md](REVIEW-2026-09-05.md): permanent finding IDs, recorded repairs
   and unresolved security/value/history risks. Kept active because obligations remain;
   its dated observations are not automatically fresh reproductions.

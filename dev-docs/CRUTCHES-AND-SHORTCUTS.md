@@ -40,22 +40,23 @@ the reserved ID retain the native file-begin fallback; lost origins are not gues
 
 ## R07: Experimental Planning, Explicit Opt-in Qualification Only
 
-### Opt-in 0.15 catalog trial
+### Catalog 0.15 expiry recovery
 
-The normal release pin stays at 0.14.0. Only
-`-PcatalogTrialVersion=0.15.0-20261104.182540-2` enables the published consumer
-trial, separately named outputs and `trial/test`; all four hashes are checked,
-and an exclusive remote repository rule excludes local artifacts. This is not
-1.1 promotion. In 0.15, snapshot expiry commits before resumable catalog cleanup;
-an interrupted expiry must resume via `cleanUpExpiredObjects`, not retry IDs.
-That API is not yet exposed as a connector SQL procedure, and `cleanup_old_files`
-is physical queue draining, not catalog-GC recovery. Approximate API cleanup
-budgets are not advertised as strict work limits. See
-[the trial record](CATALOG-0.15-TRIAL.md).
+Formal 0.15.0 replaces the snapshot trial as the normal dependency. Snapshot
+expiry commits before resumable catalog cleanup. A subsequent cleanup failure
+throws `DucklakeExpiryCleanupIncompleteException`, retaining the committed
+expiry and scheduled-file counts and the original cause. Resume via
+`cleanUpExpiredObjects`, never retry the expiry IDs. The resume API is not yet
+exposed as connector SQL; `cleanup_old_files` drains the physical queue only.
+The connector still uses the legacy finish-cleanup overload and does not expose
+new budget knobs. The library's new bounded overloads now enforce hard file
+limits, including dependent delete files. See the
+[adoption record](archive/CATALOG-0.15.0-ADOPTION.md); the
+[snapshot trial](archive/CATALOG-0.15-TRIAL.md) is historical evidence only.
 
-### Catalog 0.14.0 and independent format validation
+### Released catalog and independent format validation
 
-Both build modes now consume released catalog/replay/SLT **0.14.0**, with test-only
+Both build modes now consume released catalog/replay/SLT **0.15.0**, with test-only
 DuckDB JDBC **2.0.0.1** and direct Java Quack JDBC **0.13.0**. Native test setup
 explicitly creates DuckLake 1.0 with automatic migration disabled. This is not
 promotion of the candidate planning adapter or final-1.1 read/write admission.
@@ -66,8 +67,7 @@ the old normal 0.12 lane describe the original qualification, not today's defaul
 Replay uses the released `ReplaySetupFormat.DUCKLAKE_1_0` native default setting;
 it does not rewrite corpus ATTACH text or goldens. Explicit format choices and
 SET/RESET retain native semantics. Existing newer lakes cannot be downgraded.
-0.14.0's four JARs are byte-identical to accepted snapshot
-`0.14.0-20261103.154002-5`. The connector explicitly requires the selected stored
+The original 0.14.0 acceptance remains in the archive. The connector explicitly requires the selected stored
 format via `ducklake.catalog.format-version` (1.0 by default, 1.1 only in the
 separately qualified read-only build). Reads and writes refuse a mismatch, including
 after native migration. Normal metadata lookup/listing, split/source and function
@@ -124,7 +124,7 @@ Cost: extra files may be scanned. Removal requires a real file-specific transfor
 writer-zone attestation, not a version check or a future native upgrade.
 
 `-Pr07CatalogCandidate` now selects only the experimental adapter and
-`qualification/src` tests, on the same 0.14.0 release and driver pins as the normal
+`qualification/src` tests, on the same 0.15.0 release and driver pins as the normal
 build. `verifyCatalogRelease` checks all four JARs against
 `gradle/catalog-release.sha256` in both modes. Old snapshot/local-bundle values
 fail explicitly. Experimental output versions retain `-r07`; this is not a supported
@@ -161,7 +161,7 @@ multi-process/multi-host deployment or mixed-version negotiation test.
 
 The `10f81f9` qualification introduced a **typed public-API adapter** in
 `candidate/src`; the default build retains its normal 1.0 adapter in `released/src`.
-Both now consume released 0.14.0, without enabling the experimental adapter by default.
+Both now consume released 0.15.0, without enabling the experimental adapter by default.
 The candidate adapter drains SQL-keyset active/added files, schemas/tables/flat columns,
 partition fields/values, immutable name rows and inline registry versions. Each outer
 view shares totals: 1,024 page calls (including empty terminals), 16,384 returned nodes,

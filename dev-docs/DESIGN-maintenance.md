@@ -8,6 +8,10 @@
 - Files are immutable. Catalog commits retire metadata; they do not modify data files in place.
 - File visibility is the half-open snapshot interval `[begin_snapshot, end_snapshot)`.
 - Snapshot expiration schedules files; `cleanup_old_files` performs later physical reclamation.
+- Catalog 0.15 commits snapshot removal before paged catalog cleanup. A
+  `DucklakeExpiryCleanupIncompleteException` means the history is already expired;
+  resume with the catalog's `cleanUpExpiredObjects`, not the same expiry IDs.
+  Physical `cleanup_old_files` is not that catalog-GC resume operation.
 - Physical deletion is retention-gated and checks retained owners before deleting or acknowledging
   a selected queue entry. Exact guarantees and accepted races are documented in
   [DESIGN-shared-file-ownership.md](DESIGN-shared-file-ownership.md) and

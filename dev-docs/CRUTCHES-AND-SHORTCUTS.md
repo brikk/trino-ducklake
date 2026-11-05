@@ -42,10 +42,12 @@ the reserved ID retain the native file-begin fallback; lost origins are not gues
 
 ### Catalog 0.15 expiry recovery
 
-Formal 0.15.0 replaces the snapshot trial as the normal dependency. Snapshot
+Formal 0.15.1 supersedes 0.15.0 and the snapshot trial as the normal dependency. Snapshot
 expiry commits before resumable catalog cleanup. A subsequent cleanup failure
 throws `DucklakeExpiryCleanupIncompleteException`, retaining the committed
-expiry and scheduled-file counts and the original cause. Resume via
+expiry and scheduled-file counts and the original cause. Since 0.15.1, file
+counts/budgets advance only after page commit; rolled-back work is not reported.
+Resume via
 `cleanUpExpiredObjects`, never retry the expiry IDs. The resume API is not yet
 exposed as connector SQL; `cleanup_old_files` drains the physical queue only.
 The connector still uses the legacy finish-cleanup overload and does not expose
@@ -56,7 +58,7 @@ limits, including dependent delete files. See the
 
 ### Released catalog and independent format validation
 
-Both build modes now consume released catalog/replay/SLT **0.15.0**, with test-only
+Both build modes now consume released catalog/replay/SLT **0.15.1**, with test-only
 DuckDB JDBC **2.0.0.1** and direct Java Quack JDBC **0.13.0**. Native test setup
 explicitly creates DuckLake 1.0 with automatic migration disabled. This is not
 promotion of the candidate planning adapter or final-1.1 read/write admission.
@@ -124,7 +126,7 @@ Cost: extra files may be scanned. Removal requires a real file-specific transfor
 writer-zone attestation, not a version check or a future native upgrade.
 
 `-Pr07CatalogCandidate` now selects only the experimental adapter and
-`qualification/src` tests, on the same 0.15.0 release and driver pins as the normal
+`qualification/src` tests, on the same 0.15.1 release and driver pins as the normal
 build. `verifyCatalogRelease` checks all four JARs against
 `gradle/catalog-release.sha256` in both modes. Old snapshot/local-bundle values
 fail explicitly. Experimental output versions retain `-r07`; this is not a supported
@@ -161,7 +163,7 @@ multi-process/multi-host deployment or mixed-version negotiation test.
 
 The `10f81f9` qualification introduced a **typed public-API adapter** in
 `candidate/src`; the default build retains its normal 1.0 adapter in `released/src`.
-Both now consume released 0.15.0, without enabling the experimental adapter by default.
+Both now consume released 0.15.1, without enabling the experimental adapter by default.
 The candidate adapter drains SQL-keyset active/added files, schemas/tables/flat columns,
 partition fields/values, immutable name rows and inline registry versions. Each outer
 view shares totals: 1,024 page calls (including empty terminals), 16,384 returned nodes,

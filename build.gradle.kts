@@ -14,7 +14,7 @@ group = "dev.brikk.ducklake"
 val trinoVersion = providers.gradleProperty("trinoVersion").getOrElse(libs.versions.trino.get())
 require(trinoVersion in setOf("483", "484")) { "Supported Trino targets: 483, 484 (got $trinoVersion)" }
 require(!providers.gradleProperty("catalogTrialVersion").isPresent) {
-    "The catalog snapshot trial is retired; normal builds now use released catalog 0.15.0"
+    "The catalog snapshot trial is retired; normal builds now use released catalog 0.15.1"
 }
 val catalogVersion = libs.versions.ducklake.catalog.get()
 val r07CatalogCandidate = providers.gradleProperty("r07CatalogCandidate").orNull

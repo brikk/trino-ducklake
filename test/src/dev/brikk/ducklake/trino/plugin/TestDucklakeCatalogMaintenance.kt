@@ -78,7 +78,8 @@ class TestDucklakeCatalogMaintenance {
         val ids = catalog.listExpirableSnapshots(null, null).toSet()
         sql("CREATE FUNCTION trial_fail_cleanup() RETURNS trigger LANGUAGE plpgsql AS " +
             "'BEGIN RAISE EXCEPTION ''trial cleanup failure''; END;'")
-        sql("CREATE TRIGGER trial_fail_cleanup BEFORE INSERT ON ducklake_files_scheduled_for_deletion " +
+        // Fail after queue insertion, so the whole page rolls back and must not inflate reported counts.
+        sql("CREATE TRIGGER trial_fail_cleanup BEFORE DELETE ON ducklake_data_file " +
             "FOR EACH ROW EXECUTE FUNCTION trial_fail_cleanup()")
         try {
             val failure = catchThrowable {
@@ -89,6 +90,8 @@ class TestDucklakeCatalogMaintenance {
             val incomplete = failure as DucklakeExpiryCleanupIncompleteException
             assertThat(incomplete.expiredSnapshotCount).isEqualTo(ids.size)
             assertThat(incomplete.scheduledFileCount).isZero()
+            assertThat(incomplete.scheduledFileCount.toLong())
+                .isEqualTo(scalar("SELECT count(*) FROM ducklake_files_scheduled_for_deletion"))
             assertThat(incomplete.cause).hasMessageContaining("trial cleanup failure")
             assertThat(scalar("SELECT count(*) FROM ducklake_snapshot WHERE snapshot_id IN (${ids.joinToString(",")})")).isZero()
             assertThat(scalar("SELECT count(*) FROM ducklake_data_file WHERE table_id=$table AND end_snapshot IS NOT NULL"))
@@ -96,7 +99,7 @@ class TestDucklakeCatalogMaintenance {
             assertThat(scalar("SELECT count(*) FROM ducklake_files_scheduled_for_deletion")).isZero()
             assertThat(runner.execute("SELECT id FROM t").onlyValue).isEqualTo(3)
         } finally {
-            sql("DROP TRIGGER trial_fail_cleanup ON ducklake_files_scheduled_for_deletion")
+            sql("DROP TRIGGER trial_fail_cleanup ON ducklake_data_file")
             sql("DROP FUNCTION trial_fail_cleanup()")
         }
         assertThat(drain(catalog, table)).isEqualTo(2)

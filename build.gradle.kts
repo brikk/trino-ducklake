@@ -23,7 +23,7 @@ require(r07CatalogCandidate == null || r07CatalogCandidate in setOf("", catalogV
 }
 kotlin.sourceSets.main { kotlin.srcDir("trino-$trinoVersion/src") }
 // <trino-version>-<our-release>: never label a 484 build as compatible with 483.
-version = "$trinoVersion-0.5.0" + if (r07CatalogCandidate != null) "-r07" else ""
+version = "$trinoVersion-0.5.1" + if (r07CatalogCandidate != null) "-r07" else ""
 
 // Idiomatic-Kotlin quality gate (detekt 2.0 runs on the JDK 25 daemon; jvmTarget is read
 // from the Kotlin compilerOptions). Custom src/test layout, so point detekt at it explicitly.

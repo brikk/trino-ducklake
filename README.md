@@ -33,8 +33,9 @@ remote Quack catalogs are not part of the normal supported deployment described 
 
 ## Install
 
-Read the [0.5.0 upgrade notes](dev-docs/archive/RELEASE-0.5.0.md) before updating a
-lake or JDBC driver. The 483 and 484 builds are separate, target-specific archives.
+Read the [0.5.1 release notes](dev-docs/archive/RELEASE-0.5.1.md) and the
+[0.5.0 upgrade precautions](dev-docs/archive/RELEASE-0.5.0.md) before updating a lake
+or JDBC driver. The 483 and 484 builds are separate, target-specific archives.
 
 Download the matching ZIP or tar.gz and its checksum from
 [GitHub Releases](https://github.com/brikk/trino-ducklake/releases). Each archive

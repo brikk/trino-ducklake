@@ -24,7 +24,8 @@ branch names, paths and measured test counts retain their original scope/date.
   CDC trials. Local-bundle commands are superseded, not instructions for current pins.
 - [October Trino verification](TRINO-VERIFICATION-2026-10.md): target/tooling implementation
   evidence. Current API/build contract: [Trino compatibility](../TRINO-COMPATIBILITY.md).
-- Release notes: [0.5.0 — 483 and 484](RELEASE-0.5.0.md),
+- Release notes: [0.5.1 — catalog maintenance](RELEASE-0.5.1.md),
+  [0.5.0 — 483 and 484](RELEASE-0.5.0.md),
   [483-0.3.0](RELEASE-483-0.3.0.md), [483-0.4.0](RELEASE-483-0.4.0.md).
 
 ## Superseded current-document snapshots

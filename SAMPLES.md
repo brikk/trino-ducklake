@@ -39,8 +39,8 @@ S3 settings are per-catalog in Trino. Even if `hive.properties` or `iceberg.prop
 already defines `s3.*`, `ducklake.properties` needs its own S3 settings.
 
 For PgBouncer transaction-pooling requirements and JDBC URL parameters, see
-[the reference](REFERENCE.md#pgbouncer-transaction-pooling). This requires the source
-build with catalog 0.16.0, not the previously released connector 0.5.2.
+[the reference](REFERENCE.md#pgbouncer-transaction-pooling). This requires connector
+0.5.3 with catalog 0.16.0, not the older connector 0.5.2.
 
 ## Schema and Table DDL
 

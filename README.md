@@ -33,7 +33,7 @@ remote Quack catalogs are not part of the normal supported deployment described 
 
 ## Install
 
-Read the [0.5.2 release notes](dev-docs/archive/RELEASE-0.5.2.md) and the
+Read the [0.5.3 release notes](dev-docs/archive/RELEASE-0.5.3.md) and the
 [0.5.0 upgrade precautions](dev-docs/archive/RELEASE-0.5.0.md) before updating a lake
 or JDBC driver. The 483 and 484 builds are separate, target-specific archives.
 

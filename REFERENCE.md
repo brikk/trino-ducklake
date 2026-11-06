@@ -52,9 +52,9 @@ maintained shared-catalog path for concurrent Trino/DuckDB access.
 
 #### PgBouncer transaction pooling
 
-Catalog **0.16.0** includes the transaction-local read-session isolation fix and is
-the normal source-build dependency. The previously released connector 0.5.2 still
-contains catalog 0.15.1: use direct PostgreSQL or session pooling with that release.
+Connector **0.5.3** includes catalog **0.16.0** and its transaction-local read-session
+isolation fix. Connector 0.5.2 contains catalog 0.15.1: use direct PostgreSQL or
+session pooling with that older release.
 The prepared-statement setting below does not fix the older catalog's isolation
 issue. Do not replace individual JARs in a released plugin directory.
 

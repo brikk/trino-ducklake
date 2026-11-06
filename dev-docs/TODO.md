@@ -19,6 +19,16 @@ port, feature and release history is not an instruction to redo shipped work.
 - [ ] Reproduce the recorded `issue_852_schema_cache_growth` mirror divergence
   (`expected [true], got [false]`). Treat it as an unresolved recorded observation,
   not a fresh nightly verdict or a reason to add an unproven skip.
+- [ ] Read DuckLake `timetz` from Parquet `INT64 TIME(MICROS, isAdjustedToUTC=true)`. The
+  connector maps it to `time(6) with time zone`, which Trino's Parquet reader cannot decode:
+  `Unsupported Trino column type (time(6) with time zone) for Parquet column ([col1] optional
+  int64 col1 (TIME(MICROS,true)))` at `add_files/add_files_timetz.test:28` and
+  `add_files/add_files_type_check_timetz.test:34,46,51` (corpus mirror failures).
+- [ ] Read Parquet `FLOAT16` into `real`: `add_files/add_files_type_check_reader_types.test:67`
+  fails with `Unsupported Trino column type (real) for Parquet column ([f] optional
+  fixed_len_byte_array(2) f (FLOAT16))`; `:74` then fails creating the page source.
+- [ ] Map DuckLake `time_ns`; `DucklakeTypeConverter` refuses it with `NOT_SUPPORTED`
+  (`add_files/add_files_type_check_reader_types.test:33` is an engine-skip on that gate).
 - [ ] Support or preflight-refuse every writable physical type before side effects;
   DDL/type-mapper acceptance is not Parquet-writer support.
 - [ ] Honor `add_files.allow_missing` recursively for missing STRUCT children without
@@ -40,7 +50,9 @@ port, feature and release history is not an instruction to redo shipped work.
 ## Type improvements
 
 - [ ] Define a supported VARIANT/shredding representation and exactness/pruning policy;
-  do not infer final-1.1 support from development layouts or mapper fallbacks.
+  do not infer final-1.1 support from development layouts or mapper fallbacks. File-resident
+  VARIANT (a Parquet VARIANT group) is refused with `NOT_SUPPORTED`; the column type is
+  exposed as degraded VARCHAR.
 - [ ] Evaluate native spatial mapping and bounding-box pruning; current geometry
   handling is binary, not a spatial engine.
 - [ ] Retain existing INTERVAL/`uint128` representation boundaries unless a complete

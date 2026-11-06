@@ -40,6 +40,8 @@ import io.trino.plugin.hive.parquet.ParquetPageSourceFactory.createDataSource
 import io.trino.plugin.hive.parquet.ParquetReaderConfig
 import io.trino.spi.StandardErrorCode.INVALID_PROCEDURE_ARGUMENT
 import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
+import io.trino.spi.StandardErrorCode.SCHEMA_NOT_FOUND
+import io.trino.spi.StandardErrorCode.TABLE_NOT_FOUND
 import io.trino.spi.StandardErrorCode.TRANSACTION_CONFLICT
 import io.trino.spi.TrinoException
 import io.trino.spi.connector.ConnectorSession
@@ -136,10 +138,10 @@ class DucklakeAddFilesProcedure @Inject constructor(
         val filePaths = extractStringArray(fileList)
         val snapshotId = catalog.currentSnapshotId
         if (catalog.getSchema(schemaName, snapshotId) == null) {
-            throw TrinoException(NOT_SUPPORTED, "Schema not found: $schemaName")
+            throw TrinoException(SCHEMA_NOT_FOUND, "Schema not found: $schemaName")
         }
         val tableInfo: DucklakeTable = catalog.getTable(schemaName, tableName, snapshotId)
-            ?: throw TrinoException(NOT_SUPPORTED, "Table not found: $schemaName.$tableName")
+            ?: throw TrinoException(TABLE_NOT_FOUND, "Table not found: $schemaName.$tableName")
         val tableId = tableInfo.tableId
 
         // getTableColumns returns top-level columns with type strings already resolved

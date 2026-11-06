@@ -13,6 +13,8 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
+import io.trino.spi.StandardErrorCode.TABLE_NOT_FOUND
+import io.trino.testing.assertions.TrinoExceptionAssert.assertTrinoExceptionThrownBy
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Test
@@ -178,13 +180,14 @@ internal open class TestDucklakeAddFiles
     @Test
     fun testAddFilesNonExistentTableRejected()
     {
-        assertThatThrownBy {
+        assertTrinoExceptionThrownBy {
             computeActual(
                     "CALL ducklake.system.add_files("
                             + "schema_name => 'test_schema', "
                             + "table_name => 'definitely_does_not_exist', "
                             + "files => ARRAY['/tmp/x.parquet'])")
         }
+                .hasErrorCode(TABLE_NOT_FOUND)
                 .hasMessageContaining("Table not found")
     }
 

@@ -394,3 +394,25 @@ Trino rows before the shared mirror comparison passed. These copies are regressi
 not a relaxation of the production adapter gate or a claim that every original corpus query ran.
 Removing the general coverage limitation requires trustworthy oracle namespace/temp-table
 binding information; blindly accepting or qualifying arbitrary bare names is not a fix.
+
+## Corpus Engine-Error Classification
+
+`TrinoReplayEngine.classifyEngineError` (test code) turns a Trino mirror error into an
+engine-skip only by the server-side error code: connector-thrown `NOT_SUPPORTED`,
+`FUNCTION_NOT_FOUND` for an unknown function name, `TYPE_MISMATCH` against a bounded
+`varchar(n)` literal, and `TABLE_NOT_FOUND` for a name the lake never held as a table and holds
+only as a non-Trino-dialect view or not at all. Everything else fails.
+
+- Two parts still read message text, each only inside its error-code branch: the
+  `FUNCTION_NOT_FOUND`/`TYPE_MISMATCH` narrowing patterns, and the relation name extracted from
+  Trino's `Table '<catalog>.<schema>.<table>' does not exist`. Trino exposes no structured field
+  for either.
+- The `TABLE_NOT_FOUND` check queries the replay PostgreSQL database's `ducklake_table`,
+  `ducklake_view` and `ducklake_schema` directly, across all snapshots, so a table that exists
+  at any snapshot fails instead of skipping.
+- Production must keep `NOT_SUPPORTED` for deliberate capability gates only; not-found and
+  internal/corrupt-state conditions use `*_NOT_FOUND` or `GENERIC_INTERNAL_ERROR`. A new
+  `NOT_SUPPORTED` for anything else silently becomes a corpus skip.
+
+**Removal criterion:** the replay library reports which relations a query reads from the lake
+versus the oracle session, and Trino reports the unresolved name structurally.

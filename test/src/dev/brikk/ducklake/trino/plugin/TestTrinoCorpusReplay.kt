@@ -53,28 +53,9 @@ class TestTrinoCorpusReplay {
      */
     private val skipList: Map<String, String> =
         dev.brikk.ducklake.corpus.PostgresAxisSkips.SKIPS + mapOf(
-            "metadata/appender_variant_stats.test" to
-                "VARIANT-typed parquet not readable by the Trino parquet reader (F10 territory)",
-            "stats/variant_mixed_type_stats.test" to
-                "VARIANT-typed parquet not readable by the Trino parquet reader (F10; same class as " +
-                "metadata/appender_variant_stats.test — the transpile-first gate now admits these reads)",
-            "add_files/add_files_type_check_timestamp.test" to
-                "duckdb-jdbc truncates TIMESTAMP_NS to micros (oracle-side limitation; also " +
-                "a ms/us rendering ordering nuance under investigation)",
-            "data_inlining/data_inlining_encryption.test" to ENCRYPTED_LAKE,
-            "encryption/encryption.test" to ENCRYPTED_LAKE,
-            "compaction/compaction_encrypted.test" to ENCRYPTED_LAKE,
-            // (2026-07-07: the round-2 add_files bugs were FIXED — hive-partition columns are
-            // parsed from the file path via is_partition name-map entries, and unmapped
-            // dead-column resurrection is blocked by era-aware column existence. All four
-            // add_files repros un-skipped.)
-            // (2026-07-06: the inlined struct/map crash family was FIXED — nested
-            // text parsing in DucklakeInlinedValueConverter — and its 10 repro
-            // files un-skipped.)
-            "types/json.test" to
-                "JSON degraded-type rendering differs between engines (F8 territory)",
             "types/floats.test" to
-                "float golden text relies on DuckDB inf/nan casts + implicit varchar comparisons (dialect)",
+                "DuckDB orders NaN above every number in comparisons, so `WHERE f > 1` counts the NaN " +
+                "row; Trino follows IEEE semantics where NaN > 1 is false and returns one row fewer",
         )
 
     @BeforeAll
@@ -139,8 +120,5 @@ class TestTrinoCorpusReplay {
 
     companion object {
         private const val CHUNK_SIZE = 30
-        private const val ENCRYPTED_LAKE =
-            "encrypted lake: parquet encryption keys not threaded to the Trino reader on the " +
-                "mirror axis (footer unreadable)"
     }
 }

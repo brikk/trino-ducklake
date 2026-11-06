@@ -13,15 +13,22 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
+import dev.brikk.ducklake.catalog.DucklakeColumn
 import io.trino.parquet.GroupField
 import io.trino.parquet.PrimitiveField
+import io.trino.spi.ErrorCodeSupplier
+import io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR
+import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
+import io.trino.spi.TrinoException
 import io.trino.spi.type.ArrayType
 import io.trino.spi.type.IntegerType
+import io.trino.spi.type.VarcharType.VARCHAR
 import org.apache.parquet.io.ColumnIOFactory
 import org.apache.parquet.io.MessageColumnIO
 import org.apache.parquet.schema.MessageType
 import org.apache.parquet.schema.MessageTypeParser
 import org.assertj.core.api.Assertions.assertThat
+import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Test
 
 /**
@@ -61,6 +68,40 @@ class TestDucklakeParquetTypeUtils {
         assertThat(field).isPresent
         assertThat(field.get()).isInstanceOf(GroupField::class.java)
         assertThat((field.get() as GroupField).type).isEqualTo(arrayOfInt)
+    }
+
+    @Test
+    fun testVariantGroupReadAsVarcharIsAnExplicitUnsupportedRead() {
+        val columnIO = columnIO("message m { optional group v { required binary metadata; required binary value; } }")
+        val variant = DucklakeColumn(1, 1, null, 1, 1, "v", "VARIANT", true, null, null)
+
+        assertErrorCode(NOT_SUPPORTED) {
+            DucklakeParquetTypeUtils.constructField(VARCHAR, columnIO.getChild(0), 1, listOf(variant), listOf(variant), emptyMap(), false)
+        }
+    }
+
+    @Test
+    fun testGroupWhereCatalogHasScalarIsAnInternalError() {
+        val columnIO = columnIO("message m { optional group v { required int32 x; } }")
+        val scalar = DucklakeColumn(1, 1, null, 1, 1, "v", "VARCHAR", true, null, null)
+
+        assertErrorCode(GENERIC_INTERNAL_ERROR) {
+            DucklakeParquetTypeUtils.constructField(VARCHAR, columnIO.getChild(0), 1, listOf(scalar), listOf(scalar), emptyMap(), false)
+        }
+    }
+
+    @Test
+    fun testNonRepeatedPrimitiveWhereCatalogHasArrayIsAnInternalError() {
+        val columnIO = columnIO("message m { required int32 my_list; }")
+
+        assertErrorCode(GENERIC_INTERNAL_ERROR) { DucklakeParquetTypeUtils.constructField(arrayOfInt, columnIO.getChild(0)) }
+    }
+
+    private fun assertErrorCode(expected: ErrorCodeSupplier, action: () -> Unit) {
+        assertThatThrownBy(action)
+                .isInstanceOfSatisfying(TrinoException::class.java) {
+                    assertThat(it.errorCode).isEqualTo(expected.toErrorCode())
+                }
     }
 
     private fun columnIO(schemaText: String): MessageColumnIO {

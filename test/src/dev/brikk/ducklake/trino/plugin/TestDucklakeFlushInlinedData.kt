@@ -13,6 +13,8 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
+import io.trino.spi.StandardErrorCode.TABLE_NOT_FOUND
+import io.trino.testing.assertions.TrinoExceptionAssert.assertTrinoExceptionThrownBy
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Test
@@ -490,8 +492,8 @@ class TestDucklakeFlushInlinedData : AbstractDucklakeCrossEngineTest() {
 
     @Test
     fun flushRejectsMissingTable() {
-        assertThatThrownBy {
+        assertTrinoExceptionThrownBy {
             computeActual("CALL ducklake.system.flush_inlined_data(schema_name => 'test_schema', table_name => 'no_such_table')")
-        }.hasMessageContaining("Table not found")
+        }.hasErrorCode(TABLE_NOT_FOUND).hasMessageContaining("Table not found")
     }
 }

@@ -36,8 +36,11 @@ import io.trino.parquet.writer.ParquetWriterOptions
 import io.trino.plugin.base.metrics.FileFormatDataSourceStats
 import io.trino.plugin.hive.parquet.ParquetReaderConfig
 import io.trino.spi.NodeVersion
+import io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR
 import io.trino.spi.StandardErrorCode.INVALID_PROCEDURE_ARGUMENT
 import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
+import io.trino.spi.StandardErrorCode.SCHEMA_NOT_FOUND
+import io.trino.spi.StandardErrorCode.TABLE_NOT_FOUND
 import io.trino.spi.StandardErrorCode.TRANSACTION_CONFLICT
 import io.trino.spi.TrinoException
 import io.trino.spi.connector.ConnectorSession
@@ -109,7 +112,7 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
             explicitSingle -> listOf(resolveTable(schemaName!!, tableName!!, snapshotId))
             !schemaName.isNullOrEmpty() -> {
                 val schema = catalog.getSchema(schemaName, snapshotId)
-                        ?: throw TrinoException(NOT_SUPPORTED, "Schema not found: $schemaName")
+                        ?: throw TrinoException(SCHEMA_NOT_FOUND, "Schema not found: $schemaName")
                 catalog.listTables(schema.schemaId, snapshotId).map { schema to it }
             }
             else -> catalog.listSchemas(snapshotId).flatMap { schema ->
@@ -188,7 +191,7 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
             readSnapshotId: Long,
             info: DucklakeInlinedDataInfo): VersionRows? {
         val schemaSnapshot = catalog.resolveSchemaVersionSnapshot(tableId, info.schemaVersion, readSnapshotId)
-            ?: throw TrinoException(NOT_SUPPORTED,
+            ?: throw TrinoException(GENERIC_INTERNAL_ERROR,
                     "Cannot resolve schema version ${info.schemaVersion} for inlined table $tableId")
         val sourceColumns = catalog.getTableColumns(tableId, schemaSnapshot)
                 .filter { it.parentColumn == null }
@@ -270,7 +273,7 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
                 .mapValues { (_, snapshots) -> snapshots.min() }
         return inlinedDeletes.groupBy { it.dataFileId }.map { (dataFileId, newDeletes) ->
             val joinedRows = filesById[dataFileId]
-                ?: throw TrinoException(NOT_SUPPORTED, "Inlined deletion references inactive data_file_id $dataFileId")
+                ?: throw TrinoException(GENERIC_INTERNAL_ERROR, "Inlined deletion references inactive data_file_id $dataFileId")
             val primary = joinedRows.first()
             val activeDeleteRows = joinedRows.filter { it.deleteFilePath != null }
                     .distinctBy { it.deleteFilePath }
@@ -280,7 +283,7 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
             val merged = TreeMap<Long, Long>()
             activeDeleteRows.singleOrNull()?.let { dataFile ->
                 val beginSnapshot = deleteBeginByPath[dataFile.deleteFilePath]
-                    ?: throw TrinoException(NOT_SUPPORTED,
+                    ?: throw TrinoException(GENERIC_INTERNAL_ERROR,
                             "Cannot resolve begin snapshot for delete file ${dataFile.deleteFilePath}")
                 readExistingDeletePositions(fileSystem, tableDataPath, dataFile, beginSnapshot)
                         .forEach { (position, snapshot) -> merged.merge(position, snapshot, ::minOf) }
@@ -337,9 +340,9 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
 
     private fun resolveTable(schemaName: String, tableName: String, snapshotId: Long): Pair<DucklakeSchema, DucklakeTable> {
         val schema: DucklakeSchema = catalog.getSchema(schemaName, snapshotId)
-            ?: throw TrinoException(NOT_SUPPORTED, "Schema not found: $schemaName")
+            ?: throw TrinoException(SCHEMA_NOT_FOUND, "Schema not found: $schemaName")
         val table: DucklakeTable = catalog.getTable(schemaName, tableName, snapshotId)
-            ?: throw TrinoException(NOT_SUPPORTED, "Table not found: $schemaName.$tableName")
+            ?: throw TrinoException(TABLE_NOT_FOUND, "Table not found: $schemaName.$tableName")
         return schema to table
     }
 

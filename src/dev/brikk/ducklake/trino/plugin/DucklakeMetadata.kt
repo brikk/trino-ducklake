@@ -942,14 +942,14 @@ class DucklakeMetadata(
 
     // Resolve the current Trino type of a nested field by walking the catalog column tree along the
     // dotted `fieldPath` (top-level column name first). Matches by name + parent_column, mirroring
-    // the catalog's resolveColumnIdByPath. Throws NOT_SUPPORTED if any path step is missing.
+    // the catalog's resolveColumnIdByPath. Throws COLUMN_NOT_FOUND if any path step is missing.
     private fun resolveFieldTrinoType(tableId: Long, snapshotId: Long, fieldPath: List<String>): Type {
         val columns: List<DucklakeColumn> = catalog.getAllColumnsWithParentage(tableId, snapshotId)
         var parentId: Long? = null
         var current: DucklakeColumn? = null
         for (name in fieldPath) {
             current = columns.firstOrNull { it.columnName == name && it.parentColumn == parentId }
-                    ?: throw TrinoException(NOT_SUPPORTED, "Field not found: ${fieldPath.joinToString(".")} (no '$name')")
+                    ?: throw TrinoException(COLUMN_NOT_FOUND, "Field not found: ${fieldPath.joinToString(".")} (no '$name')")
             parentId = current.columnId
         }
         return typeConverter.toTrinoType(current!!, columns)
@@ -1130,7 +1130,7 @@ class DucklakeMetadata(
         // Resolve the newly created table to get its ID and build a writable handle
         val snapshotId: Long = catalog.currentSnapshotId
         val table: DucklakeTable = catalog.getTable(tableName.schemaName, tableName.tableName, snapshotId)
-            ?: throw TrinoException(NOT_SUPPORTED, "Table was not created: $tableName")
+            ?: throw TrinoException(GENERIC_INTERNAL_ERROR, "Table was not created: $tableName")
 
         // For the WRITE handle, a column's type must match the blocks the engine will stream
         // from the CTAS source — not the catalog round-trip. The two agree for every type
@@ -1260,12 +1260,10 @@ class DucklakeMetadata(
 
     private fun resolveTableDataPath(schemaName: String, tableName: String, snapshotId: Long): String
     {
-        val schema: DucklakeSchema? = catalog.getSchema(schemaName, snapshotId)
-        val table: DucklakeTable? = catalog.getTable(schemaName, tableName, snapshotId)
-
-        if (schema == null || table == null) {
-            throw TrinoException(NOT_SUPPORTED, "Cannot resolve data path for $schemaName.$tableName")
-        }
+        val schema: DucklakeSchema = catalog.getSchema(schemaName, snapshotId)
+            ?: throw TrinoException(SCHEMA_NOT_FOUND, "Cannot resolve data path: schema not found: $schemaName")
+        val table: DucklakeTable = catalog.getTable(schemaName, tableName, snapshotId)
+            ?: throw TrinoException(TABLE_NOT_FOUND, "Cannot resolve data path: table not found: $schemaName.$tableName")
 
         return pathResolver!!.resolveTableDataPath(schema, table)
     }

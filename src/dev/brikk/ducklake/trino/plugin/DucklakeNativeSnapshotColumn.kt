@@ -11,7 +11,6 @@
 package dev.brikk.ducklake.trino.plugin
 
 import io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR
-import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
 import io.trino.spi.TrinoException
 import io.trino.spi.block.Block
 import io.trino.spi.type.BigintType.BIGINT
@@ -28,7 +27,7 @@ internal object DucklakeNativeSnapshotColumn {
     fun resolve(message: MessageColumnIO): ColumnIO? {
         val matches = (0 until message.childrenCount).map { message.getChild(it) }
             .filter { it.type.id?.intValue() == DucklakeDeleteFileReader.SNAPSHOT_ID_PARQUET_FIELD_ID }
-        if (matches.size > 1) throw TrinoException(NOT_SUPPORTED, "Ambiguous native snapshot_id field ID in Parquet footer")
+        if (matches.size > 1) throw TrinoException(GENERIC_INTERNAL_ERROR, "Ambiguous native snapshot_id field ID in Parquet footer")
         val column = matches.singleOrNull() ?: return null
         requireSnapshotType(column)
         return column
@@ -37,9 +36,9 @@ internal object DucklakeNativeSnapshotColumn {
     private fun requireSnapshotType(column: ColumnIO) {
         val type = column.type
         if (!type.isPrimitive || type.asPrimitiveType().primitiveTypeName != INT64 || type.repetition == REPEATED)
-            throw TrinoException(NOT_SUPPORTED, "Native snapshot_id field must be a scalar INT64")
+            throw TrinoException(GENERIC_INTERNAL_ERROR, "Native snapshot_id field must be a scalar INT64")
         if (!isSnapshotAnnotation(type.logicalTypeAnnotation))
-            throw TrinoException(NOT_SUPPORTED, "Native snapshot_id field has an incompatible logical type")
+            throw TrinoException(GENERIC_INTERNAL_ERROR, "Native snapshot_id field has an incompatible logical type")
     }
 
     private fun isSnapshotAnnotation(annotation: LogicalTypeAnnotation?): Boolean = when (annotation) {

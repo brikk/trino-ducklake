@@ -37,6 +37,8 @@ import io.trino.spi.NodeVersion
 import io.trino.spi.Page
 import io.trino.spi.StandardErrorCode.INVALID_PROCEDURE_ARGUMENT
 import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
+import io.trino.spi.StandardErrorCode.SCHEMA_NOT_FOUND
+import io.trino.spi.StandardErrorCode.TABLE_NOT_FOUND
 import io.trino.spi.StandardErrorCode.TRANSACTION_CONFLICT
 import io.trino.spi.TrinoException
 import io.trino.spi.connector.ColumnHandle
@@ -459,9 +461,9 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
 
     private fun resolveTable(schemaName: String, tableName: String, snapshotId: Long): Pair<DucklakeSchema, DucklakeTable> {
         val schema: DucklakeSchema = catalog.getSchema(schemaName, snapshotId)
-            ?: throw TrinoException(NOT_SUPPORTED, "Schema not found: $schemaName")
+            ?: throw TrinoException(SCHEMA_NOT_FOUND, "Schema not found: $schemaName")
         val table: DucklakeTable = catalog.getTable(schemaName, tableName, snapshotId)
-            ?: throw TrinoException(NOT_SUPPORTED, "Table not found: $schemaName.$tableName")
+            ?: throw TrinoException(TABLE_NOT_FOUND, "Table not found: $schemaName.$tableName")
         return schema to table
     }
 

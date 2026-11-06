@@ -33,7 +33,6 @@ import io.trino.plugin.base.metrics.FileFormatDataSourceStats
 import io.trino.plugin.hive.parquet.ParquetPageSource
 import io.trino.plugin.hive.parquet.ParquetPageSourceFactory.createDataSource
 import io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR
-import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
 import io.trino.spi.TrinoException
 import io.trino.spi.block.Block
 import io.trino.spi.connector.ConnectorPageSource
@@ -268,7 +267,7 @@ object DucklakeDeleteFileReader {
                                     "required to drop rows newer than the read snapshot ($snapshotFilterMax): " +
                                     dataFilePath)
             val field: Field = DucklakeParquetTypeUtils.constructField(BIGINT, columnIO)
-                    .orElseThrow { TrinoException(NOT_SUPPORTED, "Could not construct field for $INTERNAL_SNAPSHOT_ID_COLUMN") }
+                    .orElseThrow { TrinoException(GENERIC_INTERNAL_ERROR, "Could not construct field for $INTERNAL_SNAPSHOT_ID_COLUMN") }
             val parquetReader = createParquetReader(
                     dataSource, inputFile.length(), parquetMetadata,
                     Column(INTERNAL_SNAPSHOT_ID_COLUMN, field), memoryContext, parquetReaderOptions)
@@ -336,7 +335,7 @@ object DucklakeDeleteFileReader {
             val columnIO: ColumnIO = messageColumnIO.getChild(INTERNAL_SNAPSHOT_ID_COLUMN)
                     ?: run { dataSource.close(); memoryContext.close(); return null }
             val field: Field = DucklakeParquetTypeUtils.constructField(BIGINT, columnIO)
-                    .orElseThrow { TrinoException(NOT_SUPPORTED, "Could not construct field for $INTERNAL_SNAPSHOT_ID_COLUMN") }
+                    .orElseThrow { TrinoException(GENERIC_INTERNAL_ERROR, "Could not construct field for $INTERNAL_SNAPSHOT_ID_COLUMN") }
             val parquetReader = createParquetReader(
                     dataSource, inputFile.length(), parquetMetadata,
                     Column(INTERNAL_SNAPSHOT_ID_COLUMN, field), memoryContext, parquetReaderOptions)
@@ -447,7 +446,7 @@ object DucklakeDeleteFileReader {
             readPositionsWithSnapshotsIfPresent(
                     fileSystem, deleteFilePath, footerSizeHint, parquetReaderOptions, stats)
                 ?: throw TrinoException(
-                        NOT_SUPPORTED,
+                        GENERIC_INTERNAL_ERROR,
                         "Delete file has no $INTERNAL_SNAPSHOT_ID_COLUMN column: $deleteFilePath")
 
     /**
@@ -530,7 +529,7 @@ object DucklakeDeleteFileReader {
     /** Like [namedColumn] but throws a clear error when the expected column is missing. */
     private fun requiredNamedColumn(messageColumnIO: MessageColumnIO, name: String, deleteFilePath: String): Column =
         namedColumn(messageColumnIO, name)
-            ?: throw TrinoException(NOT_SUPPORTED, "Partial delete file missing '$name' column: $deleteFilePath")
+            ?: throw TrinoException(GENERIC_INTERNAL_ERROR, "Partial delete file missing '$name' column: $deleteFilePath")
 
     /** Block 0 = `pos`, block 1 = snapshot id; keep `pos` where snapshot id <= [threshold]. */
     private fun collectPositionsAtOrBelow(pageSource: ConnectorPageSource, threshold: Long): Set<Long> {
@@ -651,12 +650,12 @@ object DucklakeDeleteFileReader {
 
             if (columnType != null) {
                 val fieldDefinition: Field = DucklakeParquetTypeUtils.constructField(columnType, columnIO)
-                        .orElseThrow { TrinoException(NOT_SUPPORTED, "Could not construct field for delete file column: ${field.name}") }
+                        .orElseThrow { TrinoException(GENERIC_INTERNAL_ERROR, "Could not construct field for delete file column: ${field.name}") }
                 return DeleteFileColumn(field.name, columnType, fieldDefinition)
             }
         }
 
-        throw TrinoException(NOT_SUPPORTED, "Delete file must contain at least one INT32/INT64 primitive column")
+        throw TrinoException(GENERIC_INTERNAL_ERROR, "Delete file must contain at least one INT32/INT64 primitive column")
     }
 
     private fun readDeleteValue(type: Type, block: Block, position: Int): Long = when {
@@ -668,7 +667,7 @@ object DucklakeDeleteFileReader {
     private fun handleParquetException(dataSourceId: ParquetDataSourceId, exception: Exception): RuntimeException =
         exception as? TrinoException
             ?: TrinoException(
-                NOT_SUPPORTED,
+                GENERIC_INTERNAL_ERROR,
                 "Error reading Parquet file: $dataSourceId",
                 exception)
 

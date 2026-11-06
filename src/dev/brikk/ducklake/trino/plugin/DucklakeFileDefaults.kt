@@ -16,6 +16,8 @@ package dev.brikk.ducklake.trino.plugin
 import dev.brikk.ducklake.catalog.DucklakeCatalog
 import dev.brikk.ducklake.catalog.DucklakeColumn
 import dev.brikk.ducklake.catalog.DucklakeException
+import dev.brikk.ducklake.catalog.DucklakeInvalidOperationException
+import io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR
 import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
 import io.trino.spi.TrinoException
 import io.trino.spi.block.Block
@@ -41,8 +43,8 @@ internal class DucklakeFileDefaults(
     private val defaults = mutableMapOf<Long, Any?>()
 
     fun validate(columnId: Long, type: Type) {
-        val target = targetColumns[columnId] ?: throw TrinoException(NOT_SUPPORTED, "Missing final-1.1 target field ID $columnId")
-        if (type != typeConverter.toTrinoType(target, tree)) throw TrinoException(NOT_SUPPORTED,
+        val target = targetColumns[columnId] ?: throw TrinoException(GENERIC_INTERNAL_ERROR, "Missing final-1.1 target field ID $columnId")
+        if (type != typeConverter.toTrinoType(target, tree)) throw TrinoException(GENERIC_INTERNAL_ERROR,
             "File projection type differs from fresh target metadata for field $columnId")
     }
 
@@ -61,8 +63,11 @@ internal class DucklakeFileDefaults(
     private fun decoded(columnId: Long): Any? = try {
         if (catalog is DucklakeControlledReads) catalog.fileDefault(table.tableId, columnId, table.snapshotId)
         else catalog.jdbcCatalog().getMissingFileColumnDefaultDecoded(table.tableId, columnId, table.snapshotId)
-    } catch (e: DucklakeException) {
+    } catch (e: DucklakeInvalidOperationException) {
+        // The catalog's deliberate refusal to project this default for the stored metadata layout.
         throw TrinoException(NOT_SUPPORTED, e.message ?: "Catalog refused file default projection", e)
+    } catch (e: DucklakeException) {
+        throw DucklakeMetadata.translateCatalogException(e)
     }
 
     fun needsRewrite(columnId: Long): Boolean = columnId in defaults || children[columnId].orEmpty().any { needsRewrite(it.columnId) }

@@ -56,6 +56,8 @@ import io.trino.plugin.hive.parquet.ParquetPageSourceFactory.createDataSource
 import io.trino.spi.Page
 import io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR
 import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
+import io.trino.spi.StandardErrorCode.SCHEMA_NOT_FOUND
+import io.trino.spi.StandardErrorCode.TABLE_NOT_FOUND
 import io.trino.spi.TrinoException
 import io.trino.spi.block.Block
 import io.trino.spi.block.RunLengthEncodedBlock
@@ -422,8 +424,8 @@ class DucklakePageSourceProvider @Inject constructor(
         val real = columns.filterNot { it.isVirtual() }
         val target = catalog.getTableColumns(split.tableId, split.snapshotId).associateBy { it.columnId }
         real.forEach { column ->
-            val fresh = target[column.columnId] ?: throw TrinoException(NOT_SUPPORTED, "Missing inline target field ${column.columnId}")
-            if (column.columnType != typeConverter.toTrinoType(fresh.columnType)) throw TrinoException(NOT_SUPPORTED,
+            val fresh = target[column.columnId] ?: throw TrinoException(GENERIC_INTERNAL_ERROR, "Missing inline target field ${column.columnId}")
+            if (column.columnType != typeConverter.toTrinoType(fresh.columnType)) throw TrinoException(GENERIC_INTERNAL_ERROR,
                     "Inline projection type differs from fresh target metadata for field ${column.columnId}")
         }
         // One physical version stream supplies both values and virtual snapshots. Empty IDs
@@ -503,9 +505,9 @@ class DucklakePageSourceProvider @Inject constructor(
         val requestedDataColumns: List<DucklakeColumnHandle> = requestedColumns.filter { it.columnId >= 0 }
 
         val schema: DucklakeSchema = catalog.getSchema(table.schemaName, table.endSnapshot)
-                ?: throw TrinoException(NOT_SUPPORTED, "Schema not found for change feed: ${table.schemaName}")
+                ?: throw TrinoException(SCHEMA_NOT_FOUND, "Schema not found for change feed: ${table.schemaName}")
         val tableMetadata: DucklakeTable = catalog.getTableById(table.tableId, table.endSnapshot)
-                ?: throw TrinoException(NOT_SUPPORTED, "Table not found for change feed: ${table.tableName}")
+                ?: throw TrinoException(TABLE_NOT_FOUND, "Table not found for change feed: ${table.tableName}")
         val tableDataPath: String = pathResolver.resolveTableDataPath(schema, tableMetadata)
         val fileSystem: TrinoFileSystem = fileSystemFactory.create(session)
 
@@ -661,10 +663,10 @@ class DucklakePageSourceProvider @Inject constructor(
                 table.tableId, fileDeletes.map { it.dataFileId }.toSet()).associateBy { it.dataFileId }
         val groups: MutableList<InlineFileDeleteGroup> = mutableListOf()
         for ((key, dels) in fileDeletes.groupBy { it.dataFileId to it.snapshotId }) {
-            val dataFile = dataFilesById[key.first] ?: throw TrinoException(NOT_SUPPORTED,
+            val dataFile = dataFilesById[key.first] ?: throw TrinoException(GENERIC_INTERNAL_ERROR,
                     "Missing required retained CDC data file ${key.first}")
             if (dels.any { it.position < 0 || it.position >= dataFile.recordCount })
-                throw TrinoException(NOT_SUPPORTED, "Inline CDC delete position outside physical file")
+                throw TrinoException(GENERIC_INTERNAL_ERROR, "Inline CDC delete position outside physical file")
             val resolvedPath = pathResolver.resolveFilePath(dataFile.path, dataFile.pathIsRelative, tableDataPath)
             val origins = readPhysicalOrigins(fileSystem, resolvedPath, dataFile.fileFormat, dataFile.footerSize)
             val positions = committedPositions(dels.mapTo(mutableSetOf()) { it.position }, key.second,
@@ -784,7 +786,7 @@ class DucklakePageSourceProvider @Inject constructor(
             val resolvedPath: String = pathResolver.resolveFilePath(file.path, file.pathIsRelative, tableDataPath)
             origins[file.dataFileId] = try {
                 readPhysicalOrigins(fileSystem, resolvedPath, file.fileFormat, file.footerSize).also {
-                    if (isPartialFile(file) && it == null) throw TrinoException(NOT_SUPPORTED,
+                    if (isPartialFile(file) && it == null) throw TrinoException(GENERIC_INTERNAL_ERROR,
                             "Partial data file is missing its origin snapshot column: $resolvedPath")
                 }
             }
@@ -860,9 +862,9 @@ class DucklakePageSourceProvider @Inject constructor(
             positions: Set<Long>, deletedAt: Long, begin: Long, origins: LongArray?, path: String,
             transients: MutableMap<String, MutableSet<Long>>): Set<Long> = positions.filterTo(mutableSetOf()) { position ->
         if (position < 0 || (origins != null && position >= origins.size))
-            throw TrinoException(NOT_SUPPORTED, "CDC delete position outside physical origin array")
+            throw TrinoException(GENERIC_INTERNAL_ERROR, "CDC delete position outside physical origin array")
         val origin = origins?.get(Math.toIntExact(position)) ?: begin
-        if (origin > deletedAt) throw TrinoException(NOT_SUPPORTED, "CDC deletion precedes physical row origin")
+        if (origin > deletedAt) throw TrinoException(GENERIC_INTERNAL_ERROR, "CDC deletion precedes physical row origin")
         if (origin == deletedAt) {
             transients.getOrPut(path) { mutableSetOf() }.add(position)
             false
@@ -1385,7 +1387,7 @@ class DucklakePageSourceProvider @Inject constructor(
                     if (columnIO == null) transforms.constantValue(DucklakeNativeSnapshotColumn.fallback(split.beginSnapshot))
                     else {
                         val field = DucklakeParquetTypeUtils.constructField(BIGINT, columnIO).orElseThrow {
-                            TrinoException(NOT_SUPPORTED, "Native snapshot_id field cannot be read as BIGINT")
+                            TrinoException(GENERIC_INTERNAL_ERROR, "Native snapshot_id field cannot be read as BIGINT")
                         }
                         parquetColumns.add(Column(columnIO.name, field))
                         transforms.transform(parquetColumnOrdinal, DucklakeNativeSnapshotColumn::validate)
@@ -1523,7 +1525,7 @@ class DucklakePageSourceProvider @Inject constructor(
             while (seen.add(node.columnId)) {
                 if (node.columnId in requested) throw TrinoException(NOT_SUPPORTED, "Unsupported final-1.1 VARIANT Parquet payload")
                 val parent = node.parentColumn ?: break
-                node = byId[parent] ?: throw TrinoException(NOT_SUPPORTED, "Missing parent in final-1.1 Parquet column tree")
+                node = byId[parent] ?: throw TrinoException(GENERIC_INTERNAL_ERROR, "Missing parent in final-1.1 Parquet column tree")
             }
             check(node.parentColumn == null || node.columnId !in seen) { "Cycle in final-1.1 Parquet column tree" }
         }
@@ -1689,7 +1691,7 @@ class DucklakePageSourceProvider @Inject constructor(
         private fun handleParquetException(dataSourceId: ParquetDataSourceId, exception: Exception): RuntimeException =
             exception as? TrinoException
                 ?: TrinoException(
-                    NOT_SUPPORTED,
+                    GENERIC_INTERNAL_ERROR,
                     "Error reading Parquet file: $dataSourceId",
                     exception)
 

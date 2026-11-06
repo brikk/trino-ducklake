@@ -16,6 +16,7 @@ package dev.brikk.ducklake.trino.plugin
 import com.google.common.collect.ImmutableList
 import com.google.inject.Inject
 import dev.brikk.ducklake.catalog.DucklakeColumn
+import io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR
 import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
 import io.trino.spi.TrinoException
 import io.trino.spi.type.ArrayType
@@ -111,7 +112,7 @@ open class DucklakeTypeConverter @Inject constructor(private val typeManager: Ty
             for (fieldPart in fieldParts) {
                 val colonIndex = fieldPart.indexOf(':')
                 if (colonIndex < 0) {
-                    throw TrinoException(NOT_SUPPORTED, "Invalid struct field (missing colon): $fieldPart")
+                    throw TrinoException(GENERIC_INTERNAL_ERROR, "Invalid struct field (missing colon): $fieldPart")
                 }
                 val fieldName = fieldPart.substring(0, colonIndex).trim()
                 val fieldType = fieldPart.substring(colonIndex + 1).trim()
@@ -124,7 +125,7 @@ open class DucklakeTypeConverter @Inject constructor(private val typeManager: Ty
             val argsStr = extractTypeArguments(normalizedType, "map")
             val parts: List<String> = splitTopLevelCommas(argsStr)
             if (parts.size != 2) {
-                throw TrinoException(NOT_SUPPORTED, "Invalid map type (expected 2 type arguments, got ${parts.size}): $ducklakeType")
+                throw TrinoException(GENERIC_INTERNAL_ERROR, "Invalid map type (expected 2 type arguments, got ${parts.size}): $ducklakeType")
             }
             val keyDescriptor: TypeDescriptor = toTrinoType(parts[0].trim()).typeDescriptor
             val valueDescriptor: TypeDescriptor = toTrinoType(parts[1].trim()).typeDescriptor

@@ -19,6 +19,7 @@ import io.trino.parquet.Field
 import io.trino.parquet.GroupField
 import io.trino.parquet.ParquetTypeUtils.getMapKeyValueColumn
 import io.trino.parquet.PrimitiveField
+import io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR
 import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
 import io.trino.spi.TrinoException
 import io.trino.spi.type.ArrayType
@@ -73,12 +74,28 @@ object DucklakeParquetTypeUtils {
             return Optional.empty()
         }
         return when (trinoType) {
-            is RowType -> constructRowField(trinoType, columnIO as GroupColumnIO, identity, context)
-            is MapType -> constructMapField(trinoType, columnIO as GroupColumnIO, identity, context)
+            is RowType -> constructRowField(trinoType, requireGroup(trinoType, columnIO, identity), identity, context)
+            is MapType -> constructMapField(trinoType, requireGroup(trinoType, columnIO, identity), identity, context)
             is ArrayType -> constructArrayField(trinoType, columnIO, identity, context)
-            else -> constructPrimitiveField(trinoType, columnIO as PrimitiveColumnIO)
+            else -> constructPrimitiveField(
+                    trinoType, columnIO as? PrimitiveColumnIO ?: throw shapeMismatch(trinoType, columnIO, identity))
         }
     }
+
+    private fun requireGroup(trinoType: Type, columnIO: ColumnIO, identity: DucklakeColumn?): GroupColumnIO =
+            columnIO as? GroupColumnIO ?: throw shapeMismatch(trinoType, columnIO, identity)
+
+    // DuckDB writes VARIANT as a Parquet VARIANT group (metadata/value, optionally shredded) while
+    // the connector exposes the column as VARCHAR, so file-resident VARIANT data has no decoder.
+    private fun shapeMismatch(trinoType: Type, columnIO: ColumnIO, identity: DucklakeColumn?): TrinoException =
+            if (identity?.columnType.equals("variant", ignoreCase = true)) {
+                TrinoException(NOT_SUPPORTED,
+                        "Reading VARIANT column '${columnIO.name}' from a Parquet data file is not supported")
+            }
+            else {
+                TrinoException(GENERIC_INTERNAL_ERROR,
+                        "Parquet column '${columnIO.name}' (${columnIO.type}) does not match catalog type $trinoType")
+            }
 
     private fun constructRowField(
             rowType: RowType,
@@ -132,7 +149,7 @@ object DucklakeParquetTypeUtils {
         // Legacy 2-level LIST: repeated primitive with no intermediate group.
         if (columnIO is PrimitiveColumnIO) {
             if (columnIO.type.repetition != REPEATED || repetitionLevel == 0 || definitionLevel == 0) {
-                throw TrinoException(NOT_SUPPORTED, "Unsupported schema for Parquet column (" + columnIO.columnDescriptor + ")")
+                throw TrinoException(GENERIC_INTERNAL_ERROR, "Unsupported schema for Parquet column (" + columnIO.columnDescriptor + ")")
             }
             val elementField: Optional<Field> = Optional.of<Field>(PrimitiveField(
                     arrayType.elementType, true, columnIO.columnDescriptor, columnIO.id))

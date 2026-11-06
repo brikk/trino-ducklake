@@ -14,7 +14,7 @@
 package dev.brikk.ducklake.trino.plugin
 
 import com.google.inject.Inject
-import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
+import io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR
 import io.trino.spi.TrinoException
 import io.trino.spi.function.FunctionProvider
 import io.trino.spi.function.table.ConnectorTableFunctionHandle
@@ -33,7 +33,7 @@ class DucklakeFunctionProvider @Inject constructor() : FunctionProvider {
             // The change feed is always planned as a scan via DucklakeMetadata.applyTableFunction
             // (it reuses the connector's data-file read path + pushdown-free filtering above the
             // scan); the table-function processor path is never taken. Fail clearly if it ever is.
-            throw TrinoException(NOT_SUPPORTED,
+            throw TrinoException(GENERIC_INTERNAL_ERROR,
                     "The change-feed table function must be planned as a table scan (applyTableFunction)")
         }
         throw IllegalArgumentException("Unknown table function handle: ${functionHandle.javaClass.name}")

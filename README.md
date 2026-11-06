@@ -116,6 +116,39 @@ Restart Trino after installing the plugin and catalog. See the
 [configuration reference](REFERENCE.md#catalog-configuration) for MySQL, local
 DuckDB, storage settings and optional properties.
 
+### PgBouncer and metadata connection-pool settings
+
+For **PgBouncer transaction pooling**, use connector **0.5.3 or newer**. Configure
+either PgBouncer **1.21+ with `max_prepared_statements > 0`** (default `200` since
+1.22), or add **`prepareThreshold=0`** to the PostgreSQL JDBC URL. For example,
+replace the metadata URL above and optionally add these pool settings:
+
+```properties
+ducklake.catalog.database-url=jdbc:postgresql://pgbouncer:6432/ducklake?prepareThreshold=0&sslmode=require
+
+ducklake.catalog.max-connections=10
+ducklake.catalog.min-idle-connections=1
+ducklake.catalog.connection-idle-timeout=10m
+# Example override: must be below your PgBouncer server_lifetime.
+ducklake.catalog.connection-max-lifetime=20m
+ducklake.catalog.connection-timeout=30s
+```
+
+JDBC URL parameters pass through unchanged; append `&prepareThreshold=0` if your
+URL already has a query string. Without either prepared-statement configuration,
+operations can fail with `prepared statement "S_n" already exists`.
+
+Pool tuning is optional. Defaults remain **10 maximum connections, 1 idle
+connection and a 30s connection-acquisition timeout**. Leaving idle timeout and
+maximum lifetime unset preserves Hikari's defaults of **10m and 30m** respectively;
+the `20m` lifetime above is only an example override. These settings apply to each
+connector instance's metadata pool, not PgBouncer's server pool.
+
+Connector **0.5.2 and earlier** lacks the transaction-pooling read-isolation fix;
+use direct PostgreSQL or session pooling with those versions. See the
+[PgBouncer reference](REFERENCE.md#pgbouncer-transaction-pooling) for details and
+setting bounds.
+
 ## Use the catalog
 
 ```sql

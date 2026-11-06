@@ -25,6 +25,10 @@ ducklake.data-path=s3://my-bucket/ducklake-data/
 
 # Optional tuning
 ducklake.catalog.max-connections=10
+# ducklake.catalog.min-idle-connections=1
+# ducklake.catalog.connection-idle-timeout=10m
+# ducklake.catalog.connection-max-lifetime=30m
+# ducklake.catalog.connection-timeout=30s
 
 # S3 access (if using object storage)
 fs.s3.enabled=true
@@ -33,6 +37,10 @@ s3.region=us-east-1
 
 S3 settings are per-catalog in Trino. Even if `hive.properties` or `iceberg.properties`
 already defines `s3.*`, `ducklake.properties` needs its own S3 settings.
+
+For the local 0.16 trial's PgBouncer transaction-pooling requirements and JDBC URL
+parameters, see [the reference](REFERENCE.md#pgbouncer-transaction-pooling--local-016-trial-only).
+The normal 0.15.1 dependency does not contain the transaction-pooling isolation fix.
 
 ## Schema and Table DDL
 

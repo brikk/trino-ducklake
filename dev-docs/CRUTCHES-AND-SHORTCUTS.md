@@ -40,6 +40,19 @@ the reserved ID retain the native file-begin fallback; lost origins are not gues
 
 ## R07: Experimental Planning, Explicit Opt-in Qualification Only
 
+### Owner-authorized local 0.16 PgBouncer trial
+
+`-PcatalogTrialVersion=0.16.0-SNAPSHOT` explicitly selects the owner's local
+`~/.m2` artifacts from `acec1f1b0208e545efad19d2afd3c574e870170d`, checked against
+`gradle/catalog-local-trial.sha256`. An exclusive local repository rule prevents
+remote fallback; outputs carry `-local-catalog-trial`. This exception is not a
+normal dependency change or a deployable release. Normal builds remain on 0.15.1.
+The four pool settings also compile/map against 0.15.1, with unchanged defaults,
+but transaction-pooling read isolation is fixed only in the local 0.16 catalog.
+The trial does not qualify MySQL/ProxySQL, broader 1.1 behavior or deployment.
+No full suites/corpus, push or release are authorized; wait for final 0.16.0 and
+further owner direction. See [the trial guide](CATALOG-0.16-LOCAL-TRIAL.md).
+
 ### Catalog 0.15 expiry recovery
 
 Formal 0.15.1 supersedes 0.15.0 and the snapshot trial as the normal dependency. Snapshot

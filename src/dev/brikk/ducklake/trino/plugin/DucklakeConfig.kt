@@ -27,6 +27,7 @@ import jakarta.validation.constraints.Min
 import jakarta.validation.constraints.NotNull
 import jakarta.validation.constraints.Pattern
 import java.time.Instant
+import java.time.Duration as JavaDuration
 import java.time.format.DateTimeParseException
 import java.util.Optional
 import java.util.OptionalLong
@@ -40,6 +41,10 @@ class DucklakeConfig {
     private var catalogDatabasePassword: String? = null
     private var dataPath: String? = null
     private var maxCatalogConnections: Int = 10
+    private var minIdleCatalogConnections: Int = 1
+    private var catalogConnectionIdleTimeout: Duration? = null
+    private var catalogConnectionMaxLifetime: Duration? = null
+    private var catalogConnectionTimeout: Duration = Duration.valueOf("30s")
     private var defaultSnapshotId: OptionalLong = OptionalLong.empty()
     private var defaultSnapshotTimestamp: Optional<Instant> = Optional.empty()
     private var temporalPartitionEncoding: DucklakeTemporalPartitionEncoding = DucklakeTemporalPartitionEncoding.CALENDAR
@@ -158,6 +163,7 @@ class DucklakeConfig {
         return this
     }
 
+    @Min(1)
     fun getMaxCatalogConnections(): Int {
         return maxCatalogConnections
     }
@@ -168,6 +174,58 @@ class DucklakeConfig {
         this.maxCatalogConnections = maxCatalogConnections
         return this
     }
+
+    @Min(0)
+    fun getMinIdleCatalogConnections(): Int = minIdleCatalogConnections
+
+    @Config("ducklake.catalog.min-idle-connections")
+    @ConfigDescription("Minimum idle metadata connections (0..max-connections); default 1")
+    fun setMinIdleCatalogConnections(value: Int): DucklakeConfig {
+        minIdleCatalogConnections = value
+        return this
+    }
+
+    @AssertTrue(message = "ducklake.catalog.min-idle-connections must not exceed ducklake.catalog.max-connections")
+    fun isCatalogPoolSizeValid(): Boolean = minIdleCatalogConnections <= maxCatalogConnections
+
+    fun getCatalogConnectionIdleTimeout(): Duration? = catalogConnectionIdleTimeout
+
+    @Config("ducklake.catalog.connection-idle-timeout")
+    @ConfigDescription("Idle timeout above min-idle-connections; unset uses Hikari's default, 0 disables; otherwise at least 10s")
+    fun setCatalogConnectionIdleTimeout(value: Duration?): DucklakeConfig {
+        catalogConnectionIdleTimeout = value
+        return this
+    }
+
+    @AssertTrue(message = "ducklake.catalog.connection-idle-timeout must be unset, 0s, or at least 10s")
+    fun isCatalogConnectionIdleTimeoutValid(): Boolean = validPoolLifetime(catalogConnectionIdleTimeout, "10s")
+
+    fun getCatalogConnectionMaxLifetime(): Duration? = catalogConnectionMaxLifetime
+
+    @Config("ducklake.catalog.connection-max-lifetime")
+    @ConfigDescription("Maximum pooled connection age; unset uses Hikari's default, 0 disables; otherwise at least 30s. " +
+        "Keep below a proxy's server_lifetime.")
+    fun setCatalogConnectionMaxLifetime(value: Duration?): DucklakeConfig {
+        catalogConnectionMaxLifetime = value
+        return this
+    }
+
+    @AssertTrue(message = "ducklake.catalog.connection-max-lifetime must be unset, 0s, or at least 30s")
+    fun isCatalogConnectionMaxLifetimeValid(): Boolean = validPoolLifetime(catalogConnectionMaxLifetime, "30s")
+
+    @NotNull
+    @MinDuration("250ms")
+    fun getCatalogConnectionTimeout(): Duration = catalogConnectionTimeout
+
+    @Config("ducklake.catalog.connection-timeout")
+    @ConfigDescription("Maximum wait to acquire a metadata connection; default 30s, minimum 250ms")
+    fun setCatalogConnectionTimeout(value: Duration): DucklakeConfig {
+        catalogConnectionTimeout = value
+        return this
+    }
+
+    private fun validPoolLifetime(value: Duration?, minimum: String): Boolean =
+        value == null || value.compareTo(Duration.valueOf("0s")) == 0 || value.compareTo(Duration.valueOf(minimum)) >= 0
 
     fun getDefaultSnapshotId(): OptionalLong {
         return defaultSnapshotId
@@ -319,6 +377,10 @@ class DucklakeConfig {
         catalogConfig.catalogDatabasePassword = catalogDatabasePassword
         catalogConfig.dataPath = dataPath
         catalogConfig.maxCatalogConnections = maxCatalogConnections
+        catalogConfig.minIdleCatalogConnections = minIdleCatalogConnections
+        catalogConfig.catalogConnectionIdleTimeout = catalogConnectionIdleTimeout?.let { JavaDuration.ofMillis(it.toMillis()) }
+        catalogConfig.catalogConnectionMaxLifetime = catalogConnectionMaxLifetime?.let { JavaDuration.ofMillis(it.toMillis()) }
+        catalogConfig.catalogConnectionTimeout = JavaDuration.ofMillis(catalogConnectionTimeout.toMillis())
         // The released 0.13 floor supplies the API; connector planning admission remains separate.
         catalogConfig.enableFinal11Reads = isEnableFinal11Reads()
         catalogConfig.requiredCatalogFormat = when (getCatalogFormatVersion()) {

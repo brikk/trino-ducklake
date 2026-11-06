@@ -12,6 +12,8 @@ maintainers, not a second user manual or an append-only release diary.
 - [CATALOG-CANDIDATE.md](CATALOG-CANDIDATE.md): opt-in planning on the published release, scoped
   qualification and remaining 1.1/default-on gates. Normal builds use catalog 0.15.1,
   without promoting experimental final-1.1 planning.
+- [CATALOG-0.16-LOCAL-TRIAL.md](CATALOG-0.16-LOCAL-TRIAL.md): owner-authorized
+  local-only PgBouncer configuration trial; normal dependencies remain on 0.15.1.
 - [REVIEW-2026-09-05.md](REVIEW-2026-09-05.md): permanent finding IDs, recorded repairs
   and unresolved security/value/history risks. Kept active because obligations remain;
   its dated observations are not automatically fresh reproductions.

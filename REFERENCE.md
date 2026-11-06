@@ -16,6 +16,10 @@ Set these in `etc/catalog/<catalog>.properties` on the Trino nodes.
 | `ducklake.catalog.database-password` | Unset | Database password, as required by its authentication |
 | `ducklake.data-path` | Required | Base location of data files |
 | `ducklake.catalog.max-connections` | `10` | Catalog connection-pool limit |
+| `ducklake.catalog.min-idle-connections` | `1` | Idle metadata connections to retain; 0–`max-connections` |
+| `ducklake.catalog.connection-idle-timeout` | Unset (Hikari default: `10m`) | Retire idle connections above the minimum; `0s` disables, otherwise at least `10s` |
+| `ducklake.catalog.connection-max-lifetime` | Unset (Hikari default: `30m`) | Maximum pooled connection age; `0s` disables, otherwise at least `30s`; keep below the proxy's `server_lifetime` |
+| `ducklake.catalog.connection-timeout` | `30s` | Maximum wait to acquire a metadata connection; minimum `250ms` |
 | `ducklake.catalog.format-version` | `1.0` | Required stored DuckLake format family: `1.0` (also admits the older 0.4 layout), or separately qualified read-only `1.1`; mismatch refuses reads and writes, never migrates metadata |
 | `ducklake.default-snapshot-id` | Unset | Catalog-wide read snapshot pin |
 | `ducklake.default-snapshot-timestamp` | Unset | Read pin as an ISO-8601 instant |
@@ -45,6 +49,34 @@ its work limits in [the developer guide](dev-docs/CATALOG-CANDIDATE.md). Selecti
 Use `jdbc:postgresql://host:5432/database` and database credentials. The driver is
 bundled. The database must already contain a DuckLake schema. PostgreSQL is the
 maintained shared-catalog path for concurrent Trino/DuckDB access.
+
+#### PgBouncer transaction pooling — local 0.16 trial only
+
+The transaction-pooling isolation fix is currently in the owner-authorized local
+0.16 trial, **not the normal 0.15.1 dependency**. With 0.15.1, use direct PostgreSQL
+connections or session pooling: transaction pooling can silently weaken a pinned
+read session's isolation. Do not treat the prepared-statement setting below as a
+fix for that isolation issue. Final 0.16.0 adoption is still pending.
+
+For the fixed catalog behind PgBouncer in **transaction mode**, configure either:
+
+- PgBouncer **1.21 or newer** with `max_prepared_statements > 0` (default `200`
+  since 1.22), or
+- `prepareThreshold=0` on the PostgreSQL JDBC URL, disabling named server-prepared
+  statements for that client.
+
+Without either, operations fail with `prepared statement "S_n" already exists`.
+The connector passes JDBC URL parameters through unchanged. For example:
+
+```properties
+ducklake.catalog.database-url=jdbc:postgresql://pgbouncer:6432/ducklake?prepareThreshold=0&sslmode=require
+```
+
+If the URL already has a query string, append `&prepareThreshold=0`, not another
+`?`. Use the pool settings above to size/recycle metadata connections; keep
+`connection-max-lifetime` below PgBouncer's `server_lifetime`. Leaving idle timeout
+and maximum lifetime unset preserves the catalog/Hikari defaults. These pool
+properties configure client connections, not PgBouncer's server pool.
 
 ### MySQL
 

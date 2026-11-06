@@ -18,6 +18,9 @@ Normal catalog/replay dependencies are **0.15.1**. The separately selected
 [experimental planning mode](CATALOG-CANDIDATE.md) uses the same released artifacts,
 not snapshots or a moving API floor.
 Current user configuration is in [REFERENCE.md](../REFERENCE.md#catalog-configuration).
+The [owner-authorized local 0.16 trial](CATALOG-0.16-LOCAL-TRIAL.md) is an explicit
+exception: only its opt-in property selects the checked `~/.m2` snapshot, with no
+remote fallback. The normal dependency and output lane stay on 0.15.1.
 Normal test drivers are DuckDB JDBC **2.0.0.1** and Java Quack JDBC **0.13.0**.
 The catalog also qualifies Java Quack JDBC 0.13.0 upstream (Java 17, signed
 DuckDB 2.0 peer); this connector retains its own scoped worker/session checks.
@@ -34,6 +37,18 @@ identify that condition rather than pretend the lake is empty.
 PostgreSQL/MySQL drivers are runtime dependencies. DuckDB JDBC and Quack drivers used
 by tests are not automatically production dependencies. Do not infer a deployable
 backend merely from a fixture accepting its JDBC URL.
+
+### PgBouncer transaction pooling
+
+The local 0.16 catalog fixes transaction-local REPEATABLE READ setup in
+`readSession`. The normal 0.15.1 reader is not safe behind transaction pooling;
+direct PostgreSQL/session pooling remain the normal choices until final 0.16
+adoption. For transaction pooling with the fixed catalog, require PgBouncer >= 1.21
+and `max_prepared_statements > 0`, or JDBC `prepareThreshold=0`. Keep the client
+pool's maximum lifetime below the proxy's `server_lifetime`. See the
+[operator instructions](../REFERENCE.md#pgbouncer-transaction-pooling--local-016-trial-only).
+The connector trial checks configuration mapping and actual JDBC parameter delivery;
+it does not rerun the catalog owner's PgBouncer integration suite or qualify ProxySQL.
 
 ## Process topology and qualification
 

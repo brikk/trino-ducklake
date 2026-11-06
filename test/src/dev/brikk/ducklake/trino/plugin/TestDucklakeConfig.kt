@@ -14,6 +14,7 @@
 package dev.brikk.ducklake.trino.plugin
 
 import com.google.inject.ConfigurationException
+import dev.brikk.ducklake.catalog.DucklakeCatalogConfig
 import dev.brikk.ducklake.trino.plugin.DucklakeTemporalPartitionEncoding.CALENDAR
 import dev.brikk.ducklake.trino.plugin.DucklakeTemporalPartitionEncoding.EPOCH
 import io.airlift.configuration.ConfigBinder.configBinder
@@ -25,6 +26,80 @@ import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Test
 
 class TestDucklakeConfig {
+    @Test
+    fun catalogPoolDefaultsPreserveLibraryDefaults() {
+        val config = DucklakeConfig()
+        val mapped = config.toCatalogConfig()
+        val defaults = DucklakeCatalogConfig()
+        assertThat(config.getMinIdleCatalogConnections()).isEqualTo(1)
+        assertThat(config.getCatalogConnectionIdleTimeout()).isNull()
+        assertThat(config.getCatalogConnectionMaxLifetime()).isNull()
+        assertThat(config.getCatalogConnectionTimeout()).isEqualTo(Duration.valueOf("30s"))
+        assertThat(mapped.maxCatalogConnections).isEqualTo(defaults.maxCatalogConnections)
+        assertThat(mapped.minIdleCatalogConnections).isEqualTo(defaults.minIdleCatalogConnections)
+        assertThat(mapped.catalogConnectionIdleTimeout).isEqualTo(defaults.catalogConnectionIdleTimeout)
+        assertThat(mapped.catalogConnectionMaxLifetime).isEqualTo(defaults.catalogConnectionMaxLifetime)
+        assertThat(mapped.catalogConnectionTimeout).isEqualTo(defaults.catalogConnectionTimeout)
+    }
+
+    @Test
+    fun poolPropertiesBindAndJdbcUrlParametersPassThroughUnchanged() {
+        val url = "jdbc:postgresql://pgbouncer.invalid:6432/ducklake?prepareThreshold=0&sslmode=require&ApplicationName=Trino%20DuckLake"
+        ConfigurationFactory(mapOf("ducklake.catalog.database-url" to url,
+            "ducklake.catalog.max-connections" to "6", "ducklake.catalog.min-idle-connections" to "0",
+            "ducklake.catalog.connection-idle-timeout" to "45s", "ducklake.catalog.connection-max-lifetime" to "20m",
+            "ducklake.catalog.connection-timeout" to "1500ms")).use { factory ->
+            val config = factory.build(DucklakeConfig::class.java)
+            assertThat(config.getCatalogDatabaseUrl()).isEqualTo(url)
+            val mapped = config.toCatalogConfig()
+            assertThat(mapped.catalogDatabaseUrl).isEqualTo(url)
+            assertThat(mapped.maxCatalogConnections).isEqualTo(6)
+            assertThat(mapped.minIdleCatalogConnections).isZero()
+            assertThat(mapped.catalogConnectionIdleTimeout).isEqualTo(java.time.Duration.ofSeconds(45))
+            assertThat(mapped.catalogConnectionMaxLifetime).isEqualTo(java.time.Duration.ofMinutes(20))
+            assertThat(mapped.catalogConnectionTimeout).isEqualTo(java.time.Duration.ofMillis(1500))
+        }
+    }
+
+    @Test
+    fun poolTimeoutBoundsRejectValuesHikariWouldSilentlyReplace() {
+        for ((key, valid, invalid) in listOf(
+            Triple("ducklake.catalog.connection-idle-timeout", listOf("0s", "10s"), listOf("-1s", "1ms", "9999ms")),
+            Triple("ducklake.catalog.connection-max-lifetime", listOf("0s", "30s"), listOf("-1s", "1ms", "29999ms")),
+            Triple("ducklake.catalog.connection-timeout", listOf("250ms", "30s"), listOf("-1s", "0s", "249ms")),
+        )) {
+            for (value in valid + invalid) {
+                ConfigurationFactory(mapOf("ducklake.catalog.database-url" to "jdbc:postgresql://example.invalid/ducklake",
+                    key to value)).use { factory ->
+                    if (value in invalid) assertThatThrownBy { factory.build(DucklakeConfig::class.java) }
+                        .isInstanceOf(ConfigurationException::class.java).hasMessageContaining(key)
+                    else {
+                        val mapped = factory.build(DucklakeConfig::class.java).toCatalogConfig()
+                        val actual = when (key) {
+                            "ducklake.catalog.connection-idle-timeout" -> mapped.catalogConnectionIdleTimeout
+                            "ducklake.catalog.connection-max-lifetime" -> mapped.catalogConnectionMaxLifetime
+                            else -> mapped.catalogConnectionTimeout
+                        }
+                        assertThat(actual).isEqualTo(java.time.Duration.ofMillis(Duration.valueOf(value).toMillis()))
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun minIdleConnectionsMustFitThePool() {
+        for (minimum in listOf(0, 2, -1, 3)) {
+            ConfigurationFactory(mapOf("ducklake.catalog.database-url" to "jdbc:postgresql://example.invalid/ducklake",
+                "ducklake.catalog.max-connections" to "2", "ducklake.catalog.min-idle-connections" to minimum.toString())).use { factory ->
+                if (minimum in 0..2) assertThat(factory.build(DucklakeConfig::class.java).toCatalogConfig().minIdleCatalogConnections)
+                    .isEqualTo(minimum)
+                else assertThatThrownBy { factory.build(DucklakeConfig::class.java) }
+                    .isInstanceOf(ConfigurationException::class.java).hasMessageContaining("ducklake.catalog.min-idle-connections")
+            }
+        }
+    }
+
     @Test
     fun explicitCatalogFormatSelectionIsIndependentAndNeverGuessed() {
         assertThat(DucklakeConfig().getCatalogFormatVersion()).isEqualTo("1.0")

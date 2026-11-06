@@ -13,17 +13,19 @@ group = "dev.brikk.ducklake"
 // the other supported target with -PtrinoVersion=484, including its matching BOM.
 val trinoVersion = providers.gradleProperty("trinoVersion").getOrElse(libs.versions.trino.get())
 require(trinoVersion in setOf("483", "484")) { "Supported Trino targets: 483, 484 (got $trinoVersion)" }
-require(!providers.gradleProperty("catalogTrialVersion").isPresent) {
-    "The catalog snapshot trial is retired; normal builds now use released catalog 0.15.1"
+val catalogTrialVersion = providers.gradleProperty("catalogTrialVersion").orNull
+require(catalogTrialVersion == null || catalogTrialVersion == "0.16.0-SNAPSHOT") {
+    "Only the owner-authorized local 0.16.0-SNAPSHOT trial is accepted; normal builds use 0.15.1"
 }
-val catalogVersion = libs.versions.ducklake.catalog.get()
+val catalogVersion = catalogTrialVersion ?: libs.versions.ducklake.catalog.get()
 val r07CatalogCandidate = providers.gradleProperty("r07CatalogCandidate").orNull
 require(r07CatalogCandidate == null || r07CatalogCandidate in setOf("", catalogVersion)) {
     "Use -Pr07CatalogCandidate (or =$catalogVersion) for experimental planning on the released catalog; local bundles and snapshots are not accepted"
 }
 kotlin.sourceSets.main { kotlin.srcDir("trino-$trinoVersion/src") }
 // <trino-version>-<our-release>: never label a 484 build as compatible with 483.
-version = "$trinoVersion-0.5.2" + if (r07CatalogCandidate != null) "-r07" else ""
+version = "$trinoVersion-0.5.2" + (if (r07CatalogCandidate != null) "-r07" else "") +
+    (if (catalogTrialVersion != null) "-local-catalog-trial" else "")
 
 // Idiomatic-Kotlin quality gate (detekt 2.0 runs on the JDK 25 daemon; jvmTarget is read
 // from the Kotlin compilerOptions). Custom src/test layout, so point detekt at it explicitly.
@@ -45,6 +47,18 @@ repositories {
 
 // Both planning modes consume the same released artifacts; only final-1.1 planning is opt-in.
 val r07Modules = setOf("ducklake-catalog", "slt-format", "ducklake-test-corpus-replay")
+if (catalogTrialVersion != null) {
+    // Explicit owner exception: no remote fallback for this local-only consumer trial.
+    repositories.exclusiveContent {
+        forRepository {
+            repositories.mavenLocal {
+                name = "ownerLocalCatalogTrial"
+                mavenContent { snapshotsOnly() }
+            }
+        }
+        filter { r07Modules.forEach { includeModule("dev.brikk.ducklake", it) } }
+    }
+}
 kotlin.sourceSets.main { kotlin.srcDir(if (r07CatalogCandidate != null) "candidate/src" else "released/src") }
 dependencies {
     constraints {
@@ -63,7 +77,8 @@ dependencies {
 val verifyCatalogRelease by tasks.registering {
     group = "verification"
     description = "Attests the published catalog, replay, SLT and fixture jars in either planning mode."
-    val receipt = layout.projectDirectory.file("gradle/catalog-release.sha256")
+    val receipt = layout.projectDirectory.file(if (catalogTrialVersion != null)
+        "gradle/catalog-local-trial.sha256" else "gradle/catalog-release.sha256")
     inputs.file(receipt)
     inputs.property("catalogVersion", catalogVersion)
     doLast {

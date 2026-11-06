@@ -69,20 +69,24 @@ class TestDucklakeConfig {
             Triple("ducklake.catalog.connection-timeout", listOf("250ms", "30s"), listOf("-1s", "0s", "249ms")),
         )) {
             for (value in valid + invalid) {
-                ConfigurationFactory(mapOf("ducklake.catalog.database-url" to "jdbc:postgresql://example.invalid/ducklake",
-                    key to value)).use { factory ->
-                    if (value in invalid) assertThatThrownBy { factory.build(DucklakeConfig::class.java) }
-                        .isInstanceOf(ConfigurationException::class.java).hasMessageContaining(key)
-                    else {
-                        val mapped = factory.build(DucklakeConfig::class.java).toCatalogConfig()
-                        val actual = when (key) {
-                            "ducklake.catalog.connection-idle-timeout" -> mapped.catalogConnectionIdleTimeout
-                            "ducklake.catalog.connection-max-lifetime" -> mapped.catalogConnectionMaxLifetime
-                            else -> mapped.catalogConnectionTimeout
-                        }
-                        assertThat(actual).isEqualTo(java.time.Duration.ofMillis(Duration.valueOf(value).toMillis()))
-                    }
+                assertPoolTimeout(key, value, value in valid)
+            }
+        }
+    }
+
+    private fun assertPoolTimeout(key: String, value: String, valid: Boolean) {
+        ConfigurationFactory(mapOf("ducklake.catalog.database-url" to "jdbc:postgresql://example.invalid/ducklake",
+            key to value)).use { factory ->
+            if (!valid) assertThatThrownBy { factory.build(DucklakeConfig::class.java) }
+                .isInstanceOf(ConfigurationException::class.java).hasMessageContaining(key)
+            else {
+                val mapped = factory.build(DucklakeConfig::class.java).toCatalogConfig()
+                val actual = when (key) {
+                    "ducklake.catalog.connection-idle-timeout" -> mapped.catalogConnectionIdleTimeout
+                    "ducklake.catalog.connection-max-lifetime" -> mapped.catalogConnectionMaxLifetime
+                    else -> mapped.catalogConnectionTimeout
                 }
+                assertThat(actual).isEqualTo(java.time.Duration.ofMillis(Duration.valueOf(value).toMillis()))
             }
         }
     }

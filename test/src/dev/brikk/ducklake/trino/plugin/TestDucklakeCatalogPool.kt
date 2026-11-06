@@ -51,17 +51,21 @@ class TestDucklakeCatalogPool {
                             assertThat(catalog.listSchemas(catalog.currentSnapshotId).map { it.schemaName }).contains("main")
                         }
                     }
-                    DriverManager.getConnection(baseUrl, server.getUser(), server.getPassword()).use { connection ->
-                        connection.prepareStatement("SELECT count(*) FROM pg_stat_activity WHERE datname = ? AND application_name = ?").use { query ->
-                            query.setString(1, database)
-                            query.setString(2, application)
-                            query.executeQuery().use { result ->
-                                check(result.next())
-                                assertThat(result.getLong(1)).isGreaterThanOrEqualTo(1)
-                            }
-                        }
-                    }
+                    assertThat(applicationConnectionCount(baseUrl, server.getUser(), server.getPassword(), database, application))
+                        .isGreaterThanOrEqualTo(1)
                 }
             }
     }
+
+    private fun applicationConnectionCount(url: String, user: String, password: String, database: String, application: String): Long =
+        DriverManager.getConnection(url, user, password).use { connection ->
+            connection.prepareStatement("SELECT count(*) FROM pg_stat_activity WHERE datname = ? AND application_name = ?").use { query ->
+                query.setString(1, database)
+                query.setString(2, application)
+                query.executeQuery().use { result ->
+                    check(result.next())
+                    result.getLong(1)
+                }
+            }
+        }
 }

@@ -12,6 +12,8 @@ maintainers, not a second user manual or an append-only release diary.
 - [CATALOG-CANDIDATE.md](CATALOG-CANDIDATE.md): opt-in planning on the published release, scoped
   qualification and remaining 1.1/default-on gates. Normal builds use catalog 0.16.0,
   without promoting experimental final-1.1 planning.
+- [CATALOG-0.17-TRIAL.md](CATALOG-0.17-TRIAL.md): exact published snapshot trial;
+  normal dependencies remain on 0.16.0 and production planning is unchanged.
 - [REVIEW-2026-09-05.md](REVIEW-2026-09-05.md): permanent finding IDs, recorded repairs
   and unresolved security/value/history risks. Kept active because obligations remain;
   its dated observations are not automatically fresh reproductions.

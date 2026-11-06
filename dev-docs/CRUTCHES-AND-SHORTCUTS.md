@@ -40,6 +40,18 @@ the reserved ID retain the native file-begin fallback; lost origins are not gues
 
 ## R07: Experimental Planning, Explicit Opt-in Qualification Only
 
+### Published 0.17 verification trial
+
+Only `-PcatalogTrialVersion=0.17.0-20261106.162112-2` selects the published snapshot
+from `5377b5390b48de730d23f1043c3e006e211fb848`. The exclusive Central Portal
+repository and `gradle/catalog-trial.sha256` exclude local artifacts and moving
+snapshot selection. Output versions carry `-catalog-trial`; normal dependencies
+remain on 0.16.0. `trial/test` probes the new current-bounds API and write guards,
+but no production planner path uses it: existing file stats/time-travel behavior
+is retained. One target's normal suite includes the focused tests and starter
+corpus only. No full corpus, duplicate CI or release. See
+[the trial record](CATALOG-0.17-TRIAL.md).
+
 ### PgBouncer configuration and normal catalog 0.16.0
 
 Formal Maven Central 0.16.0 replaces the owner-authorized local trial; all four

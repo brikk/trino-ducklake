@@ -24,9 +24,9 @@ import java.nio.file.Path
 import java.sql.DriverManager
 import java.util.UUID
 
-/** New APIs stay trial-only; production planning deliberately retains getColumnStats. */
+/** Consumer bounds/write-guard regressions; production planning deliberately retains getColumnStats. */
 @Execution(ExecutionMode.SAME_THREAD)
-class TestDucklakeCatalog017Trial {
+class TestDucklakeCatalogBounds {
     @TempDir
     lateinit var data: Path
     private lateinit var config: DucklakeConfig

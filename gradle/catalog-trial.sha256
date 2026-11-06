@@ -1,6 +1,0 @@
-# Exact published 0.17 consumer trial, source 5377b5390b48de730d23f1043c3e006e211fb848.
-# https://central.sonatype.com/repository/maven-snapshots/ ; no local JARs.
-c6ec443055058e8843d42041ab63deb9f58a975e2ba8fe2a083126cee7bb5455  ducklake-catalog-0.17.0-20261106.162112-2.jar
-ca33bee56b33703ea7bbe7b76153bbaccc0275478fc992d48768eb912a1a056f  ducklake-catalog-0.17.0-20261106.162112-2-test-fixtures.jar
-3b3ddd334e9eb9cd971062cc2b19b1b2d7ee535538c46f005b5db01277300c11  ducklake-test-corpus-replay-0.17.0-20261106.162112-2.jar
-ee37d13d863437eaaf36fe4c34f8d66cfa1cb6d1349ef661ae4f50d2e91120be  slt-format-0.17.0-20261106.162112-2.jar

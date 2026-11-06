@@ -40,22 +40,21 @@ the reserved ID retain the native file-begin fallback; lost origins are not gues
 
 ## R07: Experimental Planning, Explicit Opt-in Qualification Only
 
-### Published 0.17 verification trial
+### Current bounds API in released catalog 0.17.0
 
-Only `-PcatalogTrialVersion=0.17.0-20261106.162112-2` selects the published snapshot
-from `5377b5390b48de730d23f1043c3e006e211fb848`. The exclusive Central Portal
-repository and `gradle/catalog-trial.sha256` exclude local artifacts and moving
-snapshot selection. Output versions carry `-catalog-trial`; normal dependencies
-remain on 0.16.0. `trial/test` probes the new current-bounds API and write guards,
-but no production planner path uses it: existing file stats/time-travel behavior
-is retained. One target's normal suite includes the focused tests and starter
-corpus only. No full corpus, duplicate CI or release. See
-[the trial record](CATALOG-0.17-TRIAL.md).
+Normal dependencies use Central 0.17.0, byte-identical to the accepted
+`0.17.0-20261106.162112-2` snapshot. The temporary selector/repository/hash file is
+retired, and the bounds/write-guard tests are retained in normal sources. No
+production planner path adopts the new API: existing file stats/time-travel
+behavior is retained. Any later use of current bounds must stay inside the latest
+read session, treat omissions as unknown and NaN-bearing ranges as non-pruning;
+gross supersets must never become MIN/MAX answers. See
+[the retained trial](archive/CATALOG-0.17-TRIAL.md).
 
-### PgBouncer configuration and normal catalog 0.16.0
+### PgBouncer configuration
 
-Formal Maven Central 0.16.0 replaces the owner-authorized local trial; all four
-JARs match its tested bytes. The local selector/repository/hash file are removed.
+The PgBouncer fix adopted in 0.16.0 remains in normal catalog 0.17.0.
+The old local selector/repository/hash file are removed.
 The four pool controls retain their original defaults and the JDBC URL is passed
 through intact. Transaction pooling requires PgBouncer >=1.21 with
 `max_prepared_statements > 0`, or JDBC `prepareThreshold=0`; keep maximum connection
@@ -66,7 +65,7 @@ broader 1.1 behavior or deployment. The old connector 0.5.2 release still contai
 
 ### Catalog 0.15 expiry recovery
 
-The expiry recovery contract introduced in 0.15 remains in 0.16.0. Snapshot
+The expiry recovery contract introduced in 0.15 remains in 0.17.0. Snapshot
 expiry commits before resumable catalog cleanup. A subsequent cleanup failure
 throws `DucklakeExpiryCleanupIncompleteException`, retaining the committed
 expiry and scheduled-file counts and the original cause. Since 0.15.1, file
@@ -82,7 +81,7 @@ limits, including dependent delete files. See the
 
 ### Released catalog and independent format validation
 
-Both build modes now consume released catalog/replay/SLT **0.16.0**, with test-only
+Both build modes now consume released catalog/replay/SLT **0.17.0**, with test-only
 DuckDB JDBC **2.0.0.1** and direct Java Quack JDBC **0.13.0**. Native test setup
 explicitly creates DuckLake 1.0 with automatic migration disabled. This is not
 promotion of the candidate planning adapter or final-1.1 read/write admission.
@@ -150,7 +149,7 @@ Cost: extra files may be scanned. Removal requires a real file-specific transfor
 writer-zone attestation, not a version check or a future native upgrade.
 
 `-Pr07CatalogCandidate` now selects only the experimental adapter and
-`qualification/src` tests, on the same 0.16.0 release and driver pins as the normal
+`qualification/src` tests, on the same 0.17.0 release and driver pins as the normal
 build. `verifyCatalogRelease` checks all four JARs against
 `gradle/catalog-release.sha256` in both modes. Old snapshot/local-bundle values
 fail explicitly. Experimental output versions retain `-r07`; this is not a supported
@@ -187,7 +186,7 @@ multi-process/multi-host deployment or mixed-version negotiation test.
 
 The `10f81f9` qualification introduced a **typed public-API adapter** in
 `candidate/src`; the default build retains its normal 1.0 adapter in `released/src`.
-Both now consume released 0.16.0, without enabling the experimental adapter by default.
+Both now consume released 0.17.0, without enabling the experimental adapter by default.
 The candidate adapter drains SQL-keyset active/added files, schemas/tables/flat columns,
 partition fields/values, immutable name rows and inline registry versions. Each outer
 view shares totals: 1,024 page calls (including empty terminals), 16,384 returned nodes,

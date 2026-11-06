@@ -13,7 +13,7 @@ This is a single-project Gradle build at the repository root. Use the checked-in
 ```
 
 The catalog and replay framework are published dependencies, not source projects
-built here. The normal catalog/replay/SLT version is **0.16.0**. The SQL transpiler,
+built here. The normal catalog/replay/SLT version is **0.17.0**. The SQL transpiler,
 metadata and native verifier are **brikk-sql 0.21.0**, test-only. Compiler/BOM Kotlin
 is **2.4.10**. Production packages do not bundle DuckDB JDBC, replay, SLT, SQL tooling
 or the Trino SPI.

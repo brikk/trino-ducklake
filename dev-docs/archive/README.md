@@ -6,6 +6,8 @@ branch names, paths and measured test counts retain their original scope/date.
 
 ## Recent integration and qualification
 
+- [Catalog 0.17 snapshot trial](CATALOG-0.17-TRIAL.md): current-bounds/write-guard
+  regressions and one normal suite; superseded by byte-identical Central 0.17.0.
 - [Catalog 0.16 local trial](CATALOG-0.16-LOCAL-TRIAL.md): PgBouncer pool controls,
   unchanged defaults and JDBC URL passthrough; superseded by byte-identical Central 0.16.0.
 - [Catalog 0.15.0 adoption](CATALOG-0.15.0-ADOPTION.md): formal dependency and targeted
@@ -26,7 +28,8 @@ branch names, paths and measured test counts retain their original scope/date.
   CDC trials. Local-bundle commands are superseded, not instructions for current pins.
 - [October Trino verification](TRINO-VERIFICATION-2026-10.md): target/tooling implementation
   evidence. Current API/build contract: [Trino compatibility](../TRINO-COMPATIBILITY.md).
-- Release notes: [0.5.3 — PgBouncer and pool configuration](RELEASE-0.5.3.md),
+- Release notes: [0.5.4 — catalog write efficiency](RELEASE-0.5.4.md),
+  [0.5.3 — PgBouncer and pool configuration](RELEASE-0.5.3.md),
   [0.5.2 — cleanup progress reporting](RELEASE-0.5.2.md),
   [0.5.1 — catalog maintenance](RELEASE-0.5.1.md),
   [0.5.0 — 483 and 484](RELEASE-0.5.0.md),

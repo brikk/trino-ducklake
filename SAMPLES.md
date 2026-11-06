@@ -40,7 +40,7 @@ already defines `s3.*`, `ducklake.properties` needs its own S3 settings.
 
 For PgBouncer transaction-pooling requirements and JDBC URL parameters, see
 [the reference](REFERENCE.md#pgbouncer-transaction-pooling). This requires connector
-0.5.3 with catalog 0.16.0, not the older connector 0.5.2.
+0.5.3 or newer, not the older connector 0.5.2.
 
 ## Schema and Table DDL
 

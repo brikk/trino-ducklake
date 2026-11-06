@@ -1,5 +1,16 @@
 # Published catalog 0.17 consumer trial
 
+> Historical trial evidence. Normal builds now use Central 0.17.0, source
+> `5a1c9bab66f9100e926791e1e6d1cbef8c75e667`. All four formal JARs match the tested
+> snapshot bytes. The trial selector/repository/hash file are retired; the three
+> focused regressions now live in `TestDucklakeCatalogBounds` in normal sources.
+> Production planning is unchanged; formal promotion does not repeat the tests.
+>
+> Promotion checks passed: independent Central downloads matched all four hashes
+> and the accepted snapshot JARs byte-for-byte. Gradle verified the resolved formal
+> artifacts, and production plus test-source compilation passed for final 0.5.4.
+> No behavioral tests or corpus were rerun; release CI builds the two target archives.
+
 Normal dependencies remain on Maven Central **0.16.0**. Only
 `-PcatalogTrialVersion=0.17.0-20261106.162112-2` selects the exact published
 snapshot from source `5377b5390b48de730d23f1043c3e006e211fb848`.

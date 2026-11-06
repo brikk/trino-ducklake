@@ -1,6 +1,6 @@
 # Trino DuckLake reference
 
-This reference describes the normal Trino 483/484 build using catalog library 0.16.0
+This reference describes the normal Trino 483/484 build using catalog library 0.17.0
 and DuckLake 1.0 metadata. It is not a blanket physical-type or production-safety
 certification. Start with the [installation guide](README.md) and [SQL samples](SAMPLES.md).
 

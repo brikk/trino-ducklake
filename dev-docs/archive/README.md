@@ -6,6 +6,8 @@ branch names, paths and measured test counts retain their original scope/date.
 
 ## Recent integration and qualification
 
+- [Catalog 0.16 local trial](CATALOG-0.16-LOCAL-TRIAL.md): PgBouncer pool controls,
+  unchanged defaults and JDBC URL passthrough; superseded by byte-identical Central 0.16.0.
 - [Catalog 0.15.0 adoption](CATALOG-0.15.0-ADOPTION.md): formal dependency and targeted
   expiry/maintenance checks after the [snapshot trial](CATALOG-0.15-TRIAL.md).
 - [Catalog 0.14.0 / independent 1.0 acceptance](CATALOG-0.14.0-ADOPTION.md): actual

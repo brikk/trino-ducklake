@@ -1,6 +1,0 @@
-# OWNER-AUTHORIZED LOCAL TRIAL ONLY; normal dependencies remain on Maven Central 0.15.1.
-# ~/.m2, source acec1f1b0208e545efad19d2afd3c574e870170d (not pushed).
-4b9659ef1100a8350b1d09b353e65448e26cdab2cc85c85b6f5d800848c6e234  ducklake-catalog-0.16.0-SNAPSHOT.jar
-ca33bee56b33703ea7bbe7b76153bbaccc0275478fc992d48768eb912a1a056f  ducklake-catalog-0.16.0-SNAPSHOT-test-fixtures.jar
-3b3ddd334e9eb9cd971062cc2b19b1b2d7ee535538c46f005b5db01277300c11  ducklake-test-corpus-replay-0.16.0-SNAPSHOT.jar
-ee37d13d863437eaaf36fe4c34f8d66cfa1cb6d1349ef661ae4f50d2e91120be  slt-format-0.16.0-SNAPSHOT.jar

@@ -1,5 +1,16 @@
 # Local catalog 0.16 PgBouncer configuration trial
 
+> Historical evidence. The trial selector and local-only repository/hash file
+> below are retired. Normal dependencies now use Maven Central 0.16.0, release
+> commit `7783db5e2c76b00557e64e4d8b9538c2f5ea7f60`. All four formal JARs match the
+> tested trial bytes. The configuration implementation from `1d5702a` is retained;
+> formal promotion requires hash checks and compilation only, not new test runs.
+>
+> Promotion checks passed: independent Central downloads matched every supplied
+> hash and every local trial JAR byte-for-byte; Gradle resolved formal 0.16.0 and
+> verified all four hashes. Normal 483 and 484 production compilation passed.
+> No tests, corpus, packaging or release were rerun for this promotion.
+
 This is an **owner-authorized exception** to published-only dependencies, not a
 release or an adoption of a moving upstream build. Normal builds remain pinned
 to Maven Central **0.15.1**.

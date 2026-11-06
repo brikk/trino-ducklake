@@ -1,6 +1,6 @@
-# Maven Central release 0.15.1, source 255c7b5e890a69547e10b23a14cf2c123c19ab9b.
-# Fixtures, replay and SLT are byte-identical to the accepted 0.15 trial / 0.14 release.
-5a5f9c70486f4a7cb30f75f862bfe61056a03ff308d417290a056b0896dd933d  ducklake-catalog-0.15.1.jar
-ca33bee56b33703ea7bbe7b76153bbaccc0275478fc992d48768eb912a1a056f  ducklake-catalog-0.15.1-test-fixtures.jar
-3b3ddd334e9eb9cd971062cc2b19b1b2d7ee535538c46f005b5db01277300c11  ducklake-test-corpus-replay-0.15.1.jar
-ee37d13d863437eaaf36fe4c34f8d66cfa1cb6d1349ef661ae4f50d2e91120be  slt-format-0.15.1.jar
+# Maven Central release 0.16.0, source 7783db5e2c76b00557e64e4d8b9538c2f5ea7f60.
+# All four JARs are byte-identical to the accepted local acec1f1 / 0.16.0-SNAPSHOT trial.
+4b9659ef1100a8350b1d09b353e65448e26cdab2cc85c85b6f5d800848c6e234  ducklake-catalog-0.16.0.jar
+ca33bee56b33703ea7bbe7b76153bbaccc0275478fc992d48768eb912a1a056f  ducklake-catalog-0.16.0-test-fixtures.jar
+3b3ddd334e9eb9cd971062cc2b19b1b2d7ee535538c46f005b5db01277300c11  ducklake-test-corpus-replay-0.16.0.jar
+ee37d13d863437eaaf36fe4c34f8d66cfa1cb6d1349ef661ae4f50d2e91120be  slt-format-0.16.0.jar

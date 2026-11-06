@@ -1,6 +1,6 @@
 # Trino DuckLake reference
 
-This reference describes the normal Trino 483/484 build using catalog library 0.15.1
+This reference describes the normal Trino 483/484 build using catalog library 0.16.0
 and DuckLake 1.0 metadata. It is not a blanket physical-type or production-safety
 certification. Start with the [installation guide](README.md) and [SQL samples](SAMPLES.md).
 
@@ -50,13 +50,13 @@ Use `jdbc:postgresql://host:5432/database` and database credentials. The driver 
 bundled. The database must already contain a DuckLake schema. PostgreSQL is the
 maintained shared-catalog path for concurrent Trino/DuckDB access.
 
-#### PgBouncer transaction pooling — local 0.16 trial only
+#### PgBouncer transaction pooling
 
-The transaction-pooling isolation fix is currently in the owner-authorized local
-0.16 trial, **not the normal 0.15.1 dependency**. With 0.15.1, use direct PostgreSQL
-connections or session pooling: transaction pooling can silently weaken a pinned
-read session's isolation. Do not treat the prepared-statement setting below as a
-fix for that isolation issue. Final 0.16.0 adoption is still pending.
+Catalog **0.16.0** includes the transaction-local read-session isolation fix and is
+the normal source-build dependency. The previously released connector 0.5.2 still
+contains catalog 0.15.1: use direct PostgreSQL or session pooling with that release.
+The prepared-statement setting below does not fix the older catalog's isolation
+issue. Do not replace individual JARs in a released plugin directory.
 
 For the fixed catalog behind PgBouncer in **transaction mode**, configure either:
 

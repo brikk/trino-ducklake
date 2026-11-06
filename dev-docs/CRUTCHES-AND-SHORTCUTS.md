@@ -40,22 +40,21 @@ the reserved ID retain the native file-begin fallback; lost origins are not gues
 
 ## R07: Experimental Planning, Explicit Opt-in Qualification Only
 
-### Owner-authorized local 0.16 PgBouncer trial
+### PgBouncer configuration and normal catalog 0.16.0
 
-`-PcatalogTrialVersion=0.16.0-SNAPSHOT` explicitly selects the owner's local
-`~/.m2` artifacts from `acec1f1b0208e545efad19d2afd3c574e870170d`, checked against
-`gradle/catalog-local-trial.sha256`. An exclusive local repository rule prevents
-remote fallback; outputs carry `-local-catalog-trial`. This exception is not a
-normal dependency change or a deployable release. Normal builds remain on 0.15.1.
-The four pool settings also compile/map against 0.15.1, with unchanged defaults,
-but transaction-pooling read isolation is fixed only in the local 0.16 catalog.
-The trial does not qualify MySQL/ProxySQL, broader 1.1 behavior or deployment.
-No full suites/corpus, push or release are authorized; wait for final 0.16.0 and
-further owner direction. See [the trial guide](CATALOG-0.16-LOCAL-TRIAL.md).
+Formal Maven Central 0.16.0 replaces the owner-authorized local trial; all four
+JARs match its tested bytes. The local selector/repository/hash file are removed.
+The four pool controls retain their original defaults and the JDBC URL is passed
+through intact. Transaction pooling requires PgBouncer >=1.21 with
+`max_prepared_statements > 0`, or JDBC `prepareThreshold=0`; keep maximum connection
+lifetime below the proxy's `server_lifetime`. This does not qualify MySQL/ProxySQL,
+broader 1.1 behavior or deployment. The old connector 0.5.2 release still contains
+0.15.1; it is not safe for transaction pooling. The
+[local trial record](archive/CATALOG-0.16-LOCAL-TRIAL.md) retains the scoped evidence.
 
 ### Catalog 0.15 expiry recovery
 
-Formal 0.15.1 supersedes 0.15.0 and the snapshot trial as the normal dependency. Snapshot
+The expiry recovery contract introduced in 0.15 remains in 0.16.0. Snapshot
 expiry commits before resumable catalog cleanup. A subsequent cleanup failure
 throws `DucklakeExpiryCleanupIncompleteException`, retaining the committed
 expiry and scheduled-file counts and the original cause. Since 0.15.1, file
@@ -71,7 +70,7 @@ limits, including dependent delete files. See the
 
 ### Released catalog and independent format validation
 
-Both build modes now consume released catalog/replay/SLT **0.15.1**, with test-only
+Both build modes now consume released catalog/replay/SLT **0.16.0**, with test-only
 DuckDB JDBC **2.0.0.1** and direct Java Quack JDBC **0.13.0**. Native test setup
 explicitly creates DuckLake 1.0 with automatic migration disabled. This is not
 promotion of the candidate planning adapter or final-1.1 read/write admission.
@@ -139,7 +138,7 @@ Cost: extra files may be scanned. Removal requires a real file-specific transfor
 writer-zone attestation, not a version check or a future native upgrade.
 
 `-Pr07CatalogCandidate` now selects only the experimental adapter and
-`qualification/src` tests, on the same 0.15.1 release and driver pins as the normal
+`qualification/src` tests, on the same 0.16.0 release and driver pins as the normal
 build. `verifyCatalogRelease` checks all four JARs against
 `gradle/catalog-release.sha256` in both modes. Old snapshot/local-bundle values
 fail explicitly. Experimental output versions retain `-r07`; this is not a supported
@@ -176,7 +175,7 @@ multi-process/multi-host deployment or mixed-version negotiation test.
 
 The `10f81f9` qualification introduced a **typed public-API adapter** in
 `candidate/src`; the default build retains its normal 1.0 adapter in `released/src`.
-Both now consume released 0.15.1, without enabling the experimental adapter by default.
+Both now consume released 0.16.0, without enabling the experimental adapter by default.
 The candidate adapter drains SQL-keyset active/added files, schemas/tables/flat columns,
 partition fields/values, immutable name rows and inline registry versions. Each outer
 view shares totals: 1,024 page calls (including empty terminals), 16,384 returned nodes,

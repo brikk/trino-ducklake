@@ -11,8 +11,10 @@ port, feature and release history is not an instruction to redo shipped work.
 
 ## Correctness and physical support
 
-- [ ] Fail loudly on present-but-unparseable partition/default values; do not project
+- [x] Fail loudly on present-but-unparseable partition/default values; do not project
   SQL NULL merely because conversion failed.
+- [ ] Fail loudly on INSERT/CTAS footer serialization errors in
+  `ParquetFileWriter.finishAndBuildFragment`; it still substitutes a zero footer-size hint.
 - [ ] Complete legacy/unsigned/type-edge qualification: unsigned Parquet annotations,
   files without IDs/name maps, unsupported encodings, and final-1.1 type/statistics
   behavior. Keep advertised support within actual reader/writer capability (RV-18).
@@ -97,6 +99,10 @@ port, feature and release history is not an instruction to redo shipped work.
 
 ## Architecture and delivery hygiene
 
+- [ ] Restore useful per-directory corpus qualification without weakening gates:
+  `merge` has no accepted alias-qualified lake reads and fails minimum mirror coverage;
+  `partitioning` has implicit newer-format fixtures rejected by the fixed DuckLake 1.0
+  oracle (epoch transforms and NULL type). Both failures reproduce on `d92f048`.
 - [ ] Add shared replay support for `require-env`: the pinned native metadata-logging
   fixture is currently a visible unsupported-directive file-skip, even with
   `DUCKLAKE_CI=1`. Keep SQL/goldens intact and require real Trino mirrors when enabled.

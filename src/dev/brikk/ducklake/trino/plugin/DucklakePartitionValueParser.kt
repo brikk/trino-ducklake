@@ -81,9 +81,7 @@ object DucklakePartitionValueParser
             else -> throw IllegalArgumentException("Unsupported partition value type: $type")
         }
 
-    // DECIMAL: parse to the column's scale (UNNECESSARY rounding — a scale mismatch throws,
-    // matching Trino's Decimals SPI convention, so the caller's catch falls back to NULL rather
-    // than silently rounding). Short decimals project as the unscaled long; long decimals as Int128.
+    // Reject scale mismatches instead of rounding catalog values.
     private fun parseDecimal(type: DecimalType, value: String): Any {
         val decimal: BigDecimal = BigDecimal(value.trim()).setScale(type.scale, RoundingMode.UNNECESSARY)
         return if (type.isShort) {
@@ -123,13 +121,8 @@ object DucklakePartitionValueParser
         return LongTimestampWithTimeZone.fromEpochMillisAndFraction(epochMillis, picosOfMilli, UTC_KEY)
     }
 
-    // Boolean.parseBoolean silently maps everything that isn't "true" to false, so an
-    // externally-written catalog that encodes boolean partitions as "1"/"0" (the form
-    // DuckLake's C++ extension may store, and the form JdbcDucklakeCatalog/DucklakeStatTypes
-    // already accept) would parse "1" as false — wrong pruning and a wrong projected
-    // constant. Mirror the catalog's encoding and throw on anything else so the callers'
-    // catch(RuntimeException) blocks fall back safely (don't-prune / NULL) instead of
-    // silently producing the wrong value.
+    // Boolean.parseBoolean maps unrecognized text to false. Match the catalog's true/false
+    // and 1/0 encodings; other values must retain pruning candidates or fail projection.
     private fun parseBoolean(value: String): Boolean {
         return when {
             value.equals("true", ignoreCase = true) || value == "1" -> true

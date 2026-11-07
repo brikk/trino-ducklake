@@ -325,13 +325,7 @@ class DucklakePageSourceProvider @Inject constructor(
         realColumns.forEachIndexed { index, handle ->
             val initialDefault = handle.initialDefault
             if (initialDefault != null && handle.columnId !in eraColumnIds) {
-                defaults[index] =
-                        try {
-                            DucklakePartitionValueParser.parseIdentity(handle.columnType, initialDefault)
-                        }
-                        catch (_: RuntimeException) {
-                            null
-                        }
+                defaults[index] = parseProjectedValue(handle, initialDefault, "inlined initial_default")
             }
         }
         return defaults
@@ -1490,7 +1484,7 @@ class DucklakePageSourceProvider @Inject constructor(
                     }
                 }
             }
-            throw RuntimeException("Failed to create Parquet page source for file: ${split.dataFilePath}", e)
+            throw pageSourceFailure(split.dataFilePath, e)
         }
         catch (e: RuntimeException) {
             if (dataSource != null) {
@@ -1507,9 +1501,9 @@ class DucklakePageSourceProvider @Inject constructor(
         }
     }
 
-    private fun pageSourceFailure(path: String, failure: RuntimeException): RuntimeException =
+    private fun pageSourceFailure(path: String, failure: Exception): TrinoException =
         if (failure is TrinoException) failure
-        else RuntimeException("Failed to create Parquet page source for file: $path", failure)
+        else TrinoException(GENERIC_INTERNAL_ERROR, "Failed to create Parquet page source for file: $path", failure)
 
     private fun rejectUnsupportedPhysicalField(name: String) {
         if (final11Reads) throw TrinoException(NOT_SUPPORTED,
@@ -1696,12 +1690,6 @@ class DucklakePageSourceProvider @Inject constructor(
                     exception)
 
         /**
-         * Build the constant block emitted by [io.trino.plugin.hive.TransformConnectorPageSource]
-         * for a column not present in the parquet body. Defaults to a single-position NULL block;
-         * when the split carries a catalog-recorded partition value for this column (hive-style
-         * external imports), parses the string value and projects it as a constant instead.
-         */
-        /**
          * Resolves the parquet [ColumnIO] for a projected column. A file with a
          * name map ([hasNameMap], set for add_files-registered files) is
          * AUTHORITATIVE: resolve ONLY through target_field_id → source_name (a
@@ -1757,34 +1745,40 @@ class DucklakePageSourceProvider @Inject constructor(
                         "requires decoded catalog default projection")
             }
             val stored = split.partitionValuesByColumnId[column.columnId] ?: return column.columnType.createNullBlock()
-            // Opt-in parse failures propagate; never inherit the legacy NULL fallback.
             return io.trino.spi.type.TypeUtils.writeNativeValue(
-                column.columnType, DucklakePartitionValueParser.parseIdentity(column.columnType, stored))
+                column.columnType, parseProjectedValue(column, stored, "partition value"))
         }
 
         private fun buildMissingColumnBlock(column: DucklakeColumnHandle, split: DucklakeSplit): Block
         {
-            // Precedence: hive partition value (external add_files) > the column's
-            // initial_default (rows predating ADD COLUMN ... DEFAULT — upstream issue
-            // 1135: `WHERE b = 42` must match old rows after ADD COLUMN b DEFAULT 42)
-            // > NULL. initial_default is plain value text, same shape the partition
-            // parser consumes.
+            // Imported identity partitions override defaults for rows predating the column.
             val storedValue: String? = split.partitionValuesByColumnId[column.columnId]
                     ?: column.initialDefault
             if (storedValue == null) {
                 return column.columnType.createNullBlock()
             }
-            try {
-                val nativeValue: Any = DucklakePartitionValueParser.parseIdentity(column.columnType, storedValue)
-                return io.trino.spi.type.TypeUtils.writeNativeValue(column.columnType, nativeValue)
-            }
-            catch (_: RuntimeException) {
-                // If the catalog's stored value can't be parsed to the column's type, fall back
-                // to NULL rather than failing the whole read. The pruning path already tolerates
-                // parse failures the same way.
-                return column.columnType.createNullBlock()
-            }
+            val origin = if (column.columnId in split.partitionValuesByColumnId) "partition value" else "initial_default"
+            val nativeValue = parseProjectedValue(column, storedValue, origin)
+            return io.trino.spi.type.TypeUtils.writeNativeValue(column.columnType, nativeValue)
         }
+
+        private fun parseProjectedValue(column: DucklakeColumnHandle, value: String, origin: String): Any =
+            try {
+                DucklakePartitionValueParser.parseIdentity(column.columnType, value)
+            }
+            catch (e: IllegalArgumentException) {
+                throw invalidProjectedValue(column, origin, e)
+            }
+            catch (e: ArithmeticException) {
+                throw invalidProjectedValue(column, origin, e)
+            }
+            catch (e: java.time.DateTimeException) {
+                throw invalidProjectedValue(column, origin, e)
+            }
+
+        private fun invalidProjectedValue(column: DucklakeColumnHandle, origin: String, cause: RuntimeException): TrinoException =
+            TrinoException(GENERIC_INTERNAL_ERROR,
+                "Invalid $origin for column ${column.columnName} (${column.columnId}) of type ${column.columnType}", cause)
 
         /**
          * Classify a requested column as a positional injection, or not.

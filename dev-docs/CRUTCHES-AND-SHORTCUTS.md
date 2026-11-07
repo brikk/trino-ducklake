@@ -3,6 +3,14 @@
 This inventory records the safety restrictions introduced for RV-03 and RV-04. It is not an audit
 claim that all older debt is listed here; see [the review](REVIEW-2026-09-05.md) for that assessment.
 
+## INSERT/CTAS footer-size fallback
+
+`ParquetFileWriter.finishAndBuildFragment` still substitutes a zero footer-size hint
+when Thrift footer serialization throws `IOException`. Readers can recover by reading
+the file tail, but the write hides the metadata failure. Remove this fallback with a
+focused failure-injection test. The merge sink's separate footer serializer now throws
+`GENERIC_INTERNAL_ERROR`; the ordinary writer is outside that fix's scope.
+
 ## Trino 484 retained-memory reporting
 
 The 484 SPI contexts receive conservative reservations for the merge sink's retained delete
@@ -105,6 +113,14 @@ files halt after positive stored-format inspection: earlier results stand, remai
 inspection errors fail loudly. This is deliberate format selection, not a directory
 skip or downgrade. The full JUnit gate uses CI's actual 75-file starter discovery,
 not a general-only subset.
+
+The `merge` directory alone currently fails minimum mirror coverage: its queries
+are rejected by the existing read-shape/alias gates before connector execution.
+The `partitioning` directory also contains implicit newer-format fixtures whose
+epoch transforms and NULL type fail in the fixed 1.0 native oracle, with cascading
+golden failures. Both reproduce on `d92f048`; neither is a passing qualification
+run. Repair the fixtures' format/namespace qualification without lowering coverage
+requirements or adding skips.
 
 PostgreSQL replay binds only the default schema qualifier of known rewritten
 metadata catalogs using the shared public oracle-SQL hook and brikk-sql AST.

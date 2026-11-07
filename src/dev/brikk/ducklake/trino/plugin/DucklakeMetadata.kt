@@ -1395,24 +1395,16 @@ class DucklakeMetadata(
         val insertFragments: MutableList<DucklakeWriteFragment> = mutableListOf()
 
         for (fragment in fragments) {
-            val bytes: ByteArray = fragment.bytes
-            // Try to parse as delete fragment first, fall back to write fragment
             try {
-                val deleteFragment: DucklakeDeleteFragment = deleteFragmentCodec!!.fromJson(bytes)
-                // Verify it's actually a delete fragment (has dataFileId > 0 and path starts with "ducklake-delete-")
-                if (deleteFragment.path.startsWith("ducklake-delete-")) {
-                    deleteFragments.add(deleteFragment)
-                    continue
+                val tagged = DucklakeMergeFragment.fromSlice(fragment)
+                when (tagged.kind) {
+                    DucklakeMergeFragment.Kind.DELETE -> deleteFragments.add(deleteFragmentCodec!!.fromJson(tagged.payload))
+                    DucklakeMergeFragment.Kind.INSERT -> insertFragments.add(fragmentCodec!!.fromJson(tagged.payload))
                 }
             }
-            catch (_: RuntimeException) {
-                // Not a delete fragment
-            }
-            try {
-                insertFragments.add(fragmentCodec!!.fromJson(bytes))
-            }
             catch (e: RuntimeException) {
-                throw RuntimeException("Failed to deserialize merge fragment", e)
+                throw e as? TrinoException
+                    ?: TrinoException(GENERIC_INTERNAL_ERROR, "Failed to deserialize merge fragment", e)
             }
         }
 

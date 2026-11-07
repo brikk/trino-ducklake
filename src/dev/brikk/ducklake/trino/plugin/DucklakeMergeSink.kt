@@ -13,7 +13,6 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
-import com.google.common.collect.ImmutableList
 import dev.brikk.ducklake.catalog.DucklakeDeleteFragment
 import dev.brikk.ducklake.trino.plugin.DucklakeMergeTableHandle.DataFileRange
 import io.airlift.json.JsonCodec
@@ -28,6 +27,8 @@ import io.trino.parquet.writer.ParquetWriter
 import io.trino.parquet.writer.ParquetWriterOptions
 import io.trino.plugin.base.metrics.FileFormatDataSourceStats
 import io.trino.spi.Page
+import io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR
+import io.trino.spi.TrinoException
 import io.trino.spi.block.Block
 import io.trino.spi.connector.ConnectorMergeSink
 import io.trino.spi.connector.ConnectorPageSink
@@ -44,6 +45,7 @@ import java.util.TreeSet
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletableFuture.completedFuture
+import java.util.concurrent.ExecutionException
 
 /**
  * Merge sink for DuckLake DELETE/UPDATE/MERGE operations.
@@ -223,27 +225,30 @@ open class DucklakeMergeSink(
 
             try {
                 val fragment = writeDeleteFile(dataFileId, rowIds)
-                fragments.add(Slices.wrappedBuffer(*deleteFragmentCodec.toJsonBytes(fragment)))
+                fragments.add(DucklakeMergeFragment(
+                    DucklakeMergeFragment.Kind.DELETE, deleteFragmentCodec.toJson(fragment)).toSlice())
             }
             catch (e: IOException) {
                 throw UncheckedIOException("Failed to write delete file for data file $dataFileId", e)
             }
         }
 
-        // Collect insert fragments. They are already DucklakeWriteFragment JSON — the insert
-        // DucklakePageSink serialized them with that codec — and finishMerge distinguishes
-        // delete from insert fragments structurally (delete-fragment trial-parse plus a
-        // "ducklake-delete-" path-prefix check), not by any tag. So they pass through
-        // unchanged; the prior deserialize-then-reserialize was a byte-for-byte no-op.
         try {
             val insertFragments: Collection<Slice> = insertSink.finish().get()
-            fragments.addAll(insertFragments)
+            fragments.addAll(insertFragments.map {
+                DucklakeMergeFragment(DucklakeMergeFragment.Kind.INSERT, it.toStringUtf8()).toSlice()
+            })
             if (lineageInsertSink != null) {
-                fragments.addAll(lineageInsertSink.finish().get())
+                fragments.addAll(lineageInsertSink.finish().get().map {
+                    DucklakeMergeFragment(DucklakeMergeFragment.Kind.INSERT, it.toStringUtf8()).toSlice()
+                })
             }
         }
         catch (e: Exception) {
-            throw RuntimeException("Failed to finish insert sink", e)
+            if (e is InterruptedException) Thread.currentThread().interrupt()
+            val failure = if (e is ExecutionException) e.cause ?: e else e
+            throw failure as? TrinoException
+                ?: TrinoException(GENERIC_INTERNAL_ERROR, "Failed to finish insert sink", failure)
         }
 
         val asCollection: Collection<Slice> = fragments
@@ -252,19 +257,9 @@ open class DucklakeMergeSink(
 
     @Throws(IOException::class)
     private fun writeDeleteFile(dataFileId: Long, rowIds: List<Long>): DucklakeDeleteFragment {
-        // B3a: read any prior-active delete files for this data_file_id (paths captured on the
-        // merge handle at beginMerge time) and UNION their positions with this commit's new
-        // deletes. The catalog end-snapshots the prior files in the same transaction we insert
-        // this new one (JdbcDucklakeCatalog.applyDeleteFragments), so the new file must carry
-        // every still-deleted position or rows resurrect. record_count is decremented by
-        // newDeleteCount (positions truly new this commit), since the prior file's positions
-        // were already deducted when it was first committed.
-        //
-        // Everything is normalized to FILE-LOCAL positions: this sink writes DuckLake-spec
-        // `(file_path, pos)` delete files — the only shape DuckDB's reader accepts (it rejects
-        // the connector's legacy single-column `row_id` files outright, which made every
-        // Trino-deleted table unreadable cross-engine until TestDucklakeCrossEngineTrinoDeleteRead
-        // caught it). Legacy `row_id` files carry GLOBAL ids and are rebased by rowIdStart.
+        // The catalog replaces prior delete files atomically, so the new file must retain
+        // their positions or rows resurrect. Only newly deleted positions reduce record_count.
+        // Legacy global row IDs are rebased to the file-local positions required by DuckLake.
         val range: DataFileRange = checkNotNull(findDataFileRange(dataFileId)) {
             "No data file range for data file $dataFileId"
         }
@@ -342,10 +337,10 @@ open class DucklakeMergeSink(
         val outputFile = fileSystem.newOutputFile(filePath)
         val outputStream: OutputStream = outputFile.create()
 
-        val columnNames: List<String> = ImmutableList.of(
+        val columnNames: List<String> = listOf(
                 DucklakeDeleteFileReader.SPEC_FILE_PATH_COLUMN,
                 DucklakeDeleteFileReader.SPEC_POSITION_COLUMN)
-        val columnTypes: List<Type> = ImmutableList.of(VARCHAR, BIGINT)
+        val columnTypes: List<Type> = listOf(VARCHAR, BIGINT)
 
         val schemaConverter = ParquetSchemaConverter(
                 columnTypes, columnNames, false, false)
@@ -397,14 +392,14 @@ open class DucklakeMergeSink(
                 "parquet")
     }
 
-    private fun footerSizeOf(fileMetaData: org.apache.parquet.format.FileMetaData): Long =
+    internal fun footerSizeOf(fileMetaData: org.apache.parquet.format.FileMetaData): Long =
         try {
             val footerOutput = io.airlift.slice.DynamicSliceOutput(40)
             org.apache.parquet.format.Util.writeFileMetaData(fileMetaData, footerOutput)
             footerOutput.size().toLong()
         }
         catch (e: IOException) {
-            0
+            throw TrinoException(GENERIC_INTERNAL_ERROR, "Failed to serialize delete file Parquet footer", e)
         }
 
     /** Resolve a delete-file path to a Location, wrapping a bare local path as a file URI.

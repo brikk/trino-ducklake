@@ -424,3 +424,26 @@ only as a non-Trino-dialect view or not at all. Everything else fails.
 
 **Removal criterion:** the replay library reports which relations a query reads from the lake
 versus the oracle session, and Trino reports the unresolved name structurally.
+
+## Catalog-Stats File Pruning Limits
+
+`DucklakeSplitManager.pruneDataFiles` prunes from the table handle's unenforced predicate through
+`findDataFileIdsInRange`, with bounds rendered by `DucklakeStatsPredicateNormalizer`. It is
+deliberately narrower than the stats allow:
+
+- Only columns whose Trino type is the connector's own mapping of the stored DuckLake type prune
+  (integers, `float32`/`float64`, `decimal(p,s)`, `date`, `timestamp[_s|_ms|_ns]`, `timestamptz`,
+  `varchar`, `boolean`). Unsigned/hugeint promotions, VARCHAR degradations, UUID, binary, time
+  and nested columns keep every file.
+- A domain that admits NULL never prunes: the range API ignores null counts.
+- Exclusive bounds are sent as inclusive, so `c < 11` keeps a file whose min is 11.
+- A file whose `begin_snapshot` precedes the column's current `ducklake_column` version is never
+  excluded by that column. Catalog 0.17.0's `setColumnType` keeps bounds verbatim within a
+  comparison class, so REAL-era text (`0.1`) reads as a smaller DOUBLE than the widened row
+  value after `REAL -> DOUBLE`; upstream DuckLake rewrites (`WriteFloatWidenedStats`) or clears
+  such bounds. Cost: after any column-version change (type change, rename) older files of that
+  column are scanned.
+
+**Removal criterion:** the catalog rewrites or clears bounds on promotions whose text does not
+reread exactly (as upstream does), and exposes per-file stats type provenance; the range API
+accepts exclusive endpoints and null-admitting predicates.

@@ -20,6 +20,7 @@ import io.airlift.log.Logger
 import io.airlift.slice.Slices
 import dev.brikk.ducklake.catalog.ColumnRangePredicate
 import dev.brikk.ducklake.catalog.DucklakeCatalog
+import dev.brikk.ducklake.catalog.DucklakeColumn
 import dev.brikk.ducklake.catalog.DucklakeDataFile
 import dev.brikk.ducklake.catalog.DucklakeInlinedDataInfo
 import dev.brikk.ducklake.catalog.DucklakeFilePartitionValue
@@ -43,9 +44,7 @@ import io.trino.spi.predicate.Domain
 import io.trino.spi.predicate.Range
 import io.trino.spi.predicate.TupleDomain
 import io.trino.spi.type.Type
-import io.trino.spi.type.DateType.DATE
 
-import java.time.LocalDate
 import java.util.Locale
 import java.util.ArrayList
 import java.util.LinkedHashMap
@@ -118,7 +117,7 @@ class DucklakeSplitManager @Inject constructor(
 
             val fileStatisticsDomain: TupleDomain<DucklakeColumnHandle> = buildFileStatisticsDomain(constraint)
                     .intersect(tableHandle.unenforcedPredicate)
-            dataFiles = pruneDataFiles(dataFiles, tableHandle, constraint)
+            dataFiles = pruneDataFiles(dataFiles, tableHandle, fileStatisticsDomain)
             dataFiles = pruneByPartitionValues(dataFiles, tableHandle)
             dataFiles = pruneByPath(dataFiles, tableHandle, tableDataPath)
 
@@ -236,16 +235,21 @@ class DucklakeSplitManager @Inject constructor(
     private fun fetchPartitionNameMaps(mappingIds: Set<Long>): Map<Long, Map<Long, String>> =
         if (mappingIds.isEmpty()) mapOf() else catalog.getPartitionNameMaps(mappingIds)
 
-    private fun pruneDataFiles(dataFiles: List<DucklakeDataFile>, tableHandle: DucklakeTableHandle, constraint: Constraint?): List<DucklakeDataFile> {
-        if (dataFiles.isEmpty()) {
+    /**
+     * Drops data files whose catalog column stats prove that no row can satisfy [predicate]. Trino's
+     * `SplitSourceFactory` calls `getSplits` with a `TupleDomain.all()` summary, so the domains that
+     * matter arrive through [DucklakeTableHandle.unenforcedPredicate], which [predicate] is intersected
+     * with. A column only prunes when [DucklakeStatsPredicateNormalizer] can render its bounds exactly
+     * for the stored DuckLake type; anything else retains every file.
+     */
+    private fun pruneDataFiles(
+            dataFiles: List<DucklakeDataFile>,
+            tableHandle: DucklakeTableHandle,
+            predicate: TupleDomain<DucklakeColumnHandle>): List<DucklakeDataFile> {
+        if (dataFiles.isEmpty() || predicate.isAll) {
             return dataFiles
         }
-
-        if (constraint == null || constraint.summary.isAll) {
-            return dataFiles
-        }
-
-        if (constraint.summary.isNone) {
+        if (predicate.isNone) {
             return listOf()
         }
 
@@ -254,44 +258,47 @@ class DucklakeSplitManager @Inject constructor(
         // enumeration rather than transferring that same set through its old list SQL.
         if (final11Reads && catalog.getSpecVersion() == "1.1") return dataFiles
 
-        val domains: Optional<Map<ColumnHandle, Domain>> = constraint.summary.getDomains()
-        if (domains.isEmpty || domains.get().isEmpty()) {
+        val domains: Map<DucklakeColumnHandle, Domain> = predicate.domains.orElseThrow()
+                .filterKeys { !it.isVirtual() && !it.isRowIdColumn() }
+        if (domains.values.any { it.isNone }) {
+            return listOf()
+        }
+        val candidates = domains.mapNotNull { (column, domain) -> spanOf(domain)?.let { column to it } }
+        if (candidates.isEmpty()) {
             return dataFiles
         }
 
-        val candidateFileIds: MutableSet<Long> = dataFiles.stream()
-                .map { it.dataFileId }
-                .collect(toCollection { LinkedHashSet<Long>() })
+        val storedColumns: Map<Long, DucklakeColumn> = catalog.getTableColumns(tableHandle.tableId, tableHandle.snapshotId)
+                .associateBy { it.columnId }
+        val beginSnapshotByFileId: Map<Long, Long> = dataFiles.associate { it.dataFileId to it.beginSnapshot }
+        val candidateFileIds: MutableSet<Long> = beginSnapshotByFileId.keys.toMutableSet()
         var pruningApplied = false
 
-        for (entry in domains.get().entries) {
-            val key = entry.key
-            if (key !is DucklakeColumnHandle) {
+        for ((column, span) in candidates) {
+            val stored: DucklakeColumn = storedColumns[column.columnId] ?: continue
+            if (!DucklakeStatsPredicateNormalizer.supports(column.columnType, stored.columnType)) {
                 continue
             }
-            val columnHandle: DucklakeColumnHandle = key
-
-            val domain: Domain = entry.value
-            if (domain.isNone) {
-                return listOf()
-            }
-
-            val predicateBounds: Optional<PredicateBounds> = extractPredicateBounds(domain)
-            if (predicateBounds.isEmpty) {
+            val minValue: String? = span.lowValue.orElse(null)?.let { DucklakeStatsPredicateNormalizer.toStatText(column.columnType, it) }
+            val maxValue: String? = span.highValue.orElse(null)?.let { DucklakeStatsPredicateNormalizer.toStatText(column.columnType, it) }
+            if (minValue == null && maxValue == null) {
                 continue
             }
 
-            val bounds: PredicateBounds = predicateBounds.get()
-            val matchingFileIds: List<Long> = catalog.findDataFileIdsInRange(
+            val matchingFileIds: Set<Long> = catalog.findDataFileIdsInRange(
                     tableHandle.tableId,
                     tableHandle.snapshotId,
-                    ColumnRangePredicate(columnHandle.columnId, bounds.minValue, bounds.maxValue))
-
+                    ColumnRangePredicate(column.columnId, minValue, maxValue)).toSet()
             pruningApplied = true
-            candidateFileIds.retainAll(matchingFileIds)
+            // A file written before the column's current version began may carry stats text of an
+            // earlier type (e.g. FLOAT bounds the catalog keeps verbatim across a REAL -> DOUBLE
+            // promotion); parsing it under the current type is not exact, so such a file is kept.
+            candidateFileIds.removeIf { fileId ->
+                fileId !in matchingFileIds && beginSnapshotByFileId.getValue(fileId) >= stored.beginSnapshot
+            }
 
             if (candidateFileIds.isEmpty()) {
-                log.debug("Pruned all data files for table %s using column %s", tableHandle.tableName, columnHandle.columnName)
+                log.debug("Pruned all data files for table %s using column %s", tableHandle.tableName, column.columnName)
                 return listOf()
             }
         }
@@ -300,12 +307,24 @@ class DucklakeSplitManager @Inject constructor(
             return dataFiles
         }
 
-        val prunedDataFiles: List<DucklakeDataFile> = dataFiles.stream()
-                .filter { file -> candidateFileIds.contains(file.dataFileId) }
-                .collect(toImmutableList())
-
+        val prunedDataFiles: List<DucklakeDataFile> = dataFiles.filter { it.dataFileId in candidateFileIds }
         log.debug("Pruned data files from %d to %d for table %s", dataFiles.size, prunedDataFiles.size, tableHandle.tableName)
         return prunedDataFiles
+    }
+
+    /**
+     * The span of an orderable, NULL-excluding domain. A domain that admits NULL cannot prune: the
+     * catalog range check ignores null counts, so a file holding the matching NULLs alongside
+     * out-of-range values would be dropped.
+     */
+    private fun spanOf(domain: Domain): Range? {
+        if (domain.isNullAllowed || domain.values.isAll || domain.values.isNone) {
+            return null
+        }
+        return domain.values.valuesProcessor.transform(
+                { ranges -> if (ranges.rangeCount == 0) null else ranges.span },
+                { _ -> null },
+                { _ -> null })
     }
 
     private fun buildFileStatisticsDomain(constraint: Constraint?): TupleDomain<DucklakeColumnHandle> {
@@ -339,63 +358,6 @@ class DucklakeSplitManager @Inject constructor(
             return TupleDomain.all()
         }
         return TupleDomain.withColumnDomains(result)
-    }
-
-    private fun extractPredicateBounds(domain: Domain): Optional<PredicateBounds> {
-        if (domain.isOnlyNull || domain.values.isAll) {
-            return Optional.empty()
-        }
-
-        return domain.values.valuesProcessor.transform(
-                { ranges ->
-                    if (ranges.rangeCount == 0) {
-                        return@transform Optional.empty<PredicateBounds>()
-                    }
-
-                    val span: Range = ranges.span
-                    val minValue: String? = span.lowValue
-                            .map { value -> normalizePredicateValue(domain.type, value) }
-                            .orElse(null)
-                    val maxValue: String? = span.highValue
-                            .map { value -> normalizePredicateValue(domain.type, value) }
-                            .orElse(null)
-
-                    if (minValue == null && maxValue == null) {
-                        return@transform Optional.empty<PredicateBounds>()
-                    }
-                    Optional.of(PredicateBounds(minValue, maxValue))
-                },
-                { discreteValues -> extractDiscreteValueBounds(domain.type, discreteValues) },
-                { allOrNone -> Optional.empty<PredicateBounds>() })
-    }
-
-    private fun extractDiscreteValueBounds(type: Type, discreteValues: io.trino.spi.predicate.DiscreteValues): Optional<PredicateBounds> {
-        if (discreteValues.valuesCount == 0) {
-            return Optional.empty()
-        }
-
-        var minValue: String? = null
-        var maxValue: String? = null
-        for (value in discreteValues.values) {
-            val normalized: String = normalizePredicateValue(type, value)
-            if (minValue == null || normalized < minValue) {
-                minValue = normalized
-            }
-            if (maxValue == null || normalized > maxValue) {
-                maxValue = normalized
-            }
-        }
-        return Optional.of(PredicateBounds(minValue, maxValue))
-    }
-
-    private fun normalizePredicateValue(type: Type, value: Any): String {
-        if (value is io.airlift.slice.Slice) {
-            return value.toStringUtf8()
-        }
-        if (type == DATE && value is Long) {
-            return LocalDate.ofEpochDay(value).toString()
-        }
-        return value.toString()
     }
 
     /**
@@ -704,8 +666,6 @@ class DucklakeSplitManager @Inject constructor(
         else
             identityPartitionValues + hivePartitionValues
     }
-
-    private data class PredicateBounds(val minValue: String?, val maxValue: String?)
 
     companion object {
         private val log: Logger = Logger.get(DucklakeSplitManager::class.java)

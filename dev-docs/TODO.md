@@ -30,7 +30,18 @@ port, feature and release history is not an instruction to redo shipped work.
 - [ ] Map DuckLake `time_ns`; `DucklakeTypeConverter` refuses it with `NOT_SUPPORTED`
   (`add_files/add_files_type_check_reader_types.test:33` is an engine-skip on that gate).
 - [ ] Support or preflight-refuse every writable physical type before side effects;
-  DDL/type-mapper acceptance is not Parquet-writer support.
+  DDL/type-mapper acceptance is not Parquet-writer support (INSERT into `TIMESTAMP(0)`,
+  `TIMESTAMP(6) WITH TIME ZONE` and `UUID` columns fails in the Parquet writer).
+- [ ] A row-group predicate on a column promoted `REAL -> DOUBLE` fails the scan of REAL-era
+  files: `TupleDomainParquetPredicate` casts the file's Float statistics to Double
+  (`ParquetCorruptionException: Corrupted statistics`). Skip the Parquet domain for columns read
+  through a widening coercion. Reproduced by any `WHERE c = <double>` on such a table; possibly
+  the cause of the `stats/float_to_double_retype_stats.test` mirror errors (unverified).
+- [ ] Catalog 0.17.0 keeps FLOAT bounds verbatim across `REAL -> DOUBLE` (and zoneless bounds
+  across `TIMESTAMP -> TIMESTAMPTZ`); upstream rewrites or clears them. Trino file pruning guards
+  against it (see CRUTCHES "Catalog-Stats File Pruning Limits"), but by upstream's filter SQL
+  (`TRY_CAST(max_value AS DOUBLE)`) DuckDB reading a Trino-promoted table would prune on the
+  stale text (not reproduced). Report/fix in ducklake-catalog.
 - [ ] Honor `add_files.allow_missing` recursively for missing STRUCT children without
   bypassing type validation or changing existing NULL projection semantics.
 - [ ] Keep procedure target-table/raw-file authorization and the other unresolved

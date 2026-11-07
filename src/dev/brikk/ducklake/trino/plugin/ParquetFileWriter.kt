@@ -20,6 +20,8 @@ import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.FORMA
 import io.airlift.slice.DynamicSliceOutput
 import io.trino.parquet.writer.ParquetWriter
 import io.trino.spi.Page
+import io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR
+import io.trino.spi.TrinoException
 import io.trino.spi.block.Block
 import io.trino.spi.type.DoubleType.DOUBLE
 import io.trino.spi.type.RealType.REAL
@@ -29,6 +31,21 @@ import org.apache.parquet.schema.MessageType
 import java.io.IOException
 import java.io.OutputStream
 import java.lang.Float.intBitsToFloat
+
+/**
+ * Thrift length of the Parquet footer (excluding the 8-byte trailer), which the catalog records
+ * as `footer_size`. [ParquetWriter.close] computes this but keeps it private, so it is
+ * re-serialized once per closed file.
+ */
+internal fun parquetFooterSize(fileMetaData: FileMetaData, what: String): Long =
+    try {
+        val footerOutput = DynamicSliceOutput(40)
+        Util.writeFileMetaData(fileMetaData, footerOutput)
+        footerOutput.size().toLong()
+    }
+    catch (e: IOException) {
+        throw TrinoException(GENERIC_INTERNAL_ERROR, "Failed to serialize $what Parquet footer", e)
+    }
 
 /**
  * [DucklakeFileWriter] that delegates to Trino's [ParquetWriter], streaming
@@ -111,22 +128,7 @@ class ParquetFileWriter(
         val recordCount = fileMetaData.num_rows
         val fileSize = parquetWriter.estimatedWrittenBytes
 
-        // We need the Thrift FileMetaData length (excluding the 8-byte trailer) for the write
-        // fragment. ParquetWriter.close() already computed this exact value, but it lives in a
-        // private OptionalInt footerReadSize with no getter (and serializeFooter is private
-        // static), so there is no way to reuse it without patching upstream trino-parquet —
-        // out of scope here. Re-serializing the footer once per closed file is the deliberate,
-        // accepted cost: the footer is metadata-only and tiny relative to the full-file
-        // encoding/compression that just finished, and this runs per file close, not per page.
-        var footerSize: Long
-        try {
-            val footerOutput = DynamicSliceOutput(40)
-            Util.writeFileMetaData(fileMetaData, footerOutput)
-            footerSize = footerOutput.size().toLong()
-        }
-        catch (e: IOException) {
-            footerSize = 0
-        }
+        val footerSize = parquetFooterSize(fileMetaData, "data file")
 
         val extracted: List<DucklakeFileColumnStats> =
                 DucklakeStatsExtractor.extractStats(fileMetaData, leafStatsTargets, parquetSchema)

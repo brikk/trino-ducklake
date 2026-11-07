@@ -56,6 +56,16 @@ class TestDucklakeMergeFailures {
     }
 
     @Test
+    fun dataFileFooterSerializationFailureDoesNotBecomeZero() {
+        assertThatThrownBy { parquetFooterSize(FileMetaData(), "data file") }
+            .isInstanceOfSatisfying(TrinoException::class.java) {
+                assertThat(it.errorCode).isEqualTo(GENERIC_INTERNAL_ERROR.toErrorCode())
+                assertThat(it.cause).isInstanceOf(IOException::class.java)
+            }
+            .hasMessageContaining("data file Parquet footer")
+    }
+
+    @Test
     fun directAndFutureTrinoFailuresArePreserved() {
         val fixture = Fixture()
         val failure = TrinoException(NOT_SUPPORTED, "insert rejected")

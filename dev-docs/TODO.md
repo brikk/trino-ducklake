@@ -13,8 +13,6 @@ port, feature and release history is not an instruction to redo shipped work.
 
 - [x] Fail loudly on present-but-unparseable partition/default values; do not project
   SQL NULL merely because conversion failed.
-- [ ] Fail loudly on INSERT/CTAS footer serialization errors in
-  `ParquetFileWriter.finishAndBuildFragment`; it still substitutes a zero footer-size hint.
 - [ ] Complete legacy/unsigned/type-edge qualification: unsigned Parquet annotations,
   files without IDs/name maps, unsupported encodings, and final-1.1 type/statistics
   behavior. Keep advertised support within actual reader/writer capability (RV-18).

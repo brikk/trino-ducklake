@@ -393,14 +393,7 @@ open class DucklakeMergeSink(
     }
 
     internal fun footerSizeOf(fileMetaData: org.apache.parquet.format.FileMetaData): Long =
-        try {
-            val footerOutput = io.airlift.slice.DynamicSliceOutput(40)
-            org.apache.parquet.format.Util.writeFileMetaData(fileMetaData, footerOutput)
-            footerOutput.size().toLong()
-        }
-        catch (e: IOException) {
-            throw TrinoException(GENERIC_INTERNAL_ERROR, "Failed to serialize delete file Parquet footer", e)
-        }
+        parquetFooterSize(fileMetaData, "delete file")
 
     /** Resolve a delete-file path to a Location, wrapping a bare local path as a file URI.
      * Prefix file:// on the RAW path (not Path.toUri(), which percent-encodes and would

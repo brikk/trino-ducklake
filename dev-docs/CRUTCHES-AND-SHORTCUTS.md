@@ -3,14 +3,6 @@
 This inventory records the safety restrictions introduced for RV-03 and RV-04. It is not an audit
 claim that all older debt is listed here; see [the review](REVIEW-2026-09-05.md) for that assessment.
 
-## INSERT/CTAS footer-size fallback
-
-`ParquetFileWriter.finishAndBuildFragment` still substitutes a zero footer-size hint
-when Thrift footer serialization throws `IOException`. Readers can recover by reading
-the file tail, but the write hides the metadata failure. Remove this fallback with a
-focused failure-injection test. The merge sink's separate footer serializer now throws
-`GENERIC_INTERNAL_ERROR`; the ordinary writer is outside that fix's scope.
-
 ## Trino 484 retained-memory reporting
 
 The 484 SPI contexts receive conservative reservations for the merge sink's retained delete

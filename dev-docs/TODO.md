@@ -108,6 +108,11 @@ port, feature and release history is not an instruction to redo shipped work.
 
 ## Architecture and delivery hygiene
 
+- [ ] Repair opt-in qualification fixtures' explicit format selection: the four legacy
+  `TestPublishedNestedReads` cases select a 1.1 client for 1.0 lakes; the two direct-reader
+  statistics cases in `TestR07ConsumerTrial` enable 1.1 reads after constructing a catalog
+  config still locked to 1.0. These six failures reproduce on `bca49a1`, before WP4.
+  Match each fixture's stored format without weakening catalog admission or adding skips.
 - [ ] Restore useful per-directory corpus qualification without weakening gates:
   `merge` has no accepted alias-qualified lake reads and fails minimum mirror coverage;
   `partitioning` has implicit newer-format fixtures rejected by the fixed DuckLake 1.0

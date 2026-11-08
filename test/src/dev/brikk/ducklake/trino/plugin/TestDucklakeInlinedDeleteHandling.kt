@@ -177,7 +177,7 @@ class TestDucklakeInlinedDeleteHandling {
 
             val typeConverter = DucklakeTypeConverter(
                     io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER)
-            val metadata = DucklakeMetadata(fx.catalog, typeConverter)
+            val metadata = testingDucklakeMetadata(fx.catalog, typeConverter)
 
             // Baseline: stats should be present with row count + column stats.
             val baseline = metadata.getTableStatistics(SESSION, tableHandle)

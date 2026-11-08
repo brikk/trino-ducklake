@@ -13,6 +13,7 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
+import dev.brikk.ducklake.trino.plugin.DucklakeMetadata.Companion.getSnapshotTimestampFromVersion
 import io.trino.spi.connector.ConnectorSession
 import io.trino.spi.connector.ConnectorTableVersion
 import io.trino.spi.connector.PointerType
@@ -24,7 +25,6 @@ import io.trino.spi.type.TimestampWithTimeZoneType.TIMESTAMP_TZ_MILLIS
 import io.trino.testing.TestingConnectorSession
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
-import java.lang.reflect.Method
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -72,35 +72,11 @@ class TestDucklakeMetadataTemporalVersionConversion {
     }
 
     companion object {
-        private val GET_SNAPSHOT_TIMESTAMP_FROM_VERSION: Method = getSnapshotTimestampMethod()
-
         private fun sessionWithTimeZone(timeZoneId: String): ConnectorSession {
             return TestingConnectorSession.builder()
                     .setTimeZoneKey(getTimeZoneKey(timeZoneId))
                     .build()
         }
 
-        private fun getSnapshotTimestampFromVersion(session: ConnectorSession, version: ConnectorTableVersion): Instant {
-            try {
-                return GET_SNAPSHOT_TIMESTAMP_FROM_VERSION.invoke(null, session, version) as Instant
-            }
-            catch (e: ReflectiveOperationException) {
-                throw RuntimeException("Unable to invoke DucklakeMetadata#getSnapshotTimestampFromVersion", e)
-            }
-        }
-
-        private fun getSnapshotTimestampMethod(): Method {
-            try {
-                val method = DucklakeMetadata::class.java.getDeclaredMethod(
-                        "getSnapshotTimestampFromVersion",
-                        ConnectorSession::class.java,
-                        ConnectorTableVersion::class.java)
-                method.isAccessible = true
-                return method
-            }
-            catch (e: ReflectiveOperationException) {
-                throw RuntimeException("Unable to access DucklakeMetadata#getSnapshotTimestampFromVersion", e)
-            }
-        }
     }
 }

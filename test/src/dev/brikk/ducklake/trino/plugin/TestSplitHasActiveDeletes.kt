@@ -72,7 +72,7 @@ internal class TestSplitHasActiveDeletes {
     }
 
     private fun baseSplit(deleteFilePaths: List<String>, inlinedDeletedRowPositions: Set<Long>): DucklakeSplit {
-        return DucklakeSplit(
+        return testingDucklakeSplit(
                 "/data/00000-data.parquet",
                 deleteFilePaths,
                 /* rowIdStart */ 0L,

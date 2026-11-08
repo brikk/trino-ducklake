@@ -19,11 +19,15 @@ import io.trino.spi.type.BigintType.BIGINT
 import io.trino.spi.type.DecimalType
 import io.trino.spi.type.DoubleType.DOUBLE
 import io.trino.spi.type.RealType.REAL
+import io.trino.spi.type.TimestampType.TIMESTAMP_MICROS
+import io.trino.spi.type.TimestampWithTimeZoneType.TIMESTAMP_TZ_MICROS
+import io.trino.spi.type.LongTimestampWithTimeZone
 import io.trino.spi.type.VarbinaryType.VARBINARY
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Test
 import java.math.BigDecimal
+import java.time.Instant
 
 /**
  * Unit tests for `DucklakeInlinedValueConverter.decodeBlobText` — the inverse of
@@ -31,6 +35,23 @@ import java.math.BigDecimal
  * `TestDucklakeCrossEngineTypeAudit.testDuckdbListBlobReadsInTrino`.
  */
 class TestDucklakeInlinedValueConverter {
+    @Test
+    fun testTimestampOffsetNormalization() {
+        val instant = Instant.parse("2024-06-15T08:30:45.123456Z")
+        val epochMicros = instant.epochSecond * 1_000_000 + instant.nano / 1_000
+        for (offset in listOf("+02", "+0200", "+02:00")) {
+            val text = "2024-06-15 10:30:45.123456$offset"
+            assertThat(DucklakeInlinedValueConverter.convertJdbcValue(text, TIMESTAMP_MICROS))
+                .isEqualTo(epochMicros)
+            val zoned = DucklakeInlinedValueConverter.convertJdbcValue(text, TIMESTAMP_TZ_MICROS)
+                    as LongTimestampWithTimeZone
+            assertThat(zoned.epochMillis).isEqualTo(epochMicros / 1_000)
+            assertThat(zoned.picosOfMilli).isEqualTo(456_000_000)
+        }
+        assertThat(DucklakeInlinedValueConverter.convertJdbcValue(
+            "2024-06-15 06:30:45.123456-02", TIMESTAMP_MICROS)).isEqualTo(epochMicros)
+    }
+
     @Test
     fun testAllNonPrintableBytesDecode() {
         // BLOB '\x00\x01\xFF' is serialized as plain `\x00\x01\xFF` (no quoting — the list-cast

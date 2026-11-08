@@ -141,7 +141,7 @@ class TestDucklakeCatalog {
 
         val typeConverter = DucklakeTypeConverter(
                 io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER)
-        val metadata = DucklakeMetadata(catalog, typeConverter)
+        val metadata = testingDucklakeMetadata(checkNotNull(catalog), typeConverter)
 
         val stats = metadata.getTableStatistics(
                 io.trino.testing.connector.TestingConnectorSession.SESSION, tableHandle)
@@ -162,7 +162,7 @@ class TestDucklakeCatalog {
 
         val typeConverter = DucklakeTypeConverter(
                 io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER)
-        val metadata = DucklakeMetadata(catalog, typeConverter)
+        val metadata = testingDucklakeMetadata(checkNotNull(catalog), typeConverter)
         val stats = metadata.getTableStatistics(
                 io.trino.testing.connector.TestingConnectorSession.SESSION, tableHandle)
 
@@ -195,7 +195,7 @@ class TestDucklakeCatalog {
 
         val typeConverter = DucklakeTypeConverter(
                 io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER)
-        val metadata = DucklakeMetadata(catalog, typeConverter)
+        val metadata = testingDucklakeMetadata(checkNotNull(catalog), typeConverter)
         val stats = metadata.getTableStatistics(
                 io.trino.testing.connector.TestingConnectorSession.SESSION, tableHandle)
 
@@ -220,7 +220,7 @@ class TestDucklakeCatalog {
 
         val typeConverter = DucklakeTypeConverter(
                 io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER)
-        val metadata = DucklakeMetadata(catalog, typeConverter)
+        val metadata = testingDucklakeMetadata(checkNotNull(catalog), typeConverter)
         val stats = metadata.getTableStatistics(
                 io.trino.testing.connector.TestingConnectorSession.SESSION, tableHandle)
 
@@ -237,7 +237,7 @@ class TestDucklakeCatalog {
 
         val typeConverter = DucklakeTypeConverter(
                 io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER)
-        val metadata = DucklakeMetadata(catalog, typeConverter)
+        val metadata = testingDucklakeMetadata(checkNotNull(catalog), typeConverter)
         val stats = metadata.getTableStatistics(
                 io.trino.testing.connector.TestingConnectorSession.SESSION, tableHandle)
 
@@ -253,7 +253,7 @@ class TestDucklakeCatalog {
 
         val typeConverter = DucklakeTypeConverter(
                 io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER)
-        val metadata = DucklakeMetadata(catalog, typeConverter)
+        val metadata = testingDucklakeMetadata(checkNotNull(catalog), typeConverter)
         val stats = metadata.getTableStatistics(
                 io.trino.testing.connector.TestingConnectorSession.SESSION, tableHandle)
 
@@ -270,7 +270,7 @@ class TestDucklakeCatalog {
 
         val typeConverter = DucklakeTypeConverter(
                 io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER)
-        val metadata = DucklakeMetadata(catalog, typeConverter)
+        val metadata = testingDucklakeMetadata(checkNotNull(catalog), typeConverter)
         val stats = metadata.getTableStatistics(
                 io.trino.testing.connector.TestingConnectorSession.SESSION, tableHandle)
 
@@ -287,7 +287,7 @@ class TestDucklakeCatalog {
 
         val typeConverter = DucklakeTypeConverter(
                 io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER)
-        val metadata = DucklakeMetadata(catalog, typeConverter)
+        val metadata = testingDucklakeMetadata(checkNotNull(catalog), typeConverter)
         val stats = metadata.getTableStatistics(
                 io.trino.testing.connector.TestingConnectorSession.SESSION, tableHandle)
 
@@ -361,7 +361,7 @@ class TestDucklakeCatalog {
     private fun createMetadata(): DucklakeMetadata {
         val typeConverter = DucklakeTypeConverter(
                 io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER)
-        return DucklakeMetadata(catalog, typeConverter)
+        return testingDucklakeMetadata(checkNotNull(catalog), typeConverter)
     }
 
     private fun getSchemaEvolutionHistoricalSnapshotId(): Long {

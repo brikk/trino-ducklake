@@ -13,7 +13,6 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
-import com.google.common.collect.ImmutableList.toImmutableList
 import dev.brikk.ducklake.catalog.DucklakeWriteFragment
 import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.FORMAT_PARQUET
 import io.airlift.json.JsonCodec
@@ -38,7 +37,6 @@ import org.apache.parquet.format.CompressionCodec
 import org.apache.parquet.schema.MessageType
 import java.io.IOException
 import java.io.UncheckedIOException
-import java.util.Objects.requireNonNull
 import java.util.Optional
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
@@ -50,13 +48,13 @@ class DucklakePageSink(
         private val fragmentCodec: JsonCodec<DucklakeWriteFragment>,
         parquetWriterConfig: ParquetWriterConfig,
         private val trinoVersion: String,
-        pageIndexerFactory: PageIndexerFactory?,
+        pageIndexerFactory: PageIndexerFactory,
         /**
          * Trino's in-memory sorter, used ONLY when [DucklakeWritableTableHandle.sortColumns] is
          * non-empty (gated to parquet + unpartitioned + resolvable sort spec in
-         * [DucklakeMetadata]). Null-safe: when sorting is inactive it is never touched.
+         * [DucklakeMetadata]).
          */
-        private val pageSorter: PageSorter? = null,
+        private val pageSorter: PageSorter,
         /**
          * Lineage-preserving mode (UPDATE/MERGE rewrites): every page appended to
          * this sink carries ONE extra trailing BIGINT channel holding each row's
@@ -80,8 +78,8 @@ class DucklakePageSink(
 
     private val columnTypes: List<Type>
     private val columnNames: List<String>
-    private val messageType: MessageType?
-    private val primitiveTypes: Map<List<String>, Type>?
+    private val messageType: MessageType
+    private val primitiveTypes: Map<List<String>, Type>
     private val unsignedRangeChecker: DucklakeUnsignedRangeChecker
 
     // Partition support
@@ -122,10 +120,6 @@ class DucklakePageSink(
             "writeRowLineage is parquet-only (fileFormat=$fileFormat)"
         }
 
-        // Build the Parquet schema only when we're actually writing Parquet.
-        // The DuckDB-format path doesn't use these fields, and ParquetSchemaConverter
-        // rejects column types it doesn't recognize (UUID, future types) — building it
-        // unconditionally would block those types from ever reaching the duckdb writer.
         if (FORMAT_PARQUET.equals(fileFormat, ignoreCase = true)) {
             // Lineage mode appends the synthetic rowid column LAST so all
             // catalog-derived leaf stats indexes stay valid.
@@ -151,14 +145,13 @@ class DucklakePageSink(
             )
         }
         else {
-            this.primitiveTypes = null
-            this.messageType = null
+            throw TrinoException(StandardErrorCode.NOT_SUPPORTED, "Unsupported data file format: $fileFormat")
         }
 
         // Set up partitioner if table is partitioned
         if (handle.partitionSpec.isPresent) {
             this.partitioner = DucklakePagePartitioner(
-                    requireNonNull(pageIndexerFactory, "pageIndexerFactory is null")!!,
+                    pageIndexerFactory,
                     handle.partitionSpec.get(),
                     handle.columns,
                     handle.temporalPartitionEncoding)
@@ -170,13 +163,10 @@ class DucklakePageSink(
         // Sorting is active only when the handle carries a resolved prefix AND the local
         // invariants hold: parquet writer path and no partitioner. (DucklakeMetadata already
         // guarantees these when it populates sortColumns; the defensive re-check keeps the
-        // no-buffering contract for every other path.) pageSorter must be present when active.
+        // no-buffering contract for every other path.)
         this.sortingActive = sortColumns.isNotEmpty() &&
                 partitioner == null &&
                 FORMAT_PARQUET.equals(fileFormat, ignoreCase = true)
-        if (sortingActive) {
-            requireNonNull(pageSorter, "pageSorter is null but sorting is active")
-        }
         // Channel types the PageSorter sees. Mirrors the parquet writer's channel layout: the
         // catalog columns, plus the trailing synthetic rowid channel in lineage mode. Sort
         // channels only ever index the leading catalog columns, so the extra channel simply
@@ -233,7 +223,7 @@ class DucklakePageSink(
                 appendUnpartitioned(page)
             }
             else {
-                appendPartitioned(page)
+                appendPartitioned(page, partitioner)
             }
         }
         catch (e: IOException) {
@@ -267,8 +257,7 @@ class DucklakePageSink(
     }
 
     @Throws(IOException::class)
-    private fun appendPartitioned(page: Page) {
-        val partitioner = this.partitioner!!
+    private fun appendPartitioned(page: Page, partitioner: DucklakePagePartitioner) {
         val writerIndexes = partitioner.partitionPage(page)
         val maxIndex = partitioner.getMaxIndex()
         val positionCount = page.positionCount
@@ -295,7 +284,10 @@ class DucklakePageSink(
         val fillOffsets = IntArray(maxIndex + 1)
         for (position in 0 until positionCount) {
             val writerIndex = writerIndexes[position]
-            positionsByWriter[writerIndex]!![fillOffsets[writerIndex]++] = position
+            val positions = checkNotNull(positionsByWriter[writerIndex]) {
+                "Missing position bucket for writer $writerIndex"
+            }
+            positions[fillOffsets[writerIndex]++] = position
         }
 
         // Write to each partition's writer
@@ -340,9 +332,9 @@ class DucklakePageSink(
             throw UncheckedIOException("Failed to close writer", e)
         }
 
-        val fragments: List<Slice> = completedFragments.stream()
-                .map { fragment -> Slices.wrappedBuffer(*fragmentCodec.toJsonBytes(fragment)) }
-                .collect(toImmutableList())
+        val fragments: List<Slice> = completedFragments.map { fragment ->
+            Slices.wrappedBuffer(*fragmentCodec.toJsonBytes(fragment))
+        }
 
         return completedFuture(fragments)
     }
@@ -360,7 +352,7 @@ class DucklakePageSink(
         val expectedPositions: Int = totalPositions.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
         val sortChannels: List<Int> = sortColumns.map { it.channel }
         val sortOrders: List<io.trino.spi.connector.SortOrder> = sortColumns.map { it.sortOrder }
-        val sorted: Iterator<Page> = pageSorter!!.sort(
+        val sorted: Iterator<Page> = pageSorter.sort(
                 sortTypes,
                 bufferedPages,
                 sortChannels,
@@ -406,8 +398,6 @@ class DucklakePageSink(
         if (FORMAT_PARQUET.equals(fileFormat, ignoreCase = true)) {
             return openParquetWriter(partitionValues)
         }
-        // Parquet is the only supported data-file format; the duckdb/vortex/lance writers were
-        // removed (see PLAN-duckdb-parity-moveout.md §4.2). Fail loud on any stray format.
         throw TrinoException(StandardErrorCode.NOT_SUPPORTED, "Unsupported data file format: $fileFormat")
     }
 
@@ -424,8 +414,8 @@ class DucklakePageSink(
 
         val parquetWriter = ParquetWriter(
                 outputStream,
-                messageType!!,
-                primitiveTypes!!,
+                messageType,
+                primitiveTypes,
                 writerOptions,
                 CompressionCodec.ZSTD,
                 trinoVersion,
@@ -443,24 +433,16 @@ class DucklakePageSink(
             return fileName
         }
         val pathBuilder = StringBuilder()
-        partitionValues.entries.stream()
-                .sorted(java.util.Map.Entry.comparingByKey())
-                .forEach { entry ->
-                    val colName = partitioner!!.getPartitionColumnName(entry.key)
-                    // Percent-encode key AND value the same way DuckDB/DuckLake do
-                    // (HivePartitioning::Escape), so the path round-trips through our own read side
-                    // and matches cross-engine. A NULL projects the raw sentinel (its chars are all
-                    // unreserved, so it is byte-identical whether encoded or not). See
-                    // DucklakeHivePartitionCodec.
-                    val encodedKey = DucklakeHivePartitionCodec.encode(colName)
-                    val encodedValue: String = if (entry.value != null) {
-                        DucklakeHivePartitionCodec.encode(entry.value!!)
-                    }
-                    else {
-                        DucklakeHivePartitionCodec.HIVE_DEFAULT_PARTITION
-                    }
-                    pathBuilder.append(encodedKey).append("=").append(encodedValue).append("/")
-                }
+        val partitioner = checkNotNull(partitioner) { "Partition values require a partitioned table" }
+        partitionValues.toSortedMap().forEach { (key, value) ->
+            val colName = partitioner.getPartitionColumnName(key)
+            // Mirrors DuckLake's HivePartitioning::Escape for both keys and values;
+            // the NULL sentinel already consists entirely of unreserved characters.
+            val encodedKey = DucklakeHivePartitionCodec.encode(colName)
+            val encodedValue = value?.let(DucklakeHivePartitionCodec::encode)
+                    ?: DucklakeHivePartitionCodec.HIVE_DEFAULT_PARTITION
+            pathBuilder.append(encodedKey).append("=").append(encodedValue).append("/")
+        }
         pathBuilder.append(fileName)
         return pathBuilder.toString()
     }

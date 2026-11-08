@@ -16,9 +16,9 @@ out/
 .project
 .classpath
 .qodana/
+.ai/
 
-# Qodana spills its container HOME (JDK downloads, prefs) into the repo root via the
-# bind mount when `qodana scan` runs from jvm/. Ignore the leakage.
+# Ignore local tool downloads and preferences.
 /.java/
 /.jdks/
 /.local/

@@ -54,6 +54,8 @@ import java.time.format.DateTimeParseException
  * compatible with InMemoryRecordSet.
  */
 object DucklakeInlinedValueConverter {
+    private val HOUR_OFFSET = Regex(".*[+-][0-9]{2}$")
+    private val COMPACT_OFFSET = Regex(".*[+-][0-9]{4}$")
 
     /**
      * Convert a JDBC value to the representation expected by InMemoryRecordSet for the given Trino type.
@@ -479,10 +481,10 @@ object DucklakeInlinedValueConverter {
 
     private fun normalizeTimestampText(value: String): String {
         var normalized = value.trim().replace(' ', 'T')
-        if (normalized.matches(Regex(".*[+-][0-9]{2}$"))) {
-            "$normalized:00"
+        if (normalized.matches(HOUR_OFFSET)) {
+            normalized = "$normalized:00"
         }
-        if (normalized.matches(Regex(".*[+-][0-9]{4}$"))) {
+        if (normalized.matches(COMPACT_OFFSET)) {
             normalized = normalized.substring(0, normalized.length - 5) +
                     normalized.substring(normalized.length - 5, normalized.length - 2) +
                     ":" +

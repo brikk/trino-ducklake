@@ -78,7 +78,6 @@ import io.trino.spi.predicate.Domain
 import io.trino.spi.predicate.TupleDomain
 import io.trino.spi.type.BigintType.BIGINT
 import io.trino.spi.type.IntegerType.INTEGER
-import io.trino.spi.type.RowType
 import io.trino.spi.type.VarcharType.VARCHAR
 import io.trino.spi.type.TimeZoneKey.UTC_KEY
 import io.trino.spi.type.TimestampWithTimeZoneType.TIMESTAMP_TZ_MILLIS
@@ -90,10 +89,8 @@ import org.apache.parquet.io.PrimitiveColumnIO
 import org.apache.parquet.schema.MessageType
 import org.joda.time.DateTimeZone.UTC
 import java.io.IOException
-import java.nio.file.Path
 import java.time.Instant
 import java.util.ArrayList
-import java.util.Locale
 import java.util.Optional
 import java.util.OptionalLong
 import java.util.function.Function
@@ -206,8 +203,7 @@ class DucklakePageSourceProvider @Inject constructor(
      * ([createChangeFeedPageSource]), which drives it per data file requesting the table columns +
      * `$row_id`. Positional virtuals ($row_id / $file_row_number) requested in [sourceColumns] are
      * still injected in-pipeline by the reader; the split's own delete files (if any) are applied
-     * there too. Non-parquet data-file formats fail loud (§7 guard) — this connector reads only
-     * parquet; the duckdb/vortex/lance read paths were removed (see brikk/duckbridge).
+     * there too. Non-parquet data-file formats are rejected.
      */
     @Throws(IOException::class)
     private fun createDataFilePageSource(
@@ -1305,34 +1301,11 @@ class DucklakePageSourceProvider @Inject constructor(
                                 eraColumnTree,
                                 defaults != null)
                     }
-            // B3b: when the split carries active position deletes, disable in-reader predicate
-            // pushdown (row-group pruning + page-level skipping). PositionalVirtualInjectingPageSource and
-            // DeleteRowFilterTransform derive file positions from cumulative page sizes
-            // (nextRowOffset += positionCount), which only matches true file positions when
-            // pages stream contiguously from row 0. Pruning creates gaps and mis-aligns the
-            // counter, masking the wrong rows. Trino's filter pipeline still applies the
-            // predicate above the page source, so query semantics are preserved — we just
-            // give up row-group pruning on files that carry deletes. The performant
-            // alternative (project the parquet file_row_number via appendRowNumberColumn and
-            // thread it through both transforms) is deferred — see PLAN.md / BEFORE-RESUME B3b.
-            //
-            // INVARIANT: B3b's correctness ALSO depends on splits being whole-file. The
-            // cumulative-offset math seeds nextRowOffset at 0; if a split ever covers a
-            // sub-range of a file (split-by-rowgroup for parallel reads of large files, as
-            // Iceberg/Hive do), this fix is INSUFFICIENT — nextRowOffset would also need to
-            // be seeded from the split's start offset. Today DucklakeSplitManager.createMergedSplit
-            // produces one split per data_file_id (passing primary.fileSizeBytes() and
-            // start=0 throughout), and getFilteredRowGroups below is called with start=0 /
-            // length=split.fileSizeBytes(), so this invariant holds. Any change to split
-            // granularity MUST re-derive position math (or do the performant fix above).
-            // Positions for $file_row_number / $row_id come from the cumulative page offset, which
-            // only matches true file positions when the reader streams contiguously from row 0.
-            // Predicate pushdown can prune row groups and break that, so disable it when ANY
-            // positional column is requested — the queryable virtuals (perRow) AND the MERGE
-            // $row_id (-100). The rowIds captured by a DELETE/UPDATE/MERGE source scan become
-            // delete-file positions, so a pruned merge scan tombstones the WRONG rows. Caught
-            // row-level on the duckdb-format path (AbstractDucklakeRowLevelFormatTest); the
-            // parquet variant was latent only because pruning is row-group-granular.
+            // Delete matching and positional columns derive file positions from cumulative
+            // page sizes. They require whole-file splits streaming contiguously from row 0:
+            // row-group/page pruning would create gaps and identify the wrong rows. Trino
+            // still applies the residual predicate above this source. Finer split granularity
+            // requires authoritative file positions rather than a zero-seeded page counter.
             val requiresContiguousPositions: Boolean =
                     splitHasActiveDeletes(split) || columns.any { positionalColumnKind(it) != null }
             val parquetTupleDomain: TupleDomain<ColumnDescriptor> =
@@ -1644,11 +1617,10 @@ class DucklakePageSourceProvider @Inject constructor(
          * delete files or inlined deletes from `ducklake_inlined_delete_<tableId>`.
          *
          * When this returns `true`, the page-source pipeline must NOT push the query
-         * predicate down into the parquet reader or the DuckDB scan: doing so prunes row groups
+         * predicate down into the parquet reader: doing so prunes row groups
          * / skips rows inside the underlying file, breaking the cumulative-offset math that
          * [PositionalVirtualInjectingPageSource] and [DeleteRowFilterTransform] use to compute
-         * file-absolute positions for delete matching (B3b — see the bug trace and option-(B)
-         * fix in `.ai/kotlin-port/BEFORE-RESUME.md`).
+         * file-absolute positions for delete matching.
          */
         fun splitHasActiveDeletes(split: DucklakeSplit): Boolean =
             split.deleteFilePaths.isNotEmpty() || split.inlinedDeletedRowPositions.isNotEmpty() ||
@@ -1799,7 +1771,7 @@ class DucklakePageSourceProvider @Inject constructor(
 
         /**
          * Single-position constant block for a virtual column on a file-backed split
-         * (parquet or duckdb): $path = the data file path, $snapshot_id = the file's
+         * (parquet): $path = the data file path, $snapshot_id = the file's
          * begin_snapshot. The injecting page source RLE-expands it to each page.
          */
         private fun dataFileVirtualBlock(kind: VirtualKind, split: DucklakeSplit): Block = when (kind) {

@@ -136,7 +136,7 @@ class TestPublishedNestedReads {
                     assertThat(parsed).isEqualTo(converter.toTrinoType(tree.single { it.columnId == struct.columnId }, tree))
                     assertThat(tree.filter { it.parentColumn == struct.columnId }.sortedBy { it.columnOrder }.map { it.columnName })
                         .containsExactlyElementsOf(expected)
-                    val metadata = DucklakeMetadata(catalog, converter).getTableMetadata(SESSION,
+                    val metadata = testingDucklakeMetadata(catalog, converter).getTableMetadata(SESSION,
                         DucklakeTableHandle("main", "t", table.tableId, snapshot))
                     val byName = metadata.columns.associate { it.name to it.type }
                     assertThat((byName.getValue("s") as RowType).fields.map { it.name.orElseThrow() })

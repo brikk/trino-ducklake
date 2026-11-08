@@ -100,7 +100,7 @@ class TestDucklakePartitionPruning {
     @Test
     fun testApplyFilterClassifiesEnforcedPredicate() {
         val typeConverter = DucklakeTypeConverter(TESTING_TYPE_MANAGER)
-        val metadata = DucklakeMetadata(catalog, typeConverter)
+        val metadata = testingDucklakeMetadata(catalog, typeConverter)
 
         val tableHandle = DucklakeTableHandle(
             "test_schema", "partitioned_table", partitionedTable.tableId, snapshotId
@@ -139,7 +139,7 @@ class TestDucklakePartitionPruning {
     @Test
     fun testApplyFilterNonPartitionColumnIsUnenforced() {
         val typeConverter = DucklakeTypeConverter(TESTING_TYPE_MANAGER)
-        val metadata = DucklakeMetadata(catalog, typeConverter)
+        val metadata = testingDucklakeMetadata(catalog, typeConverter)
 
         val tableHandle = DucklakeTableHandle(
             "test_schema", "partitioned_table", partitionedTable.tableId, snapshotId
@@ -178,7 +178,7 @@ class TestDucklakePartitionPruning {
     @Test
     fun testApplyFilterAllConstraintReturnsEmpty() {
         val typeConverter = DucklakeTypeConverter(TESTING_TYPE_MANAGER)
-        val metadata = DucklakeMetadata(catalog, typeConverter)
+        val metadata = testingDucklakeMetadata(catalog, typeConverter)
 
         val tableHandle = DucklakeTableHandle(
             "test_schema", "partitioned_table", partitionedTable.tableId, snapshotId
@@ -192,7 +192,7 @@ class TestDucklakePartitionPruning {
     @Test
     fun testApplyFilterNoneConstraintProducesUnsatisfiableHandle() {
         val typeConverter = DucklakeTypeConverter(TESTING_TYPE_MANAGER)
-        val metadata = DucklakeMetadata(catalog, typeConverter)
+        val metadata = testingDucklakeMetadata(catalog, typeConverter)
 
         val tableHandle = DucklakeTableHandle(
             "test_schema", "partitioned_table", partitionedTable.tableId, snapshotId
@@ -208,7 +208,7 @@ class TestDucklakePartitionPruning {
     @Test
     fun testApplyFilterIsIdempotentForSamePredicate() {
         val typeConverter = DucklakeTypeConverter(TESTING_TYPE_MANAGER)
-        val metadata = DucklakeMetadata(catalog, typeConverter)
+        val metadata = testingDucklakeMetadata(catalog, typeConverter)
 
         val tableHandle = DucklakeTableHandle(
             "test_schema", "partitioned_table", partitionedTable.tableId, snapshotId
@@ -235,7 +235,7 @@ class TestDucklakePartitionPruning {
     @Test
     fun testApplyFilterIgnoresComplexTypePredicate() {
         val typeConverter = DucklakeTypeConverter(TESTING_TYPE_MANAGER)
-        val metadata = DucklakeMetadata(catalog, typeConverter)
+        val metadata = testingDucklakeMetadata(catalog, typeConverter)
 
         val nestedTable = catalog.listSchemas(snapshotId).stream()
             .filter { it.schemaName == "test_schema" }
@@ -316,7 +316,7 @@ class TestDucklakePartitionPruning {
     @Test
     fun testNonPartitionedTableAllPredicatesUnenforced() {
         val typeConverter = DucklakeTypeConverter(TESTING_TYPE_MANAGER)
-        val metadata = DucklakeMetadata(catalog, typeConverter)
+        val metadata = testingDucklakeMetadata(catalog, typeConverter)
 
         // Use simple_table which is NOT partitioned
         val simpleTable = catalog.listSchemas(snapshotId).stream()
@@ -379,7 +379,7 @@ class TestDucklakePartitionPruning {
     @Test
     fun testApplyFilterClassifiesTemporalPartitionAsEnforced() {
         val typeConverter = DucklakeTypeConverter(TESTING_TYPE_MANAGER)
-        val metadata = DucklakeMetadata(catalog, typeConverter)
+        val metadata = testingDucklakeMetadata(catalog, typeConverter)
 
         val tableHandle = DucklakeTableHandle(
             "test_schema", "temporal_partitioned_table",
@@ -801,7 +801,7 @@ class TestDucklakePartitionPruning {
     @Test
     fun testTimestampTzApplyFilterClassifiesAsEnforced() {
         val typeConverter = DucklakeTypeConverter(TESTING_TYPE_MANAGER)
-        val metadata = DucklakeMetadata(catalog, typeConverter)
+        val metadata = testingDucklakeMetadata(catalog, typeConverter)
 
         val tableHandle = DucklakeTableHandle(
             "test_schema", "timestamp_partitioned_table",

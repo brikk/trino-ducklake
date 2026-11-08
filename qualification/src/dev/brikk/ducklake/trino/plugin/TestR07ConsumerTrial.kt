@@ -200,7 +200,7 @@ class TestR07ConsumerTrial {
                 val snapshot = c.currentSnapshotId
                 val table = c.getTable("main", "t", snapshot)!!
                 assertThatThrownBy { c.getLiveRowCount(table.tableId, old) }.hasMessageContaining("historical")
-                val metadata = DucklakeMetadata(c, DucklakeTypeConverter(TESTING_TYPE_MANAGER))
+                val metadata = testingDucklakeMetadata(c, DucklakeTypeConverter(TESTING_TYPE_MANAGER))
                 assertThat(metadata.getTableStatistics(SESSION, DucklakeTableHandle("main", "t", table.tableId, old)).rowCount.isUnknown).isTrue()
                 assertThat(c.getLiveRowCount(table.tableId, snapshot)).isEqualTo(2)
                 assertThat(c.getColumnStats(table.tableId, snapshot).map { it.minValue }).containsOnlyNulls()
@@ -338,7 +338,7 @@ class TestR07ConsumerTrial {
             val plan = f.plan(c)
             c.readSession(Supplier {
                 assertThatThrownBy { c.getLiveRowCount(plan.handle.tableId, plan.handle.snapshotId) }.hasMessageContaining("cannot assume zero")
-                val metadata = DucklakeMetadata(c, DucklakeTypeConverter(TESTING_TYPE_MANAGER))
+                val metadata = testingDucklakeMetadata(c, DucklakeTypeConverter(TESTING_TYPE_MANAGER))
                 assertThat(metadata.getTableStatistics(SESSION, plan.handle).rowCount.isUnknown).isTrue()
             })
             assertThat(f.scan(c, plan, listOf(f.column(c, plan, "i", INTEGER))).size).isEqualTo(90)

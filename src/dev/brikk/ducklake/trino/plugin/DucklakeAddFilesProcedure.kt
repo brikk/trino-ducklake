@@ -63,8 +63,7 @@ import java.util.OptionalLong
  * data files as DuckLake data files of a table without rewriting. Mirrors upstream's
  * `ducklake_add_data_files` table function.
  *
- * Parquet is the only supported format: the opaque duckdb/vortex/lance registration modes
- * were removed (see PLAN-duckdb-parity-moveout.md §4.2 / brikk/duckbridge).
+ * Parquet is the only supported format.
  *
  * v1 contract:
  *
@@ -100,9 +99,6 @@ class DucklakeAddFilesProcedure @Inject constructor(
                         Procedure.Argument("ALLOW_MISSING", BOOLEAN, false, false),
                         Procedure.Argument("IGNORE_EXTRA_COLUMNS", BOOLEAN, false, false),
                         Procedure.Argument("HIVE_PARTITIONING", BOOLEAN, false, false),
-                        // Optional format selector. Only 'parquet' (the default) is supported;
-                        // the duckdb/vortex/lance registration modes were removed (see
-                        // PLAN-duckdb-parity-moveout.md §4.2 / brikk/duckbridge).
                         Procedure.Argument("FILE_FORMAT", VARCHAR, false, utf8Slice("parquet"))),
                 ADD_FILES.bindTo(this),
                 true)
@@ -128,8 +124,6 @@ class DucklakeAddFilesProcedure @Inject constructor(
             throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "files must be a non-empty array")
         }
         val format: String = (fileFormat ?: FORMAT_PARQUET).lowercase()
-        // Parquet is the only supported add_files format; the duckdb/vortex/lance registration
-        // modes were removed (see PLAN-duckdb-parity-moveout.md §4.2 / brikk/duckbridge).
         if (format !in DucklakeSessionProperties.SUPPORTED_DATA_FILE_FORMATS) {
             throw TrinoException(INVALID_PROCEDURE_ARGUMENT,
                     "add_files file_format must be 'parquet', got '$format'")
@@ -423,14 +417,6 @@ class DucklakeAddFilesProcedure @Inject constructor(
 
         private fun aggregateRecordCount(thriftMetadata: org.apache.parquet.format.FileMetaData): Long =
             thriftMetadata.getNum_rows()
-
-        /** Mirrors the read path's s3-scheme detection (DucklakePageSourceProvider). */
-        private fun isS3(url: String): Boolean =
-            url.startsWith("s3://") || url.startsWith("s3a://") || url.startsWith("s3n://")
-
-        /** Strip a `file://` scheme so DuckDB's ATTACH gets a bare local path. */
-        private fun stripFileScheme(url: String): String =
-            if (url.startsWith("file://")) url.removePrefix("file://") else url
 
         // Post-script size: 4-byte LE FileMetaData length + 4-byte magic. Mirrors Trino's
         // MetadataReader.POST_SCRIPT_SIZE.

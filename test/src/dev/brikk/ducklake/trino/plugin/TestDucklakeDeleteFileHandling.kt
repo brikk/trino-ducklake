@@ -93,7 +93,7 @@ class TestDucklakeDeleteFileHandling {
                 .findFirst()
                 .orElseThrow { AssertionError("Expected split for data file: " + splitBeforeDelete.dataFilePath) }
 
-            assertThat(splitAfterDelete.deleteFilePath()).isPresent()
+            assertThat(splitAfterDelete.deleteFilePaths).isNotEmpty()
             val rowsAfterDelete = countRows(pageSourceProvider, tableHandle, splitAfterDelete, priceColumn)
             assertThat(rowsAfterDelete).isEqualTo(baselineRows - 1)
         }

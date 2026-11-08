@@ -75,5 +75,4 @@ branch names, paths and measured test counts retain their original scope/date.
 [reconciliation](kotlin-port/RECONCILE-SWEEP.md), [idiom plan](kotlin-port/IDIOM-CLEANUP-PLAN.md),
 [resolved misfires](kotlin-port/IDIOM-CLEANUP-MISFIRES.md),
 [idiom rationale](kotlin-port/_idioms/idioms.md).
-Source/JSON audit artifacts remain in `.ai/kotlin-port`; no outstanding port-era
-number is assumed fixed merely because its old plan is archived.
+No outstanding port-era number is assumed fixed merely because its old plan is archived.

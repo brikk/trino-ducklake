@@ -47,9 +47,7 @@ open class DucklakeSessionProperties @Inject constructor() {
                     false),
             stringProperty(
                     DATA_FILE_FORMAT,
-                    "Data file format for new writes in this session. Only 'parquet' is supported. " +
-                            "When unset (default), writes inherit the format of the most recent existing data file " +
-                            "in the table (or fall back to 'parquet' for an empty table).",
+                    "Data file format for new writes in this session. Only 'parquet' is supported, including when unset.",
                     null,
                     { value -> validateDataFileFormat(value) },
                     false),
@@ -84,8 +82,7 @@ open class DucklakeSessionProperties @Inject constructor() {
 
         /**
          * Accepted `data_file_format` values (lowercase) — single source of truth for the
-         * validators. Parquet only: the experimental duckdb/vortex/lance data-file formats were
-         * removed (see PLAN-duckdb-parity-moveout.md §4.2 / brikk/duckbridge).
+         * validators.
          */
         val SUPPORTED_DATA_FILE_FORMATS: Set<String> = setOf(FORMAT_PARQUET)
 
@@ -129,10 +126,6 @@ open class DucklakeSessionProperties @Inject constructor() {
                     "$READ_SNAPSHOT_TIMESTAMP must be an ISO-8601 instant (example: 2024-01-01T00:00:00Z)"
                 )
             }
-        }
-
-        fun getDataFileFormat(session: ConnectorSession): Optional<String> {
-            return Optional.ofNullable(session.getProperty(DATA_FILE_FORMAT, String::class.java))
         }
 
         private fun validateDataFileFormat(value: String) {

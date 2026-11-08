@@ -33,14 +33,14 @@ class TestDucklakeRowIdentity {
     @Test
     fun splitWireFormatDistinguishesAbsentNullAndZeroStarts() {
         for (start in listOf(null, 0L, 123L)) {
-            val split = DucklakeSplit("file:///data.parquet", emptyList(), start, 10, 100, "parquet", TupleDomain.all())
+            val split = testingDucklakeSplit("file:///data.parquet", emptyList(), start, 10, 100, "parquet", TupleDomain.all())
                     .copy(dataFileId = 42L)
             val decoded = mapper.readValue(mapper.writeValueAsBytes(split), DucklakeSplit::class.java)
             assertThat(decoded).isEqualTo(split)
             assertThat(decoded.rowIdStart).isEqualTo(start)
             assertThat(decoded.dataFileId).isEqualTo(42L)
         }
-        val split = DucklakeSplit("file:///data.parquet", emptyList(), 123L, 10, 100, "parquet", TupleDomain.all())
+        val split = testingDucklakeSplit("file:///data.parquet", emptyList(), 123L, 10, 100, "parquet", TupleDomain.all())
         val json = mapper.valueToTree<ObjectNode>(split)
         json.remove("rowIdStart")
         assertThat(mapper.treeToValue(json, DucklakeSplit::class.java).rowIdStart).isNull()

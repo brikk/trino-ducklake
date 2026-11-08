@@ -83,9 +83,7 @@ data class DucklakeSplit @JsonCreator constructor(
         @get:JvmName("affinityKey")
         @param:JsonProperty("affinityKey") val affinityKey: Optional<String>,
         // begin_snapshot of the primary data file (ducklake_data_file.begin_snapshot) —
-        // the source for the $snapshot_id virtual column. The default applies only to the
-        // test-only convenience constructors below; production (DucklakeSplitManager.
-        // createMergedSplit) always passes the real value through the canonical constructor.
+         // the source for the $snapshot_id virtual column.
         @get:JvmName("beginSnapshot")
         @param:JsonProperty("beginSnapshot") val beginSnapshot: Long = 0L,
         // Set only when this data file is a cross-snapshot compacted ("partial") file whose
@@ -105,87 +103,6 @@ data class DucklakeSplit @JsonCreator constructor(
         @param:JsonProperty("dataFileId") val dataFileId: Long? = null)
         : ConnectorSplit
 {
-    // Convenience constructor without footer-size hints / partition values — used by
-    // tests that don't exercise those paths. Production code in DucklakeSplitManager
-    // always uses the canonical constructor.
-    constructor(
-            dataFilePath: String,
-            deleteFilePaths: List<String>,
-            rowIdStart: Long?,
-            recordCount: Long,
-            fileSizeBytes: Long,
-            fileFormat: String,
-            fileStatisticsDomain: TupleDomain<DucklakeColumnHandle>)
-            : this(dataFilePath, deleteFilePaths.toList(), rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, 0L, emptyMap(), emptyMap(), emptyMap(), emptySet(), Optional.empty())
-
-    // Eight-arg legacy constructor (no partition values) — kept for existing call sites
-    // that don't carry partition-value data yet.
-    constructor(
-            dataFilePath: String,
-            deleteFilePaths: List<String>,
-            rowIdStart: Long?,
-            recordCount: Long,
-            fileSizeBytes: Long,
-            fileFormat: String,
-            fileStatisticsDomain: TupleDomain<DucklakeColumnHandle>,
-            footerSize: Long,
-            deleteFileFooterSizes: Map<String, Long>)
-            : this(dataFilePath, deleteFilePaths.toList(), rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, footerSize, deleteFileFooterSizes.toMap(), emptyMap(), emptyMap(), emptySet(), Optional.empty())
-
-    // Ten-arg constructor used during the partition-value-projection introduction —
-    // kept for callers that don't yet supply per-file source-name overrides.
-    constructor(
-            dataFilePath: String,
-            deleteFilePaths: List<String>,
-            rowIdStart: Long?,
-            recordCount: Long,
-            fileSizeBytes: Long,
-            fileFormat: String,
-            fileStatisticsDomain: TupleDomain<DucklakeColumnHandle>,
-            footerSize: Long,
-            deleteFileFooterSizes: Map<String, Long>,
-            partitionValuesByColumnId: Map<Long, String>)
-            : this(dataFilePath, deleteFilePaths.toList(), rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, footerSize, deleteFileFooterSizes.toMap(), partitionValuesByColumnId.toMap(), emptyMap(), emptySet(), Optional.empty())
-
-    // Eleven-arg constructor — kept for callers that don't carry inlined-delete row positions.
-    constructor(
-            dataFilePath: String,
-            deleteFilePaths: List<String>,
-            rowIdStart: Long?,
-            recordCount: Long,
-            fileSizeBytes: Long,
-            fileFormat: String,
-            fileStatisticsDomain: TupleDomain<DucklakeColumnHandle>,
-            footerSize: Long,
-            deleteFileFooterSizes: Map<String, Long>,
-            partitionValuesByColumnId: Map<Long, String>,
-            fieldIdToParquetSourceName: Map<Long, String>)
-            : this(dataFilePath, deleteFilePaths.toList(), rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, footerSize, deleteFileFooterSizes.toMap(), partitionValuesByColumnId.toMap(), fieldIdToParquetSourceName.toMap(), emptySet(), Optional.empty())
-
-    // Twelve-arg constructor — kept for callers that don't yet supply an affinity key.
-    constructor(
-            dataFilePath: String,
-            deleteFilePaths: List<String>,
-            rowIdStart: Long?,
-            recordCount: Long,
-            fileSizeBytes: Long,
-            fileFormat: String,
-            fileStatisticsDomain: TupleDomain<DucklakeColumnHandle>,
-            footerSize: Long,
-            deleteFileFooterSizes: Map<String, Long>,
-            partitionValuesByColumnId: Map<Long, String>,
-            fieldIdToParquetSourceName: Map<Long, String>,
-            inlinedDeletedRowPositions: Set<Long>)
-            : this(dataFilePath, deleteFilePaths.toList(), rowIdStart, recordCount, fileSizeBytes, fileFormat, fileStatisticsDomain, footerSize, deleteFileFooterSizes.toMap(), partitionValuesByColumnId.toMap(), fieldIdToParquetSourceName.toMap(), inlinedDeletedRowPositions.toSet(), Optional.empty())
-
-    /**
-     * Backward-compatible accessor for the single delete file path.
-     * Returns the first delete file path if present.
-     */
-    fun deleteFilePath(): Optional<String> {
-        return if (deleteFilePaths.isEmpty()) Optional.empty() else Optional.of(deleteFilePaths.first())
-    }
-
     override fun isRemotelyAccessible(): Boolean {
         // Ducklake files can be on object storage
         return true

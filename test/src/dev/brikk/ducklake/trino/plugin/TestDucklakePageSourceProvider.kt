@@ -85,7 +85,7 @@ class TestDucklakePageSourceProvider {
 
         val baseSplit = getSplits(tableHandle).first()
 
-        val matchingSplit = DucklakeSplit(
+        val matchingSplit = testingDucklakeSplit(
             baseSplit.dataFilePath,
             baseSplit.deleteFilePaths,
             baseSplit.rowIdStart,
@@ -93,7 +93,7 @@ class TestDucklakePageSourceProvider {
             baseSplit.fileSizeBytes,
             baseSplit.fileFormat,
             TupleDomain.withColumnDomains(java.util.Map.of(priceColumn, Domain.singleValue(DOUBLE, 30.0))))
-        val nonMatchingSplit = DucklakeSplit(
+        val nonMatchingSplit = testingDucklakeSplit(
             baseSplit.dataFilePath,
             baseSplit.deleteFilePaths,
             baseSplit.rowIdStart,
@@ -121,7 +121,7 @@ class TestDucklakePageSourceProvider {
         val priceColumn = DucklakeColumnHandle(priceColumnId, "price", DOUBLE, true)
 
         val baseSplit = getSplits(tableHandle).first()
-        val noneSplit = DucklakeSplit(
+        val noneSplit = testingDucklakeSplit(
             baseSplit.dataFilePath,
             baseSplit.deleteFilePaths,
             baseSplit.rowIdStart,
@@ -144,7 +144,7 @@ class TestDucklakePageSourceProvider {
 
         val baseSplit = getSplits(tableHandle).first()
         val missingColumn = DucklakeColumnHandle(-1, "missing_col", DOUBLE, true)
-        val missingColumnPredicateSplit = DucklakeSplit(
+        val missingColumnPredicateSplit = testingDucklakeSplit(
             baseSplit.dataFilePath,
             baseSplit.deleteFilePaths,
             baseSplit.rowIdStart,
@@ -170,7 +170,7 @@ class TestDucklakePageSourceProvider {
         val priceColumn = DucklakeColumnHandle(priceColumnId, "price", DOUBLE, true)
 
         val baseSplit = getSplits(tableHandle).first()
-        val fileUriSplit = DucklakeSplit(
+        val fileUriSplit = testingDucklakeSplit(
             Path.of(baseSplit.dataFilePath).toUri().toString(),
             baseSplit.deleteFilePaths,
             baseSplit.rowIdStart,

@@ -143,7 +143,7 @@ class TestDucklakeProjectionFailures {
                 it.write(Page(writeNativeValue(BIGINT, 1L)))
             }
         }
-        val split = DucklakeSplit(location.toString(), emptyList(), 0L, 1L, fileSystem.newInputFile(location).length(),
+        val split = testingDucklakeSplit(location.toString(), emptyList(), 0L, 1L, fileSystem.newInputFile(location).length(),
             "parquet", TupleDomain.all(), 0L, emptyMap(), emptyMap(), emptyMap(), emptySet(), Optional.empty())
         private val catalog = Proxy.newProxyInstance(
             DucklakeCatalog::class.java.classLoader, arrayOf(DucklakeCatalog::class.java)) { _, method, args ->

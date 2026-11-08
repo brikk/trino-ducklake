@@ -172,11 +172,11 @@ class TestDucklakeTrinoViewCodec {
             "trino.column_comments", "1 entries",
         )
         // Our own writes are always servable.
-        assertThat(DucklakeTrinoViewCodec.isServable(view())).isTrue()
+        assertThat(DucklakeTrinoViewCodec.incompatibilityReason(view())).isNull()
     }
 
     private fun assertRefused(view: DucklakeView, vararg messageParts: String) {
-        assertThat(DucklakeTrinoViewCodec.isServable(view)).isFalse()
+        assertThat(DucklakeTrinoViewCodec.incompatibilityReason(view)).isNotNull()
         val thrown = assertThatThrownBy { DucklakeTrinoViewCodec.decode(view, name) }
             .isInstanceOf(TrinoException::class.java)
             .hasMessageContaining("View s.v cannot be executed by this connector")

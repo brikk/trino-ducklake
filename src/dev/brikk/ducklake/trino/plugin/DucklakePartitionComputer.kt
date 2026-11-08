@@ -50,7 +50,6 @@ import java.time.LocalDateTime
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatterBuilder
 import java.time.temporal.ChronoField
-import java.util.OptionalInt
 
 /**
  * Computes partition values from Trino block data for DuckLake partitioned writes.
@@ -58,11 +57,6 @@ import java.util.OptionalInt
  * Murmur3 hashing for `bucket(N)` transforms.
  */
 object DucklakePartitionComputer {
-    /**
-     * Compute the partition value string for a given row position.
-     *
-     * @return the partition value as a string, or null if the value is null
-     */
     /**
      * Convenience overload for IDENTITY / temporal transforms (no arity needed).
      */

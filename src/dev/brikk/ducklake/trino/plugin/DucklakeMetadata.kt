@@ -131,7 +131,6 @@ import io.trino.spi.type.TinyintType.TINYINT
 import io.trino.spi.type.VarcharType.VARCHAR
 import java.lang.Math.floorDiv
 import java.lang.Math.floorMod
-import java.util.Objects.requireNonNull
 
 /**
  * The active partition spec is the most-recently-added one (highest version), or empty if the
@@ -145,29 +144,15 @@ internal fun activePartitionSpecOf(specs: List<DucklakePartitionSpec>): Optional
  * Provides access to Ducklake tables and views via SQL catalog.
  */
 class DucklakeMetadata(
-        catalog: DucklakeCatalog?,
-        typeConverter: DucklakeTypeConverter?,
-        snapshotResolver: DucklakeSnapshotResolver?,
-        fragmentCodec: JsonCodec<DucklakeWriteFragment>?,
-        deleteFragmentCodec: JsonCodec<DucklakeDeleteFragment>?,
-        pathResolver: DucklakePathResolver?,
-        temporalPartitionEncoding: DucklakeTemporalPartitionEncoding?)
+        private val catalog: DucklakeCatalog,
+        private val typeConverter: DucklakeTypeConverter,
+        private val snapshotResolver: DucklakeSnapshotResolver,
+        private val fragmentCodec: JsonCodec<DucklakeWriteFragment>,
+        private val deleteFragmentCodec: JsonCodec<DucklakeDeleteFragment>,
+        private val pathResolver: DucklakePathResolver,
+        private val temporalPartitionEncoding: DucklakeTemporalPartitionEncoding)
         : DucklakeMetadataSpi()
 {
-    private val catalog: DucklakeCatalog = requireNonNull(catalog, "catalog is null")!!
-    private val typeConverter: DucklakeTypeConverter = requireNonNull(typeConverter, "typeConverter is null")!!
-    private val snapshotResolver: DucklakeSnapshotResolver = requireNonNull(snapshotResolver, "snapshotResolver is null")!!
-    private val fragmentCodec: JsonCodec<DucklakeWriteFragment>? = fragmentCodec
-    private val deleteFragmentCodec: JsonCodec<DucklakeDeleteFragment>? = deleteFragmentCodec
-    private val pathResolver: DucklakePathResolver? = pathResolver
-    private val temporalPartitionEncoding: DucklakeTemporalPartitionEncoding = requireNonNull(temporalPartitionEncoding, "temporalPartitionEncoding is null")!!
-
-    constructor(catalog: DucklakeCatalog?, typeConverter: DucklakeTypeConverter?)
-            : this(catalog, typeConverter, DucklakeSnapshotResolver(requireNonNull(catalog, "catalog is null")!!, null, null), null, null, null, DucklakeTemporalPartitionEncoding.CALENDAR)
-
-    constructor(catalog: DucklakeCatalog?, typeConverter: DucklakeTypeConverter?, snapshotResolver: DucklakeSnapshotResolver?)
-            : this(catalog, typeConverter, snapshotResolver, null, null, null, DucklakeTemporalPartitionEncoding.CALENDAR)
-
     override fun listSchemaNames(session: ConnectorSession): List<String>
     = catalog.queryReadSession(session.queryId) {
         val snapshotId = snapshotResolver.resolveSnapshotId(session)
@@ -219,9 +204,7 @@ class DucklakeMetadata(
                     "DuckLake catalog is encrypted; this connector cannot read encrypted data files")
         }
 
-        // Fail-loud guard (§7): a table whose declared data_file_format setting is not parquet
-        // references the removed DuckDB/vortex/lance formats. Surface a named error at load time
-        // rather than returning silently-wrong results. Never silently over/under-return.
+        // Reject unsupported declared formats before returning a usable table handle.
         validateDataFileFormatIsParquet(catalog.getTableDataFileFormat(table.tableId), baseTableName)
 
         if (metadataTable != null) {
@@ -411,7 +394,7 @@ class DucklakeMetadata(
     {
         // The legacy column-stat aggregate transfers file-column rows before aggregation.
         // Optional optimizer estimates must not bypass the candidate's bounded read tier.
-        if (catalog is DucklakeControlledReads && catalog.getSpecVersion() == "1.1") return TableStatistics.empty()
+        if (catalog.requiresBoundedStatistics()) return TableStatistics.empty()
         if (tableHandle is DucklakeMetadataTableHandle
                 || tableHandle is ChangeFeedTableHandle) {
             return TableStatistics.empty()
@@ -1007,7 +990,7 @@ class DucklakeMetadata(
 
         val tableDataPath: String = resolveTableDataPath(handle.schemaName, handle.tableName, handle.snapshotId)
 
-        val fileFormat: String = resolveWriteFormat(session, handle.tableId, handle.snapshotId)
+        val fileFormat: String = DucklakeSessionProperties.FORMAT_PARQUET
 
         return DucklakeWritableTableHandle(
                 handle.schemaName,
@@ -1030,8 +1013,7 @@ class DucklakeMetadata(
      *
      *   1. the table is UNPARTITIONED (partitioned + sorted falls back to unsorted — the sink
      *      routes rows per partition and a global sort across partitions is out of scope), and
-     *   2. the data file format is parquet (the only sink path that sorts; duckdb/vortex/lance
-     *      keep their existing behavior), and
+     *   2. the data file format is parquet, and
      *   3. the table's catalog sort spec resolves to at least one leading column via the exact
      *      same rules the read side uses ([DucklakeSortPropertyMapper.resolveHonoredPrefix]).
      *
@@ -1110,10 +1092,6 @@ class DucklakeMetadata(
 
         val location: TableLocationSpec? = DucklakeTableProperties.getLocation(tableMetadata.properties).orElse(null)
 
-        // An explicit WITH (data_file_format = ...) is a declaration on the table itself, so
-        // it persists as the table-scoped setting (consulted by resolveWriteFormat for every
-        // later INSERT). A session-derived CTAS format is per-session intent and is NOT
-        // persisted — those tables keep latest-data-file inheritance (testFlipStaysFlipped).
         val declaredFormat: String? = DucklakeTableProperties.getDataFileFormat(tableMetadata.properties)
 
         translateCatalogExceptions {
@@ -1136,9 +1114,7 @@ class DucklakeMetadata(
         // from the CTAS source — not the catalog round-trip. The two agree for every type
         // EXCEPT timestamptz: DuckLake stores it micros-only, so the round-trip always reports
         // precision 6 (a long / Fixed12 tstz), but a CTAS streams the source's actual precision
-        // (e.g. the default precision-3 short / LongArray tstz). Feeding the writer the
-        // precision-6 type then crashed the stats accumulator / Arrow conversion on the short
-        // blocks (LongArrayBlock vs Fixed12Block). Use the originally-declared type for tstz so
+        // (e.g. the default precision-3 short / LongArray tstz). Use the originally-declared type so
         // the writer's isShort branch matches the block; the stored value still widens to micros
         // and reads back as precision 6.
         val declaredTstzByName: Map<String, Type> = tableMetadata.columns
@@ -1160,12 +1136,7 @@ class DucklakeMetadata(
 
         val tableDataPath: String = resolveTableDataPath(tableName.schemaName, tableName.tableName, snapshotId)
 
-        // CTAS precedence: WITH clause > session property > connector default. The
-        // "match latest existing data file" rule that drives INSERT inheritance can't
-        // apply here because the table is fresh — there are no prior data files.
-        val fileFormat: String = declaredFormat
-                ?: DucklakeSessionProperties.getDataFileFormat(session)
-                        .orElse(DucklakeSessionProperties.FORMAT_PARQUET)
+        val fileFormat: String = DucklakeSessionProperties.FORMAT_PARQUET
 
         return DucklakeWritableTableHandle(
                 tableName.schemaName,
@@ -1203,49 +1174,11 @@ class DucklakeMetadata(
 
     private fun deserializeFragments(fragments: Collection<Slice>): List<DucklakeWriteFragment>
     {
-        return fragments.stream()
-                .map { fragment -> fragmentCodec!!.fromJson(fragment.bytes) }
-                .collect(toImmutableList())
+        return fragments.map { fragment -> fragmentCodec.fromJson(fragment.bytes) }
     }
 
     /**
-     * Resolve the data file format for an INSERT (or the insert leg of a MERGE/UPDATE).
-     * Precedence (N1):
-     *
-     *   - Session property `ducklake.data_file_format`, when explicitly set.
-     *   - The table's DECLARED format: the table-scoped `data_file_format` setting in
-     *     `ducklake_metadata`, persisted when the table was created with an explicit
-     *     `WITH (data_file_format = ...)`. This is what makes INSERT into a still-empty
-     *     declared-format table write that format instead of the connector default.
-     *   - Format of the most recent active data file already in the table — the rule that
-     *     keeps the natural session-CTAS-then-INSERT workflow on a consistent format, and
-     *     gives UNdeclared tables flip-stays-flipped semantics (testFlipStaysFlipped).
-     *   - Connector default (`parquet`).
-     */
-    private fun resolveWriteFormat(session: ConnectorSession, tableId: Long, snapshotId: Long): String
-    {
-        val sessionFormat: Optional<String> = DucklakeSessionProperties.getDataFileFormat(session)
-        if (sessionFormat.isPresent) {
-            return sessionFormat.get()
-        }
-        val declaredFormat: String? = catalog.getTableDataFileFormat(tableId)
-        if (declaredFormat != null) {
-            return declaredFormat
-        }
-        val latestFormat: String? = catalog.getLatestDataFileFormat(tableId, snapshotId)
-        if (latestFormat != null) {
-            return latestFormat
-        }
-        return DucklakeSessionProperties.FORMAT_PARQUET
-    }
-
-    /**
-     * Fail-loud guard (§7 of PLAN-duckdb-parity-moveout.md): this connector reads only parquet
-     * data files. A catalog whose table-scoped `data_file_format` setting (already decoded by
-     * `CatalogFileFormat.fromStored`) names anything other than parquet references the removed
-     * DuckDB/vortex/lance data-file formats. Throw a named [NOT_SUPPORTED] error naming the table
-     * and the format found, rather than proceeding and returning silently-wrong results. A null
-     * (unset) format means the table inherits parquet — allowed.
+     * Reject unsupported table-scoped formats before reading data. An unset format inherits parquet.
      */
     private fun validateDataFileFormatIsParquet(dataFileFormat: String?, tableName: SchemaTableName) {
         if (dataFileFormat != null
@@ -1265,7 +1198,7 @@ class DucklakeMetadata(
         val table: DucklakeTable = catalog.getTable(schemaName, tableName, snapshotId)
             ?: throw TrinoException(TABLE_NOT_FOUND, "Cannot resolve data path: table not found: $schemaName.$tableName")
 
-        return pathResolver!!.resolveTableDataPath(schema, table)
+        return pathResolver.resolveTableDataPath(schema, table)
     }
 
     // ==================== DELETE / MERGE ====================
@@ -1349,21 +1282,20 @@ class DucklakeMetadata(
                 tableDataPath,
                 activePartitionSpec,
                 temporalPartitionEncoding,
-                resolveWriteFormat(session, handle.tableId, handle.snapshotId))
+                DucklakeSessionProperties.FORMAT_PARQUET)
 
         // Capture source file bounds, optional logical starts, and paths. getDataFiles LEFT-JOINs
         // ducklake_delete_file, returning one row per (data_file, active delete_file) pair —
         // group by data_file_id to deduplicate and collect resolved delete-file paths. The
         // merge sink uses these paths to read prior-active positions and union them with
-        // this commit's new deletes (B3a: writeDeleteFile must preserve prior deletions when
-        // it produces a superseding file, otherwise positions resurrect).
+        // this commit's new deletes; superseding files must preserve prior deletions or rows resurrect.
         val dataFiles: List<DucklakeDataFile> = catalog.getDataFiles(handle.tableId, handle.snapshotId)
         val primaryByFileId: LinkedHashMap<Long, DucklakeDataFile> = linkedMapOf()
         val deletePathsByFileId: LinkedHashMap<Long, MutableList<String>> = linkedMapOf()
         for (df in dataFiles) {
             primaryByFileId.putIfAbsent(df.dataFileId, df)
             if (df.deleteFilePath != null) {
-                val resolved: String = pathResolver!!.resolveFilePath(
+                val resolved: String = pathResolver.resolveFilePath(
                         df.deleteFilePath!!,
                         df.deleteFilePathIsRelative ?: false,
                         tableDataPath)
@@ -1378,7 +1310,7 @@ class DucklakeMetadata(
                         df.rowIdStart,
                         df.recordCount,
                         deletePathsByFileId.getOrDefault(df.dataFileId, emptyList()),
-                        pathResolver!!.resolveFilePath(df.path, df.pathIsRelative, tableDataPath)) }
+                        pathResolver.resolveFilePath(df.path, df.pathIsRelative, tableDataPath)) }
                 .collect(toImmutableList())
 
         return DucklakeMergeTableHandle(handle, insertHandle, dataFileRanges)
@@ -1398,8 +1330,8 @@ class DucklakeMetadata(
             try {
                 val tagged = DucklakeMergeFragment.fromSlice(fragment)
                 when (tagged.kind) {
-                    DucklakeMergeFragment.Kind.DELETE -> deleteFragments.add(deleteFragmentCodec!!.fromJson(tagged.payload))
-                    DucklakeMergeFragment.Kind.INSERT -> insertFragments.add(fragmentCodec!!.fromJson(tagged.payload))
+                    DucklakeMergeFragment.Kind.DELETE -> deleteFragments.add(deleteFragmentCodec.fromJson(tagged.payload))
+                    DucklakeMergeFragment.Kind.INSERT -> insertFragments.add(fragmentCodec.fromJson(tagged.payload))
                 }
             }
             catch (e: RuntimeException) {
@@ -1478,7 +1410,7 @@ class DucklakeMetadata(
             return Optional.empty()
         }
 
-        return decodeTrinoView(view, viewName)
+        return Optional.of(DucklakeTrinoViewCodec.decode(view, viewName))
     }
 
     override fun getViews(session: ConnectorSession, schemaName: Optional<String>): Map<SchemaTableName, ConnectorViewDefinition>
@@ -1500,7 +1432,7 @@ class DucklakeMetadata(
             for (view in catalog.listViews(schema.schemaId, snapshotId)) {
                 if (isViewAccessible(view)) {
                     val name = SchemaTableName(schema.schemaName, view.viewName)
-                    decodeTrinoViewOrSkip(view, name).ifPresent { def -> views.put(name, def) }
+                    decodeTrinoViewOrSkip(view, name)?.let { def -> views.put(name, def) }
                 }
             }
         }
@@ -1670,25 +1602,16 @@ class DucklakeMetadata(
         return false
     }
 
-    /**
-     * Single-view resolution: throws with the reason when the view is Trino-family but not in
-     * this connector's format. Callers that must never throw use [decodeTrinoViewOrSkip].
-     */
-    private fun decodeTrinoView(view: DucklakeView, viewName: SchemaTableName): Optional<ConnectorViewDefinition>
-    {
-        return Optional.of(DucklakeTrinoViewCodec.decode(view, viewName))
-    }
-
     /** Bulk resolution (information_schema.views): incompatible views are skipped, loudly logged. */
-    private fun decodeTrinoViewOrSkip(view: DucklakeView, viewName: SchemaTableName): Optional<ConnectorViewDefinition>
+    private fun decodeTrinoViewOrSkip(view: DucklakeView, viewName: SchemaTableName): ConnectorViewDefinition?
     {
         val reason = DucklakeTrinoViewCodec.incompatibilityReason(view)
         if (reason != null) {
             log.warn("Skipping view %s in bulk view listing — it cannot be executed by this connector: %s " +
                     "(dialect '%s'). Recreate it from this connector or DROP VIEW it.", viewName, reason, view.dialect)
-            return Optional.empty()
+            return null
         }
-        return Optional.of(DucklakeTrinoViewCodec.decode(view, viewName))
+        return DucklakeTrinoViewCodec.decode(view, viewName)
     }
 
     companion object {
@@ -1725,11 +1648,7 @@ class DucklakeMetadata(
             throw TrinoException(NOT_SUPPORTED, "Unsupported type for table version: ${versionType.displayName}")
         }
 
-        // @JvmStatic: TestDucklakeMetadataTemporalVersionConversion reflects this as a real
-        // static method (getDeclaredMethod(...).invoke(null, ...)); without it the companion
-        // accessor moves off the class and the test's static initializer fails.
-        @JvmStatic
-        private fun getSnapshotTimestampFromVersion(session: ConnectorSession, version: ConnectorTableVersion): Instant
+        internal fun getSnapshotTimestampFromVersion(session: ConnectorSession, version: ConnectorTableVersion): Instant
         {
             val versionType: Type = version.versionType
             if (versionType == DATE) {

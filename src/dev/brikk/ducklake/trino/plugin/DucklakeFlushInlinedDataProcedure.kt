@@ -109,7 +109,7 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
         val snapshotId = catalog.currentSnapshotId
         val explicitSingle = !schemaName.isNullOrEmpty() && !tableName.isNullOrEmpty()
         val targets: List<Pair<DucklakeSchema, DucklakeTable>> = when {
-            explicitSingle -> listOf(resolveTable(schemaName!!, tableName!!, snapshotId))
+            explicitSingle -> listOf(resolveTable(schemaName, tableName, snapshotId))
             !schemaName.isNullOrEmpty() -> {
                 val schema = catalog.getSchema(schemaName, snapshotId)
                         ?: throw TrinoException(SCHEMA_NOT_FOUND, "Schema not found: $schemaName")

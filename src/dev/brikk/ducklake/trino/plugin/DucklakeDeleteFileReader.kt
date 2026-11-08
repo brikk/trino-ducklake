@@ -49,7 +49,6 @@ import org.apache.parquet.schema.MessageType
 import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName
 import org.joda.time.DateTimeZone.UTC
 import java.io.IOException
-import java.nio.file.Path
 import java.util.Optional
 import java.util.OptionalLong
 
@@ -65,13 +64,13 @@ import java.util.OptionalLong
  *    longer writes it; the reader keeps accepting it for tables deleted by older builds.
  *
  * The reader reports which vocabulary applies via [DeletePositions.global] so callers match
- * each value under exactly one interpretation. Checking both per row — the previous design —
- * phantom-deletes rows whenever a data file's `rowIdStart < recordCount`, because global ids
+ * each value under exactly one interpretation. Checking both per row phantom-deletes rows
+ * whenever a data file's `rowIdStart < recordCount`, because global ids
  * then numerically alias local offsets of the same file.
  *
  * Centralized so both the read path (apply-deletes during scan) and the write
  * path (merge sink unioning prior positions into a superseding file) call the same
- * code. Keeping the reader in one place is a B3a invariant: if the two paths drift,
+ * code. If the two paths drift,
  * the union could mis-interpret values and either lose or re-introduce deletions.
  */
 object DucklakeDeleteFileReader {

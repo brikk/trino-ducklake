@@ -141,7 +141,7 @@ class TestDucklakeCrossEngineSortedTableProperties
 
             val typeConverter = DucklakeTypeConverter(
                     io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER)
-            val metadata = DucklakeMetadata(catalog, typeConverter)
+            val metadata = testingDucklakeMetadata(catalog, typeConverter)
             return metadata.getTableProperties(
                     SESSION,
                     DucklakeTableHandle(schemaName, tableName, table.tableId, snapshotId))

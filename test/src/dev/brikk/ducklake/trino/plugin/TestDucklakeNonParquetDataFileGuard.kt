@@ -172,7 +172,7 @@ class TestDucklakeNonParquetDataFileGuard {
                 isolated: DucklakeCatalogGenerator.IsolatedCatalog): DucklakeMetadata {
             val typeConverter = DucklakeTypeConverter(
                     io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER)
-            return DucklakeMetadata(catalog, typeConverter, DucklakeSnapshotResolver(catalog, configFor(isolated)))
+            return testingDucklakeMetadata(catalog, typeConverter, DucklakeSnapshotResolver(catalog, configFor(isolated)))
         }
 
         @Throws(Exception::class)

@@ -40,6 +40,16 @@ the reserved ID retain the native file-begin fallback; lost origins are not gues
 
 ## R07: Experimental Planning, Explicit Opt-in Qualification Only
 
+### Qualification fixture format-selection blocker
+
+The four legacy `TestPublishedNestedReads` cases select a 1.1 client for stored 1.0 lakes.
+The direct-reader statistics cases `countRefusalAndOwnedSessionFailureRecoveryWithBoundedCompanionPages`
+and `unknownDeleteCountIsNotZeroOrAnExactOptimizerEstimate` in `TestR07ConsumerTrial` set
+`enableFinal11Reads` after `toCatalogConfig()` has already locked the client to 1.0, then open
+stored 1.1 lakes. All six fail at format admission before reaching the metadata constructor;
+the same failures reproduce on `bca49a1`. These opt-in tests are not passing qualification.
+Repair the fixtures' format selection, not the production admission checks or skip list.
+
 ### Current bounds API in released catalog 0.17.0
 
 Normal dependencies use Central 0.17.0, byte-identical to the accepted

@@ -37,6 +37,10 @@ internal fun DucklakeCatalog.cancelReadQuery(queryId: String) {
     if (this is DucklakeControlledReads) cancelQuery(queryId)
 }
 
+/** Final-1.1 controlled reads must not load the legacy unbounded statistics aggregate. */
+internal fun DucklakeCatalog.requiresBoundedStatistics(): Boolean =
+    this is DucklakeControlledReads && getSpecVersion() == "1.1"
+
 internal fun DucklakeCatalog.jdbcCatalog(): JdbcDucklakeCatalog = when (this) {
     is DucklakeControlledReads -> jdbc
     is JdbcDucklakeCatalog -> this

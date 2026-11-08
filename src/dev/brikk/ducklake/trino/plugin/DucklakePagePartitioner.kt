@@ -22,7 +22,6 @@ import io.trino.spi.PageIndexerFactory
 import io.trino.spi.block.Block
 import io.trino.spi.type.IntegerType.INTEGER
 import io.trino.spi.type.Type
-import java.util.OptionalInt
 
 /**
  * Partitions pages by computing DuckLake partition values and routing rows to writer indexes.

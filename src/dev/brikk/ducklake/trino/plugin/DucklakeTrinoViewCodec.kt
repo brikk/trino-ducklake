@@ -75,9 +75,6 @@ internal object DucklakeTrinoViewCodec {
     fun isTrinoFamily(view: DucklakeView): Boolean =
         view.dialect.substringBefore('/').equals(DIALECT, ignoreCase = true)
 
-    /** True when [decode] would succeed — exactly our dialect with consistent tags. */
-    fun isServable(view: DucklakeView): Boolean = incompatibilityReason(view) == null
-
     fun encode(definition: ConnectorViewDefinition): Encoded {
         val columns = definition.columns
         val tags = LinkedHashMap<String, String?>()

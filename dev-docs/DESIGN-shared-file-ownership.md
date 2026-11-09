@@ -6,8 +6,8 @@
 Our scheduled cleaner checks retained owners before deletion. This protects the
 ordinary sequential A/B ownership case; it is not a universal concurrent ownership
 protocol. Permanent decisions and original evidence are retained in
-[the RV-04 record](archive/DESIGN-shared-file-ownership-2026-09.md) and
-[the live review](REVIEW-2026-09-05.md#rv-04-scheduled-cleanup-is-not-safe-for-shared-physical-ownership).
+[the RV-04 record](archive/designs/DESIGN-shared-file-ownership-2026-09.md) and
+[the archived review](archive/reviews/REVIEW-2026-09-05.md#rv-04-scheduled-cleanup-is-not-safe-for-shared-physical-ownership).
 
 ## Required limits
 
@@ -32,7 +32,7 @@ the hierarchy needed by each page. The deletion queue itself is not ownership.
 No candidates means no root/owner scan.
 
 Plan the whole bounded batch before any physical deletion or queue cancellation.
-Apply the [path-identity restrictions](CRUTCHES-AND-SHORTCUTS.md#rv-03-path-comparison-boundary)
+Apply the [path-identity restrictions](CRUTCHES-AND-SHORTCUTS.md#path-comparison-fails-closed)
 without rewriting stored paths or deletion targets.
 
 ## Reclamation and queue handling

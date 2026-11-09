@@ -53,5 +53,5 @@ Do not expose DuckDB unprefixed aliases or `$filename`/`$file_index` by accident
 they are not current public names. No serialized handle shape or sentinel meaning
 may change casually. Preserve split/handle wire and nested/source identity tests.
 
-The [archived design](archive/DESIGN-virtual-columns-history.md) retains the original
+The [archived design](archive/designs/DESIGN-virtual-columns-history.md) retains the original
 decision rationale, alternatives and dated implementation notes.

@@ -48,5 +48,5 @@ both archive sets with the same connector release suffix. The local workbench mu
 select matching `TRINO_VERSION` and `PLUGIN_VERSION` values explicitly.
 
 See [development](DEVELOPMENT.md) for commands, [the catalog candidate](CATALOG-CANDIDATE.md)
-for the separate opt-in lane, and [the October verification record](archive/TRINO-VERIFICATION-2026-10.md)
+for the separate opt-in lane, and [the October verification record](archive/reviews/TRINO-VERIFICATION-2026-10.md)
 for historical implementation counts. Those counts are not a current full-suite verdict.

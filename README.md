@@ -33,8 +33,8 @@ remote Quack catalogs are not part of the normal supported deployment described 
 
 ## Install
 
-Read the [0.5.4 release notes](dev-docs/archive/RELEASE-0.5.4.md) and the
-[0.5.0 upgrade precautions](dev-docs/archive/RELEASE-0.5.0.md) before updating a lake
+Read the [0.5.4 release notes](dev-docs/archive/releases/RELEASE-0.5.4.md) and the
+[0.5.0 upgrade precautions](dev-docs/archive/releases/RELEASE-0.5.0.md) before updating a lake
 or JDBC driver. The 483 and 484 builds are separate, target-specific archives.
 
 Download the matching ZIP or tar.gz and its checksum from
@@ -182,8 +182,8 @@ columns and change feeds.
 
 - **Type mapping is not a physical compatibility guarantee.** Common numeric,
   string, binary, date and timestamp types, plus supported ARRAY/ROW/MAP shapes,
-  have read/write paths. UUID and several time/time-zone types have Parquet-writer
-  gaps. Unsigned, huge-integer, interval and VARIANT encodings have additional
+  have read/write paths. UUID, TIME, `TIMESTAMP(0)` and the time-zone types cannot
+  be written to Parquet. Unsigned, huge-integer, interval and VARIANT encodings have additional
   restrictions. Check the [type boundaries](REFERENCE.md#types) for your schema;
   successful DDL alone does not prove that a type can be written or read exactly.
 - JSON writes support top-level JSON columns; nested JSON writes are not supported.

@@ -191,9 +191,9 @@ RESET SESSION ducklake.read_snapshot_timestamp;
 Catalog-level pinning is also available in `ducklake.properties`:
 
 ```properties
-# Pin all reads for all sessions (set at most one)
+# Pin all reads for all sessions (set at most one of these)
 ducklake.default-snapshot-id=5
-ducklake.default-snapshot-timestamp=2025-06-01T12:00:00Z
+# ducklake.default-snapshot-timestamp=2025-06-01T12:00:00Z
 ```
 
 Precedence: query clause > session property > catalog config > current snapshot.

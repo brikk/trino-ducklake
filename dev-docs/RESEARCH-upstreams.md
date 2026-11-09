@@ -8,10 +8,10 @@ to update implicitly. Authoritative current dependency pins are in
 
 ## Refresh procedure
 
-1. Read the last dated survey in [the research log](archive/RESEARCH-LOG.md) and
-   [the retained August baseline](archive/UPSTREAM-TRACKING-2026-08-26.md#latest-baselines).
+1. Read the last dated survey in [the research log](archive/surveys/RESEARCH-LOG.md) and
+   [the retained August baseline](archive/surveys/UPSTREAM-TRACKING-2026-08-26.md#latest-baselines).
    Those are survey checkpoints, not claims about today's upstream release state.
-2. Inspect [the unresolved watches](TODO.md#upstream-watches--investigate-before-changing-contracts).
+2. Inspect [the upstream waits](TODO.md#upstream-duckdbducklake-waits).
 3. Fetch missing/existing mirrors without pulling or changing their checked-out refs:
 
    ```sh

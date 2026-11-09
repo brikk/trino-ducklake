@@ -105,7 +105,7 @@ Do not push a branch or publish artifacts merely because local verification pass
 
 - Root README, REFERENCE and SAMPLES are current user/operator guidance.
 - `dev-docs/` holds current developer contracts and one [active backlog](TODO.md).
-- Dated experiments, completed handoffs/releases and superseded plans belong in
-  [archive](archive/README.md), with links to any current replacement.
-- Keep [accepted restrictions](CRUTCHES-AND-SHORTCUTS.md) and the live audit intact.
-  Archiving a tracker does not complete unresolved work or waive a safety boundary.
+- Release notes, dated experiments, completed handoffs and superseded plans belong in
+  a topic folder of the [archive](archive/README.md), with a one-line index entry.
+- Keep [accepted restrictions](CRUTCHES-AND-SHORTCUTS.md) current. Archiving a document
+  does not complete its unresolved work: move open items to [TODO.md](TODO.md) first.

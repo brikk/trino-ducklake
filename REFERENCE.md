@@ -27,6 +27,7 @@ Set these in `etc/catalog/<catalog>.properties` on the Trino nodes.
 | `ducklake.maintenance.min-retention` | `7d` | Retention floor for age-based expiration/cleanup |
 | `ducklake.cleanup.batch-size` | `256` | Selected requests per cleanup call and reference page size; range 1–1024 |
 | `ducklake.cleanup.max-reference-files` | `1000000` | Retained-reference work budget per cleanup call; range 1–10000000 |
+| `ducklake.read.max-physical-rows` | `1000000` | Most live inlined rows `flush_inlined_data` loads for one table; range 1–10000000 |
 | `ducklake.temporal-partition-encoding` | `calendar` | Deprecated compatibility setting; `epoch` is for legacy catalogs |
 | `ducklake.temporal-partition-encoding-read-leniency` | `true` | Deprecated legacy-encoding read compatibility |
 
@@ -52,9 +53,9 @@ maintained shared-catalog path for concurrent Trino/DuckDB access.
 
 #### PgBouncer transaction pooling
 
-Connector **0.5.3** includes catalog **0.16.0** and its transaction-local read-session
-isolation fix. Connector 0.5.2 contains catalog 0.15.1: use direct PostgreSQL or
-session pooling with that older release.
+Connector **0.5.3 and later** (catalog 0.16.0 and later) include the transaction-local
+read-session isolation fix. Connector 0.5.2 contains catalog 0.15.1: use direct
+PostgreSQL or session pooling with that older release.
 The prepared-statement setting below does not fix the older catalog's isolation
 issue. Do not replace individual JARs in a released plugin directory.
 
@@ -84,8 +85,7 @@ Use `jdbc:mysql://host:3306/database` and database credentials. MySQL Connector/
 bundled. Initialize the DuckLake schema before connecting Trino, for example with
 the DuckDB `mysql` and `ducklake` extensions using `ducklake:mysql:db=... host=...`.
 Trino read/write is supported; DuckDB reading the same MySQL-backed lake is not a
-qualified interoperability configuration in the maintained lane. Use PostgreSQL
-when both engines need to share a catalog.
+tested configuration. Use PostgreSQL when both engines need to share a catalog.
 
 ### Local DuckDB
 
@@ -141,10 +141,11 @@ SET SESSION ducklake.write_deletion_vectors = true;
 Snapshot ID and timestamp session pins are mutually exclusive. Writes run only in
 autocommit; a write inside `START TRANSACTION` is rejected. Each statement publishes
 its own catalog snapshot, except CTAS, which creates the table in one snapshot and
-publishes its rows in a second. If a CTAS fails before its rows are published, the
-connector drops the table it created. It keeps the table if the commit outcome is
-unknown, if another writer has added rows, or if the name now refers to a different
-table. `CREATE OR REPLACE VIEW` replaces an existing view in a single snapshot.
+publishes its rows in a second, so other queries can see the empty table meanwhile.
+If a CTAS fails before its rows are published, the connector drops the table it
+created during rollback; if the coordinator stops first, the empty table remains. It
+keeps the table if the commit outcome is unknown, if another writer has added rows,
+or if the name now refers to a different table. `CREATE OR REPLACE VIEW` replaces an existing view in a single snapshot.
 
 | Table property | Type | Meaning |
 | --- | --- | --- |
@@ -175,15 +176,16 @@ Common mappings used by the supported read/write paths:
 
 Important physical boundaries:
 
-- The pinned Parquet schema converter does not implement UUID, TIME, TIMETZ or
-  TIMESTAMP WITH TIME ZONE writers. A successful type mapping or CREATE TABLE is
+- The Parquet writer cannot write UUID, TIME, TIMETZ, `TIMESTAMP(0)` or
+  TIMESTAMP WITH TIME ZONE columns. A successful type mapping or CREATE TABLE is
   not evidence that INSERT/CTAS/row rewrites can write those schemas. TIME/TIMETZ
   and timestamp-with-zone mappings use microsecond precision where applicable;
   mapping them does not remove the physical writer/reader restrictions.
   DELETE can also encounter writer construction through its MERGE path on an affected schema.
 - Unsigned mappings widen `uint8/16/32/64` to `SMALLINT/INTEGER/BIGINT/DECIMAL(20,0)`.
-  Top-level writes validate the original unsigned range. This is not a universal
-  qualification of unsigned Parquet annotations or nested unsigned validation.
+  Top-level writes validate the original unsigned range; values nested inside
+  ROW/ARRAY/MAP are not range-checked. DuckDB-written unsigned Parquet files can
+  fail to read.
 - HUGEINT/UHUGEINT physical encodings and INTERVAL/VARIANT file reads have unresolved
   representation limits. Mapper fallbacks to decimal or VARCHAR are not a guarantee
   of exact or usable file-backed values. Do not infer support from the mapper alone.
@@ -247,7 +249,7 @@ Call `CALL <catalog>.system.<procedure>(...)`. Named arguments make scope explic
 | --- | --- |
 | `add_files` | `schema_name`, `table_name`, `files`, optional `allow_missing=false`, `ignore_extra_columns=false`, `hive_partitioning=false`, `file_format='parquet'` |
 | `flush_inlined_data` | Optional `schema_name`, `table_name`; both selects one table, schema alone selects that schema, neither selects the catalog |
-| `rewrite_data_files` | `schema_name`, `table_name`, optional `file_size_threshold`, `target_file_size` (default `512MB`), `reclaim_sources_immediately=false` |
+| `rewrite_data_files` | `schema_name`, `table_name`, optional `file_size_threshold='100MB'` (files below it are compacted), `target_file_size='512MB'`, `reclaim_sources_immediately=false`, `max_compacted_files=0` (source files per call; 0 is unlimited) |
 | `remove_orphan_files` | Optional schema/table scope, `retention_threshold='7d'`, `dry_run=false`; at most 10,000 files per call, repeat to continue |
 | `expire_snapshots` | Catalog-wide; age-based `retention_threshold='7d'` or explicit `snapshot_ids`, plus `dry_run=false` |
 | `cleanup_old_files` | Catalog-wide; `retention_threshold='7d'`, `dry_run=false`; one bounded batch per call |

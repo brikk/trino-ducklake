@@ -41,6 +41,12 @@ enforced by the catalog on reads and writes, not merely inferred from the flag.
 Normal corpus tests scope execution and mirroring to 1.0, so native 1.1 feature
 SQL cannot interfere with the 1.0 release. 1.1 qualification remains a separate task.
 
+With format 1.1 selected, these catalog properties bound each owned read view (they have no
+effect on 1.0 reads, except that `max-physical-rows` also caps `flush_inlined_data`):
+`ducklake.read.page-size` (128, 1–1024), `ducklake.read.timeout-seconds` (30, 1–3600),
+`ducklake.read.max-files` (10000, 1–100000), `ducklake.read.max-physical-rows`
+(1000000, 1–10000000) and `ducklake.read.max-cdc-events` (100000, 1–1000000).
+
 ## Implemented scope
 
 - Owned, controlled read sessions and the typed paged planning/inline/history APIs
@@ -67,6 +73,9 @@ VM. The actual runtime is asserted, not inferred from captured stdout. Follow
 Release adoption is not experimental final-1.1 production/default-on approval.
 A stable artifact name alone does not close these gates:
 
+- The qualification suite is red: 40 tests fail on the current fixtures, each a catalog
+  format-admission refusal caused by the fixture's format selection. See
+  [TODO.md](TODO.md#test-ci-and-release-hygiene).
 - Bounded admission/accounting is not complete for all point metadata, views, tags,
   comments, statistics and internal schema/default work. Per-owned-view budgets are
   not total JVM heap, database execution-time or fleet-wide query budgets.
@@ -87,9 +96,9 @@ DDL or cache invalidation.
 
 ## Retained evidence
 
-- [Published N03/H15/N19 handoff](archive/HANDOFF-CATALOG-72aae19.md): source/artifact
+- [Published N03/H15/N19 handoff](archive/catalog-adoptions/HANDOFF-CATALOG-72aae19.md): source/artifact
   identity, exact test selections/counts and plugin hashes at `1187848`.
-- [R07 checkpoints](archive/R07-TRINO-CANDIDATE-QUALIFICATION.md): earlier scoped
+- [R07 checkpoints](archive/r07/R07-TRINO-CANDIDATE-QUALIFICATION.md): earlier scoped
   session/cancellation/default/CDC work and its unresolved boundaries. Local-bundle
   commands there are historical and no longer select the current build.
 - [Restrictions inventory](CRUTCHES-AND-SHORTCUTS.md): active costs, limitations and removal criteria.

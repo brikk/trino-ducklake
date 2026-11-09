@@ -210,11 +210,20 @@ deletion queue (DuckLake 1.0) and none for inlined rows.
 - **Shortcut:** the normal corpus suite scopes mirror and execution to 1.0. Files that
   explicitly use 1.1 halt after their stored format is inspected: earlier results stand, the rest
   is not executed, and halted files never count as passed. Replay uses
-  `ReplaySetupFormat.DUCKLAKE_1_0` without rewriting corpus SQL or goldens.
-- **Cost:** no 1.1 corpus coverage.
-- **Real fix:** a qualified 1.1 lane.
+  `ReplaySetupFormat.DUCKLAKE_1_0` without rewriting corpus SQL or goldens. Published replay
+  0.17.0 does not apply that halt to DuckDB's own `DuckLake 1.0 does not support <feature> -
+  attach with AUTOMATIC_MIGRATION set to TRUE` refusal: implicit 1.1 fixtures fail and continue
+  into cascades. Oracle execution and halting belong to the replay library; its SQL binder
+  runs before execution and cannot classify oracle errors.
+- **Cost:** no 1.1 corpus mirrors, and misleading failures/passes after an implicit-format
+  refusal. The qualification lane has native 1.1/migration fixtures but its replay engine
+  still registers only 1.0 Trino catalogs.
+- **Real fix:** a replay-library release that halts on that exact unexpected oracle refusal
+  in the 1.0-only execution scope, preserving expected-error controls and prior outcomes;
+  then explicit 1.1 engine configuration and full-file corpus tests in qualification.
 - **Removal criterion:** 1.1 reads are admitted in the normal build.
-- **Owner:** `test/src/.../TestTrinoCorpusReplay.kt`, `TrinoReplayEngine.kt`.
+- **Owner:** published `ducklake-test-corpus-replay` (`ReplayDriver`),
+  `test/src/.../TestTrinoCorpusReplay.kt`, `TrinoReplayEngine.kt`, `qualification/src/`.
 
 ## Corpus engine-error classification reads some message text
 

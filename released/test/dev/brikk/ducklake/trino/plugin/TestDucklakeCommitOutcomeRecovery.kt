@@ -109,7 +109,7 @@ class TestDucklakeCommitOutcomeRecovery {
         val result = invoke(metadata, method, arguments)
         if (method.name in setOf("finishInsert", "finishCreateTable", "finishMerge")) {
             finishCalls.incrementAndGet()
-            injected.getAndSet(null)?.let { failure -> throw DucklakeMetadata.translateCatalogException(failure) }
+            injected.getAndSet(null)?.let { failure -> throw DucklakeCatalogExceptions.translateCatalogException(failure) }
         }
         result
     } as ConnectorMetadata

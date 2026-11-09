@@ -59,8 +59,8 @@ sealed interface InlinedTextFieldMapping {
         /** Lowercased era name → current field index. */
         val indexByEraName: Map<String, Int> =
             eraNames.withIndex()
-                .filter { it.value != null }
-                .associate { (i, name) -> name!!.lowercase() to i }
+                .mapNotNull { (i, name) -> name?.let { it.lowercase() to i } }
+                .toMap()
     }
 
     /** For a LIST element or MAP value: the mapping of the contained type. */

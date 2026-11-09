@@ -41,25 +41,16 @@ open class DucklakePagePartitioner(
         // Build mappings: for each partition field, find the source column index and type
         val mappings: MutableList<PartitionColumnMapping> = mutableListOf()
         for (field in partitionSpec.fields) {
-            var sourceColumnIndex = -1
-            var sourceColumn: DucklakeColumnHandle? = null
-            for (i in this.allColumns.indices) {
-                if (this.allColumns[i].columnId == field.columnId) {
-                    sourceColumnIndex = i
-                    sourceColumn = this.allColumns[i]
-                    break
-                }
-            }
-            if (sourceColumnIndex < 0) {
-                throw IllegalArgumentException("Partition field references unknown column ID: ${field.columnId}")
-            }
+            val sourceColumnIndex = this.allColumns.indexOfFirst { it.columnId == field.columnId }
+            require(sourceColumnIndex >= 0) { "Partition field references unknown column ID: ${field.columnId}" }
+            val sourceColumn: DucklakeColumnHandle = this.allColumns[sourceColumnIndex]
 
             // For the page indexer, the partition column type is:
             // - IDENTITY: the source column type
             // - Temporal / BUCKET: INTEGER (the computed partition value is an integer)
-            val indexerType: Type = if (field.transform.isIdentity()) sourceColumn!!.columnType else INTEGER
+            val indexerType: Type = if (field.transform.isIdentity()) sourceColumn.columnType else INTEGER
 
-            mappings.add(PartitionColumnMapping(field, sourceColumnIndex, sourceColumn!!, indexerType))
+            mappings.add(PartitionColumnMapping(field, sourceColumnIndex, sourceColumn, indexerType))
         }
         this.partitionColumnMappings = mappings
 

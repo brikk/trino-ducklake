@@ -13,43 +13,29 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
-import com.google.common.collect.ImmutableList
-import com.google.common.collect.ImmutableMap
 import io.airlift.json.JsonCodec
-import io.airlift.log.Logger
 import io.airlift.slice.Slice
+import com.google.common.collect.ImmutableList
+import com.google.common.collect.ImmutableList.toImmutableList
+import com.google.common.collect.ImmutableMap
 import dev.brikk.ducklake.catalog.DucklakeCatalog
-import dev.brikk.ducklake.catalog.DucklakeCatalogCorruptionException
 import dev.brikk.ducklake.catalog.DucklakeColumn
-import dev.brikk.ducklake.catalog.DucklakeColumnStats
-import dev.brikk.ducklake.catalog.DucklakeCommitOutcomeUnknownException
 import dev.brikk.ducklake.catalog.DucklakeDeleteFragment
-import dev.brikk.ducklake.catalog.DucklakeEncryptedCatalogUnsupportedException
-import dev.brikk.ducklake.catalog.DucklakeEntityAlreadyExistsException
-import dev.brikk.ducklake.catalog.DucklakeEntityNotFoundException
-import dev.brikk.ducklake.catalog.DucklakeException
-import dev.brikk.ducklake.catalog.DucklakeInvalidOperationException
-import dev.brikk.ducklake.catalog.DucklakePostCommitException
-import dev.brikk.ducklake.catalog.DucklakeSchemaNotEmptyException
-import dev.brikk.ducklake.catalog.DucklakeUnsupportedCatalogVersionException
-import dev.brikk.ducklake.catalog.DucklakeWriteFragment
-import dev.brikk.ducklake.catalog.TransactionConflictException
-import dev.brikk.ducklake.catalog.DucklakeDataFile
-import dev.brikk.ducklake.catalog.DucklakeInlinedDataInfo
-import dev.brikk.ducklake.catalog.DucklakePartitionField
 import dev.brikk.ducklake.catalog.DucklakePartitionSpec
 import dev.brikk.ducklake.catalog.DucklakeSchema
 import dev.brikk.ducklake.catalog.DucklakeTable
-import dev.brikk.ducklake.catalog.DucklakeTableStats
-import dev.brikk.ducklake.catalog.DucklakeSortKey
-import dev.brikk.ducklake.catalog.DucklakeView
-import dev.brikk.ducklake.catalog.PartitionFieldSpec
+import dev.brikk.ducklake.catalog.DucklakeWriteFragment
 import dev.brikk.ducklake.catalog.TableColumnSpec
-import dev.brikk.ducklake.catalog.TableLocationSpec
+import dev.brikk.ducklake.trino.plugin.DucklakeCatalogExceptions.translateCatalogExceptions
+import dev.brikk.ducklake.trino.plugin.DucklakeMetadataTables.MetadataTableName
+import dev.brikk.ducklake.trino.plugin.DucklakeMetadataTables.getMetadataColumns
+import dev.brikk.ducklake.trino.plugin.DucklakeMetadataTables.parseMetadataTableName
+import dev.brikk.ducklake.trino.plugin.DucklakeMetadataTables.toColumnHandles
+import dev.brikk.ducklake.trino.plugin.DucklakeTableVersions.getSnapshotIdFromVersion
+import dev.brikk.ducklake.trino.plugin.DucklakeTableVersions.getSnapshotTimestampFromVersion
 import io.trino.spi.TrinoException
 import io.trino.spi.connector.ColumnHandle
 import io.trino.spi.connector.ColumnMetadata
-import io.trino.spi.connector.ColumnNotFoundException
 import io.trino.spi.connector.ColumnPosition
 import io.trino.spi.connector.ConnectorAnalyzeMetadata
 import io.trino.spi.connector.ConnectorInsertTableHandle
@@ -74,66 +60,16 @@ import io.trino.spi.connector.SchemaTableName
 import io.trino.spi.connector.SchemaTablePrefix
 import io.trino.spi.connector.TableFunctionApplicationResult
 import io.trino.spi.function.table.ConnectorTableFunctionHandle
-import io.trino.spi.connector.ViewNotFoundException
-import io.trino.spi.predicate.Domain
-import io.trino.spi.predicate.TupleDomain
 import io.trino.spi.security.TrinoPrincipal
-import io.trino.spi.statistics.ColumnStatistics
 import io.trino.spi.statistics.ComputedStatistics
-import io.trino.spi.statistics.DoubleRange
-import io.trino.spi.statistics.Estimate
-import io.trino.spi.statistics.TableStatisticType
 import io.trino.spi.statistics.TableStatistics
-import io.trino.spi.statistics.TableStatisticsMetadata
-import io.trino.spi.type.ArrayType
-import io.trino.spi.type.LongTimestamp
-import io.trino.spi.type.LongTimestampWithTimeZone
-import io.trino.spi.type.MapType
-import io.trino.spi.type.RowType
-import io.trino.spi.type.TimestampType
-import io.trino.spi.type.TimestampWithTimeZoneType
 import io.trino.spi.type.Type
 
 import java.time.Instant
-import java.time.LocalDate
-import java.time.LocalDateTime
-import java.time.ZoneOffset
-import java.util.LinkedHashMap
-import java.util.Locale
 import java.util.Optional
-import java.util.OptionalLong
-import java.util.concurrent.ConcurrentHashMap
 
-import com.google.common.collect.ImmutableList.toImmutableList
-import com.google.common.collect.ImmutableMap.toImmutableMap
-import io.trino.spi.StandardErrorCode.ALREADY_EXISTS
 import io.trino.spi.StandardErrorCode.COLUMN_NOT_FOUND
-import io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR
-import io.trino.spi.StandardErrorCode.INVALID_ARGUMENTS
-import io.trino.spi.StandardErrorCode.INVALID_TABLE_PROPERTY
-import io.trino.spi.StandardErrorCode.NOT_FOUND
 import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
-import io.trino.spi.StandardErrorCode.SCHEMA_NOT_EMPTY
-import io.trino.spi.StandardErrorCode.SCHEMA_NOT_FOUND
-import io.trino.spi.StandardErrorCode.TABLE_NOT_FOUND
-import io.trino.spi.StandardErrorCode.TRANSACTION_CONFLICT
-import io.trino.spi.type.BigintType.BIGINT
-import io.trino.spi.type.DateTimeEncoding.unpackMillisUtc
-import io.trino.spi.type.DateType.DATE
-import io.trino.spi.type.DoubleType.DOUBLE
-import io.trino.spi.type.IntegerType.INTEGER
-import io.trino.spi.type.RealType.REAL
-import io.trino.spi.type.SmallintType.SMALLINT
-import io.trino.spi.type.TimestampType.TIMESTAMP_MICROS
-import io.trino.spi.type.TimestampType.TIMESTAMP_MILLIS
-import io.trino.spi.type.TimestampWithTimeZoneType.TIMESTAMP_TZ_MICROS
-import io.trino.spi.type.TimestampWithTimeZoneType.TIMESTAMP_TZ_MILLIS
-import io.trino.spi.type.Timestamps.MICROSECONDS_PER_SECOND
-import io.trino.spi.type.Timestamps.NANOSECONDS_PER_MICROSECOND
-import io.trino.spi.type.TinyintType.TINYINT
-import io.trino.spi.type.VarcharType.VARCHAR
-import java.lang.Math.floorDiv
-import java.lang.Math.floorMod
 
 /**
  * The active partition spec is the most-recently-added one (highest version), or empty if the
@@ -143,32 +79,29 @@ internal fun activePartitionSpecOf(specs: List<DucklakePartitionSpec>): Optional
         if (specs.isEmpty()) Optional.empty() else Optional.of(specs.last())
 
 /**
- * Metadata implementation for Ducklake connector.
- * Provides access to Ducklake tables and views via SQL catalog.
+ * Metadata implementation for Ducklake connector: tables, columns and DDL here; views,
+ * statistics, filter pushdown and the write paths in their own classes.
  */
 class DucklakeMetadata(
         private val catalog: DucklakeCatalog,
         private val typeConverter: DucklakeTypeConverter,
         private val snapshotResolver: DucklakeSnapshotResolver,
-        private val fragmentCodec: JsonCodec<DucklakeWriteFragment>,
-        private val deleteFragmentCodec: JsonCodec<DucklakeDeleteFragment>,
-        private val pathResolver: DucklakePathResolver,
-        private val temporalPartitionEncoding: DucklakeTemporalPartitionEncoding)
+        fragmentCodec: JsonCodec<DucklakeWriteFragment>,
+        deleteFragmentCodec: JsonCodec<DucklakeDeleteFragment>,
+        pathResolver: DucklakePathResolver,
+        temporalPartitionEncoding: DucklakeTemporalPartitionEncoding)
         : DucklakeMetadataSpi()
 {
-    /**
-     * Tables created by [beginCreateTable] in this transaction whose CTAS data is not known to be
-     * published, keyed by table id. The catalog commits `createTable` and the data `commitInsert`
-     * as separate snapshots, so a failed CTAS would otherwise leave an empty table behind.
-     */
-    private val unpublishedCreatedTables: MutableMap<Long, SchemaTableName> = ConcurrentHashMap()
+    private val views = DucklakeViewMetadata(catalog, snapshotResolver)
+    private val statistics = DucklakeTableStatistics(catalog)
+    private val filterPushdown = DucklakeFilterPushdown(catalog)
+    private val writes = DucklakeWriteMetadata(
+            catalog, typeConverter, fragmentCodec, deleteFragmentCodec, pathResolver, temporalPartitionEncoding)
 
     override fun listSchemaNames(session: ConnectorSession): List<String>
     = catalog.queryReadSession(session.queryId) {
         val snapshotId = snapshotResolver.resolveSnapshotId(session)
-        catalog.listSchemas(snapshotId).stream()
-                .map(DucklakeSchema::schemaName)
-                .collect(toImmutableList())
+        catalog.listSchemas(snapshotId).map(DucklakeSchema::schemaName)
     }
 
     override fun getTableHandle(
@@ -321,7 +254,7 @@ class DucklakeMetadata(
                 relations.add(SchemaTableName(schemaName.get(), table.tableName))
             }
             for (view in catalog.listViews(schema.schemaId, snapshotId)) {
-                if (isViewAccessible(view)) {
+                if (views.isViewAccessible(view)) {
                     relations.add(SchemaTableName(schemaName.get(), view.viewName))
                 }
             }
@@ -333,7 +266,7 @@ class DucklakeMetadata(
                 relations.add(SchemaTableName(schema.schemaName, table.tableName))
             }
             for (view in catalog.listViews(schema.schemaId, snapshotId)) {
-                if (isViewAccessible(view)) {
+                if (views.isViewAccessible(view)) {
                     relations.add(SchemaTableName(schema.schemaName, view.viewName))
                 }
             }
@@ -400,132 +333,14 @@ class DucklakeMetadata(
                 .build()
     }
 
-    override fun getTableStatistics(session: ConnectorSession, tableHandle: ConnectorTableHandle): TableStatistics
-    {
-        // The legacy column-stat aggregate transfers file-column rows before aggregation.
-        // Optional optimizer estimates must not bypass the candidate's bounded read tier.
-        if (catalog.requiresBoundedStatistics()) return TableStatistics.empty()
-        if (tableHandle is DucklakeMetadataTableHandle
-                || tableHandle is ChangeFeedTableHandle) {
-            return TableStatistics.empty()
-        }
+    override fun getTableStatistics(session: ConnectorSession, tableHandle: ConnectorTableHandle): TableStatistics =
+            statistics.getTableStatistics(tableHandle) { getColumnHandles(session, tableHandle) }
 
-        val table = tableHandle as DucklakeTableHandle
-        val dataFiles: List<DucklakeDataFile> = catalog.getDataFiles(table.tableId, table.snapshotId)
-        // Cross-snapshot native merges can put later rows in a historical physical file.
-        // Its gross record_count is neither an exact historical count nor a safe bound.
-        // Do not invoke the opt-in live-count API's intentional refusal, or replace it with
-        // a gross/zero estimate. The query must scan; unknown statistics are sufficient.
-        if (dataFiles.isNotEmpty() && table.snapshotId < catalog.currentSnapshotId) {
-            return TableStatistics.empty()
-        }
-        val hasDeleteFiles = dataFiles.stream().anyMatch { dataFile -> dataFile.deleteFilePath != null }
-        if (hasDeleteFiles) {
-            // Conservative mode: delete-file snapshots can make row-level table stats stale across engines.
-            // Prefer unknown over wrong.
-            return TableStatistics.empty()
-        }
-        if (catalog.hasInlinedDeletes(table.tableId, table.snapshotId)) {
-            // Same conservative policy for inlined deletes: file-level stats predate the
-            // deletions, so any column min/max/null fractions can be wrong relative to the
-            // surviving rows. Prefer unknown over wrong.
-            return TableStatistics.empty()
-        }
-
-        val hasLiveInlinedRows = hasLiveInlinedRows(table)
-
-        // ducklake_table_stats.record_count is the GROSS row count (upstream never decrements it on
-        // DELETE; DuckDB uses record_count == live as the "no row was ever deleted" proof). The live
-        // count at this snapshot is derived from the catalog the way upstream's
-        // GetNetDataFileRowCount + GetNetInlinedRowCount do.
-        val recordCount: Long = catalog.getLiveRowCount(table.tableId, table.snapshotId)
-
-        val stats: TableStatistics.Builder = TableStatistics.builder()
-                .setRowCount(Estimate.of(recordCount.toDouble()))
-
-        if (recordCount == 0L) {
-            return stats.build()
-        }
-
-        val columnHandles: Map<String, ColumnHandle> = getColumnHandles(session, tableHandle)
-
-        if (hasLiveInlinedRows) {
-            // Conservative mode: when mixed inlined rows are present, file-level column statistics
-            // cover only the Parquet portion and can become misleading. Keep only row-count stats.
-            return stats.build()
-        }
-
-        val seenDataFileIds: MutableSet<Long> = mutableSetOf()
-        var activeDataFileRowCount: Long = 0
-        for (dataFile in dataFiles) {
-            if (seenDataFileIds.add(dataFile.dataFileId)) {
-                activeDataFileRowCount += dataFile.recordCount
-            }
-        }
-
-        val columnStatsList: List<DucklakeColumnStats> = catalog.getColumnStats(table.tableId, table.snapshotId)
-
-        // Index column stats by column ID
-        val statsById: Map<Long, DucklakeColumnStats> = columnStatsList.stream()
-                .collect(toImmutableMap(DucklakeColumnStats::columnId) { s -> s })
-
-        for (handle in columnHandles.values) {
-            val column = handle as DucklakeColumnHandle
-            val colStats: DucklakeColumnStats? = statsById[column.columnId]
-            if (colStats == null) {
-                continue
-            }
-
-            // Null counts also mean coverage cannot be established (catalog 0.9.0). Omit the
-            // entire column entry, just as for known incomplete coverage after schema evolution.
-            val totalValueCount = colStats.totalValueCount ?: continue
-            val totalNullCount = colStats.totalNullCount ?: continue
-            val totalCount = totalValueCount + totalNullCount
-            if (activeDataFileRowCount > 0 && totalCount != activeDataFileRowCount) {
-                continue
-            }
-
-            val colBuilder: ColumnStatistics.Builder = ColumnStatistics.builder()
-            if (totalCount > 0) {
-                colBuilder.setNullsFraction(Estimate.of(totalNullCount.toDouble() / totalCount.toDouble()))
-            }
-
-            if (colStats.totalSizeBytes > 0) {
-                colBuilder.setDataSize(Estimate.of(colStats.totalSizeBytes.toDouble()))
-            }
-
-            toDoubleRange(column.columnType, colStats)?.let { colBuilder.setRange(it) }
-
-            stats.setColumnStatistics(column, colBuilder.build())
-        }
-
-        return stats.build()
-    }
-
-    // ANALYZE — refresh DuckLake's cached table-level statistics. The catalog recomputes
-    // ducklake_table_stats (record_count = GROSS rows of the active files + live inlined rows, as
-    // upstream defines it) and rebuilds the per-column aggregates from the authoritative per-file
-    // stats (DucklakeCatalog.analyzeTable), which also tightens any min/max that incremental
-    // maintenance left stale after a delete. The engine's scanned ROW_COUNT is not what
-    // record_count means, so it is not written; we still declare it so ANALYZE has a plan shape.
-    // We deliberately do NOT declare column statistics here: doing so would force the engine to
-    // hand back typed min/max blocks we'd have to re-encode into DuckLake's string form,
-    // duplicating logic the per-file aggregation already gets right.
     override fun getStatisticsCollectionMetadata(
             session: ConnectorSession,
             tableHandle: ConnectorTableHandle,
-            analyzeProperties: Map<String, Any>): ConnectorAnalyzeMetadata
-    {
-        if (tableHandle is DucklakeMetadataTableHandle
-                || tableHandle is ChangeFeedTableHandle) {
-            throw TrinoException(NOT_SUPPORTED, "ANALYZE is not supported for this table")
-        }
-        val statisticsMetadata = TableStatisticsMetadata(
-                emptySet(),
-                setOf(TableStatisticType.ROW_COUNT),
-                emptyList())
-        return ConnectorAnalyzeMetadata(tableHandle, statisticsMetadata)
-    }
+            analyzeProperties: Map<String, Any>): ConnectorAnalyzeMetadata =
+            statistics.getStatisticsCollectionMetadata(tableHandle)
 
     override fun beginStatisticsCollection(
             session: ConnectorSession,
@@ -537,16 +352,8 @@ class DucklakeMetadata(
     override fun finishStatisticsCollection(
             session: ConnectorSession,
             tableHandle: ConnectorTableHandle,
-            computedStatistics: Collection<ComputedStatistics>)
-    {
-        val table = tableHandle as DucklakeTableHandle
-        translateCatalogExceptions { catalog.analyzeTable(table.tableId) }
-    }
-
-    private fun hasLiveInlinedRows(table: DucklakeTableHandle): Boolean =
-            // getInlinedDataInfos carries a per-descriptor live-rows flag (resolved in the same probe
-            // that lists it), so no second per-table hasInlinedRows round trip is needed here.
-            catalog.getInlinedDataInfos(table.tableId, table.snapshotId).any { it.hasLiveRows }
+            computedStatistics: Collection<ComputedStatistics>) =
+            statistics.finishStatisticsCollection(tableHandle)
 
     /**
      * Map the change-feed table function to a [ChangeFeedTableHandle] *scan*, so the engine's
@@ -572,99 +379,11 @@ class DucklakeMetadata(
         return Optional.empty()
     }
 
-    /** Table handles with no TupleDomain pushdown surface (predicates stay in the engine filter). */
-    private fun isFilterExemptHandle(handle: ConnectorTableHandle): Boolean =
-            handle is DucklakeMetadataTableHandle || handle is ChangeFeedTableHandle
-
     override fun applyFilter(
             session: ConnectorSession,
             handle: ConnectorTableHandle,
-            constraint: Constraint): Optional<ConstraintApplicationResult<ConnectorTableHandle>>
-    {
-        if (isFilterExemptHandle(handle)) {
-            return Optional.empty()
-        }
-
-        val table = handle as DucklakeTableHandle
-
-        val summary: TupleDomain<ColumnHandle> = constraint.summary
-
-        val newEnforced: TupleDomain<DucklakeColumnHandle>
-        val newUnenforced: TupleDomain<DucklakeColumnHandle>
-        if (summary.isAll) {
-            // No TupleDomain pushdown to do — but we still need to check the
-            // expression below for function-shape predicates.
-            newEnforced = TupleDomain.all()
-            newUnenforced = TupleDomain.all()
-        }
-        else {
-            val newPredicate: TupleDomain<DucklakeColumnHandle> = extractDucklakePredicate(summary)
-
-            // Classify predicates as enforced (partition-prunable) or unenforced (best-effort)
-            val partitionSpecs: List<DucklakePartitionSpec> = catalog.getPartitionSpecs(
-                    table.tableId, table.snapshotId)
-
-            val enforced: ImmutableMap.Builder<DucklakeColumnHandle, Domain> = ImmutableMap.builder()
-            val unenforced: ImmutableMap.Builder<DucklakeColumnHandle, Domain> = ImmutableMap.builder()
-
-            if (!newPredicate.isNone) {
-                for (entry in newPredicate.getDomains().orElse(emptyMap()).entries) {
-                    when (classifyColumnConstraint(partitionSpecs, entry.key)) {
-                        ConstraintEnforcement.FULLY_ENFORCED -> enforced.put(entry.key, entry.value)
-                        ConstraintEnforcement.PARTIALLY_ENFORCED -> {
-                            // Keep in both predicates: connector can use partition transforms for pruning,
-                            // but engine must still evaluate original predicate for correctness.
-                            enforced.put(entry.key, entry.value)
-                            unenforced.put(entry.key, entry.value)
-                        }
-                        ConstraintEnforcement.NOT_ENFORCED -> unenforced.put(entry.key, entry.value)
-                    }
-                }
-            }
-
-            newEnforced = if (newPredicate.isNone)
-                TupleDomain.none()
-            else
-                toTupleDomain(enforced.buildOrThrow())
-            newUnenforced = if (newPredicate.isNone)
-                TupleDomain.all()
-            else
-                toTupleDomain(unenforced.buildOrThrow())
-        }
-
-        val combinedEnforced: TupleDomain<DucklakeColumnHandle> = table.enforcedPredicate.intersect(newEnforced)
-        val combinedUnenforced: TupleDomain<DucklakeColumnHandle> = table.unenforcedPredicate.intersect(newUnenforced)
-
-        if (combinedEnforced == table.enforcedPredicate
-                && combinedUnenforced == table.unenforcedPredicate) {
-            return Optional.empty()
-        }
-
-        val newHandle = DucklakeTableHandle(
-                table.schemaName,
-                table.tableName,
-                table.tableId,
-                table.snapshotId,
-                combinedUnenforced,
-                combinedEnforced)
-
-        // Fully enforced predicates are omitted from remaining filter.
-        // Partially enforced predicates (e.g. temporal transforms) remain so engine verifies exact semantics.
-        val remainingFilter: TupleDomain<ColumnHandle> = newUnenforced.transformKeys(ColumnHandle::class.java::cast)
-
-        return Optional.of(ConstraintApplicationResult(
-                newHandle,
-                remainingFilter,
-                constraint.expression,
-                false))
-    }
-
-    private enum class ConstraintEnforcement
-    {
-        FULLY_ENFORCED,
-        PARTIALLY_ENFORCED,
-        NOT_ENFORCED
-    }
+            constraint: Constraint): Optional<ConstraintApplicationResult<ConnectorTableHandle>> =
+            filterPushdown.applyFilter(handle, constraint)
 
     override fun listTableColumns(
             session: ConnectorSession,
@@ -708,7 +427,7 @@ class DucklakeMetadata(
         return columns.buildOrThrow()
     }
 
-    private data class MetadataTableName(val baseTableName: String, val metadataTableType: DucklakeMetadataTableType)
+    // ==================== Schema DDL ====================
 
     // ==================== Schema DDL ====================
 
@@ -729,85 +448,7 @@ class DucklakeMetadata(
         if (saveMode == SaveMode.REPLACE) {
             throw TrinoException(NOT_SUPPORTED, "This connector does not support replacing tables")
         }
-
-        val tableName: SchemaTableName = tableMetadata.table
-
-        // Convert columns to DuckLake column specs
-        val columnSpecs: List<TableColumnSpec> = tableMetadata.columns.stream()
-                .map { column -> toColumnSpec(column.name, column.type, column.isNullable) }
-                .collect(toImmutableList())
-
-        // Parse partition spec from table properties
-        val partitionFields: List<PartitionFieldSpec> = DucklakeTableProperties.getPartitionFields(tableMetadata.properties)
-        validateIdentityPartitionTypes(tableMetadata.columns, partitionFields)
-        val partitionSpec: List<PartitionFieldSpec>? = partitionFields.ifEmpty { null }
-
-        val location: TableLocationSpec? = DucklakeTableProperties.getLocation(tableMetadata.properties).orElse(null)
-
-        translateCatalogExceptions {
-            catalog.createTable(
-                tableName.schemaName,
-                tableName.tableName,
-                columnSpecs,
-                partitionSpec,
-                location,
-                DucklakeTableProperties.getDataFileFormat(tableMetadata.properties)
-            )
-        }
-    }
-
-    /**
-     * Reject an IDENTITY partition over a type the connector can't encode to a partition-value
-     * string, at CREATE TABLE time — otherwise the table is created and its first INSERT fails
-     * (DucklakePartitionComputer.computeIdentityValue would throw). Only identity fields are
-     * checked here; bucket/temporal transforms have their own column-type expectations.
-     */
-    private fun validateIdentityPartitionTypes(
-            columns: List<ColumnMetadata>,
-            partitionFields: List<PartitionFieldSpec>) {
-        if (partitionFields.isEmpty()) {
-            return
-        }
-        val typeByName: Map<String, Type> = columns.associate { it.name.lowercase(java.util.Locale.ROOT) to it.type }
-        for (field in partitionFields) {
-            if (field.transform != dev.brikk.ducklake.catalog.DucklakePartitionTransform.IDENTITY) {
-                continue
-            }
-            // Unknown column: leave it to the catalog's own validation to report.
-            val type: Type = typeByName[field.columnName.lowercase(java.util.Locale.ROOT)] ?: continue
-            if (!DucklakePartitionComputer.isIdentityPartitionable(type)) {
-                throw TrinoException(INVALID_TABLE_PROPERTY,
-                        "Identity partitioning is not supported for column '${field.columnName}' of type $type")
-            }
-        }
-    }
-
-    private fun toColumnSpec(name: String, trinoType: Type, nullable: Boolean): TableColumnSpec
-    {
-        val ducklakeType: String = typeConverter.toDucklakeType(trinoType)
-
-        if (trinoType is ArrayType) {
-            val children: List<TableColumnSpec> = ImmutableList.of(
-                    toColumnSpec("element", trinoType.elementType, true))
-            return TableColumnSpec(name, ducklakeType, nullable, children)
-        }
-        if (trinoType is RowType) {
-            val children: List<TableColumnSpec> = trinoType.fields.stream()
-                    .map { field -> toColumnSpec(
-                            field.name.orElseThrow { TrinoException(NOT_SUPPORTED, "Anonymous row fields not supported") },
-                            field.type,
-                            true) }
-                    .collect(toImmutableList())
-            return TableColumnSpec(name, ducklakeType, nullable, children)
-        }
-        if (trinoType is MapType) {
-            val children: List<TableColumnSpec> = ImmutableList.of(
-                    toColumnSpec("key", trinoType.keyType, false),
-                    toColumnSpec("value", trinoType.valueType, true))
-            return TableColumnSpec(name, ducklakeType, nullable, children)
-        }
-
-        return TableColumnSpec.leaf(name, ducklakeType, nullable)
+        writes.createTable(tableMetadata)
     }
 
     override fun dropTable(session: ConnectorSession, tableHandle: ConnectorTableHandle)
@@ -864,7 +505,7 @@ class DucklakeMetadata(
     override fun addColumn(session: ConnectorSession, tableHandle: ConnectorTableHandle, column: ColumnMetadata, position: ColumnPosition)
     {
         val handle = tableHandle as DucklakeTableHandle
-        val columnSpec: TableColumnSpec = toColumnSpec(column.name, column.type, column.isNullable)
+        val columnSpec: TableColumnSpec = writes.toColumnSpec(column.name, column.type, column.isNullable)
         translateCatalogExceptions { catalog.addColumn(handle.tableId, columnSpec) }
     }
 
@@ -938,14 +579,11 @@ class DucklakeMetadata(
     // the catalog's resolveColumnIdByPath. Throws COLUMN_NOT_FOUND if any path step is missing.
     private fun resolveFieldTrinoType(tableId: Long, snapshotId: Long, fieldPath: List<String>): Type {
         val columns: List<DucklakeColumn> = catalog.getAllColumnsWithParentage(tableId, snapshotId)
-        var parentId: Long? = null
-        var current: DucklakeColumn? = null
-        for (name in fieldPath) {
-            current = columns.firstOrNull { it.columnName == name && it.parentColumn == parentId }
+        val field: DucklakeColumn? = fieldPath.fold(null as DucklakeColumn?) { parent, name ->
+            columns.firstOrNull { it.columnName == name && it.parentColumn == parent?.columnId }
                     ?: throw TrinoException(COLUMN_NOT_FOUND, "Field not found: ${fieldPath.joinToString(".")} (no '$name')")
-            parentId = current.columnId
         }
-        return typeConverter.toTrinoType(current!!, columns)
+        return typeConverter.toTrinoType(checkNotNull(field) { "Empty field path" }, columns)
     }
 
     // Nested struct field DDL. `addField`'s parentPath includes the top-level column name (there is no
@@ -961,7 +599,7 @@ class DucklakeMetadata(
             ignoreExisting: Boolean)
     {
         val handle = tableHandle as DucklakeTableHandle
-        val fieldSpec: TableColumnSpec = toColumnSpec(fieldName, type, true)
+        val fieldSpec: TableColumnSpec = writes.toColumnSpec(fieldName, type, true)
         translateCatalogExceptions { catalog.addField(handle.tableId, parentPath, fieldSpec, ignoreExisting) }
     }
 
@@ -989,74 +627,7 @@ class DucklakeMetadata(
 
         rejectVirtualColumnWrites(columns)
 
-        val ducklakeColumns: List<DucklakeColumnHandle> = columns.stream()
-                .map(DucklakeColumnHandle::class.java::cast)
-                .collect(toImmutableList())
-
-        val allCatalogColumns: List<DucklakeColumn> = catalog.getAllColumnsWithParentage(handle.tableId, handle.snapshotId)
-
-        val partitionSpecs: List<DucklakePartitionSpec> = catalog.getPartitionSpecs(handle.tableId, handle.snapshotId)
-        val activePartitionSpec: Optional<DucklakePartitionSpec> = activePartitionSpecOf(partitionSpecs)
-
-        val tableDataPath: String = resolveTableDataPath(handle.schemaName, handle.tableName, handle.snapshotId)
-
-        val fileFormat: String = DucklakeSessionProperties.FORMAT_PARQUET
-
-        return DucklakeWritableTableHandle(
-                handle.schemaName,
-                handle.tableName,
-                handle.tableId,
-                ducklakeColumns,
-                allCatalogColumns,
-                tableDataPath,
-                activePartitionSpec,
-                temporalPartitionEncoding,
-                fileFormat,
-                resolveWriteSortColumns(
-                        handle.tableId, handle.snapshotId, ducklakeColumns, activePartitionSpec, fileFormat))
-    }
-
-    /**
-     * Resolve the honored write-side sort prefix for a page sink, or empty when sorting must
-     * stay off. This is the ONE place the sorted-write gate is enforced: we return a non-empty
-     * list ONLY when
-     *
-     *   1. the table is UNPARTITIONED (partitioned + sorted falls back to unsorted — the sink
-     *      routes rows per partition and a global sort across partitions is out of scope), and
-     *   2. the data file format is parquet, and
-     *   3. the table's catalog sort spec resolves to at least one leading column via the exact
-     *      same rules the read side uses ([DucklakeSortPropertyMapper.resolveHonoredPrefix]).
-     *
-     * Any failing condition yields [emptyList], so the sink is byte-for-byte unchanged.
-     */
-    private fun resolveWriteSortColumns(
-            tableId: Long,
-            snapshotId: Long,
-            columns: List<DucklakeColumnHandle>,
-            activePartitionSpec: Optional<DucklakePartitionSpec>,
-            fileFormat: String): List<DucklakeSortColumn>
-    {
-        if (activePartitionSpec.isPresent) {
-            return emptyList()
-        }
-        if (!DucklakeSessionProperties.FORMAT_PARQUET.equals(fileFormat, ignoreCase = true)) {
-            return emptyList()
-        }
-        val sortKeys: List<DucklakeSortKey> = catalog.getSortKeys(tableId, snapshotId)
-        if (sortKeys.isEmpty()) {
-            return emptyList()
-        }
-        // Channel index = position of the column in the sink's block layout (handle.columns).
-        // First occurrence wins if a name somehow repeats; lowercased to match the mapper.
-        val channelByLowercaseName: MutableMap<String, Int> = HashMap()
-        for ((index, column) in columns.withIndex()) {
-            channelByLowercaseName.putIfAbsent(column.columnName.lowercase(Locale.ROOT), index)
-        }
-        val resolved: List<ResolvedSortColumn> =
-                DucklakeSortPropertyMapper.resolveHonoredPrefix(sortKeys, channelByLowercaseName.keys)
-        return resolved.map { column ->
-            DucklakeSortColumn(channelByLowercaseName.getValue(column.lowercaseColumnName), column.order)
-        }
+        return writes.beginInsert(handle, columns.map { it as DucklakeColumnHandle })
     }
 
     override fun finishInsert(
@@ -1066,13 +637,7 @@ class DucklakeMetadata(
             fragments: Collection<Slice>,
             computedStatistics: Collection<ComputedStatistics>): Optional<ConnectorOutputMetadata>
     {
-        val handle = insertHandle as DucklakeWritableTableHandle
-        val writeFragments: List<DucklakeWriteFragment> = deserializeFragments(fragments)
-
-        if (!writeFragments.isEmpty()) {
-            translateCatalogExceptions { catalog.commitInsert(handle.tableId, writeFragments) }
-        }
-
+        writes.finishInsert(insertHandle as DucklakeWritableTableHandle, fragments)
         return Optional.empty()
     }
 
@@ -1088,83 +653,7 @@ class DucklakeMetadata(
         if (replace) {
             throw TrinoException(NOT_SUPPORTED, "This connector does not support replacing tables")
         }
-
-        val tableName: SchemaTableName = tableMetadata.table
-
-        // Create the table structure (DDL snapshot)
-        val columnSpecs: List<TableColumnSpec> = tableMetadata.columns.stream()
-                .map { column -> toColumnSpec(column.name, column.type, column.isNullable) }
-                .collect(toImmutableList())
-
-        val partitionFields: List<PartitionFieldSpec> = DucklakeTableProperties.getPartitionFields(tableMetadata.properties)
-        validateIdentityPartitionTypes(tableMetadata.columns, partitionFields)
-        val partitionSpec: List<PartitionFieldSpec>? = partitionFields.ifEmpty { null }
-
-        val location: TableLocationSpec? = DucklakeTableProperties.getLocation(tableMetadata.properties).orElse(null)
-
-        val declaredFormat: String? = DucklakeTableProperties.getDataFileFormat(tableMetadata.properties)
-
-        translateCatalogExceptions {
-            catalog.createTable(
-                tableName.schemaName,
-                tableName.tableName,
-                columnSpecs,
-                partitionSpec,
-                location,
-                declaredFormat
-            )
-        }
-
-        // Resolve the newly created table to get its ID and build a writable handle
-        val snapshotId: Long = catalog.currentSnapshotId
-        val table: DucklakeTable = catalog.getTable(tableName.schemaName, tableName.tableName, snapshotId)
-            ?: throw TrinoException(GENERIC_INTERNAL_ERROR, "Table was not created: $tableName")
-        unpublishedCreatedTables[table.tableId] = tableName
-
-        // For the WRITE handle, a column's type must match the blocks the engine will stream
-        // from the CTAS source — not the catalog round-trip. The two agree for every type
-        // EXCEPT timestamptz: DuckLake stores it micros-only, so the round-trip always reports
-        // precision 6 (a long / Fixed12 tstz), but a CTAS streams the source's actual precision
-        // (e.g. the default precision-3 short / LongArray tstz). Use the originally-declared type so
-        // the writer's isShort branch matches the block; the stored value still widens to micros
-        // and reads back as precision 6.
-        val declaredTstzByName: Map<String, Type> = tableMetadata.columns
-                .filter { it.type is TimestampWithTimeZoneType }
-                .associate { it.name to it.type }
-        val catalogColumns: List<DucklakeColumn> = catalog.getTableColumns(table.tableId, snapshotId)
-        val allCatalogColumns: List<DucklakeColumn> = catalog.getAllColumnsWithParentage(table.tableId, snapshotId)
-        val columnHandles: List<DucklakeColumnHandle> = catalogColumns.stream()
-                .filter { col -> col.parentColumn == null }
-                .map { col -> DucklakeColumnHandle(
-                        col.columnId,
-                        col.columnName,
-                        declaredTstzByName[col.columnName] ?: typeConverter.toTrinoType(col, allCatalogColumns),
-                        col.nullsAllowed) }
-                .collect(toImmutableList())
-
-        val partitionSpecs: List<DucklakePartitionSpec> = catalog.getPartitionSpecs(table.tableId, snapshotId)
-        val activePartitionSpec: Optional<DucklakePartitionSpec> = activePartitionSpecOf(partitionSpecs)
-
-        val tableDataPath: String = resolveTableDataPath(tableName.schemaName, tableName.tableName, snapshotId)
-
-        val fileFormat: String = DucklakeSessionProperties.FORMAT_PARQUET
-
-        return DucklakeWritableTableHandle(
-                tableName.schemaName,
-                tableName.tableName,
-                table.tableId,
-                columnHandles,
-                allCatalogColumns,
-                tableDataPath,
-                activePartitionSpec,
-                temporalPartitionEncoding,
-                fileFormat,
-                // A freshly-created table generally has no sort spec yet (Trino has no
-                // `sorted_by` property; DuckDB's SET SORTED BY runs post-create), so this is
-                // normally empty — but resolving here keeps CTAS consistent with INSERT for the
-                // rare case a sort spec is already visible at this snapshot.
-                resolveWriteSortColumns(
-                        table.tableId, snapshotId, columnHandles, activePartitionSpec, fileFormat))
+        return writes.beginCreateTable(tableMetadata)
     }
 
     override fun finishCreateTable(
@@ -1173,78 +662,12 @@ class DucklakeMetadata(
             fragments: Collection<Slice>,
             computedStatistics: Collection<ComputedStatistics>): Optional<ConnectorOutputMetadata>
     {
-        val handle = tableHandle as DucklakeWritableTableHandle
-        val writeFragments: List<DucklakeWriteFragment> = deserializeFragments(fragments)
-
-        // Only a catalog failure that proves the commit rolled back keeps the table droppable.
-        // An unknown or acknowledged COMMIT, or any non-catalog failure, may have published the
-        // data, and published output must be retained for the operator to reconcile.
-        var mayHavePublished = true
-        try {
-            if (writeFragments.isNotEmpty()) {
-                catalog.commitInsert(handle.tableId, writeFragments)
-            }
-        }
-        catch (e: DucklakeException) {
-            mayHavePublished = e is DucklakeCommitOutcomeUnknownException || e is DucklakePostCommitException
-            throw translateCatalogException(e)
-        }
-        finally {
-            if (mayHavePublished) {
-                unpublishedCreatedTables.remove(handle.tableId)
-            }
-        }
-
+        writes.finishCreateTable(tableHandle as DucklakeWritableTableHandle, fragments)
         return Optional.empty()
     }
 
-    /**
-     * Rollback of a transaction whose CTAS never published its data: drop each table
-     * [beginCreateTable] created. A table is left in place, with a warning, when it is no longer
-     * the one this transaction created or another writer has committed rows into it since.
-     * Every table is attempted; the first failure is rethrown with the others suppressed.
-     */
-    internal fun dropUnpublishedCreatedTables()
-    {
-        val failures: MutableList<RuntimeException> = mutableListOf()
-        for ((tableId, tableName) in unpublishedCreatedTables) {
-            try {
-                dropUnpublishedCreatedTable(tableId, tableName)
-            }
-            catch (e: RuntimeException) {
-                failures += e
-            }
-        }
-        unpublishedCreatedTables.clear()
-        failures.firstOrNull()?.let { first ->
-            failures.drop(1).forEach(first::addSuppressed)
-            throw first
-        }
-    }
-
-    private fun dropUnpublishedCreatedTable(tableId: Long, tableName: SchemaTableName)
-    {
-        val snapshotId: Long = catalog.currentSnapshotId
-        val table: DucklakeTable? = catalog.getTable(tableName.schemaName, tableName.tableName, snapshotId)
-        if (table == null || table.tableId != tableId) {
-            log.warn("CTAS rollback: %s (table id %d) is no longer the table this query created; not dropping it",
-                    tableName, tableId)
-            return
-        }
-        val hasRows = catalog.getDataFiles(tableId, snapshotId).isNotEmpty()
-                || catalog.getInlinedDataInfos(tableId, snapshotId).any { it.hasLiveRows }
-        if (hasRows) {
-            log.warn("CTAS rollback: %s holds rows committed by another writer; not dropping it", tableName)
-            return
-        }
-        translateCatalogExceptions { catalog.dropTable(tableName.schemaName, tableName.tableName) }
-        log.info("CTAS rollback: dropped %s, created by the failed query", tableName)
-    }
-
-    private fun deserializeFragments(fragments: Collection<Slice>): List<DucklakeWriteFragment>
-    {
-        return fragments.map { fragment -> fragmentCodec.fromJson(fragment.bytes) }
-    }
+    /** Transaction rollback: drop the tables a CTAS created but never published, see [DucklakeWriteMetadata]. */
+    internal fun dropUnpublishedCreatedTables() = writes.dropUnpublishedCreatedTables()
 
     /**
      * Reject unsupported table-scoped formats before reading data. An unset format inherits parquet.
@@ -1258,16 +681,6 @@ class DucklakeMetadata(
                             "Recreate the table as parquet to read it here.",
                     tableName.schemaName, tableName.tableName, dataFileFormat))
         }
-    }
-
-    private fun resolveTableDataPath(schemaName: String, tableName: String, snapshotId: Long): String
-    {
-        val schema: DucklakeSchema = catalog.getSchema(schemaName, snapshotId)
-            ?: throw TrinoException(SCHEMA_NOT_FOUND, "Cannot resolve data path: schema not found: $schemaName")
-        val table: DucklakeTable = catalog.getTable(schemaName, tableName, snapshotId)
-            ?: throw TrinoException(TABLE_NOT_FOUND, "Cannot resolve data path: table not found: $schemaName.$tableName")
-
-        return pathResolver.resolveTableDataPath(schema, table)
     }
 
     // ==================== DELETE / MERGE ====================
@@ -1310,383 +723,47 @@ class DucklakeMetadata(
 
         updateCaseColumns.values.forEach { rejectVirtualColumnWrites(it) }
 
-        // Gate DELETE/UPDATE/MERGE on tables that still hold live inlined rows. The merge scan
-        // requests the $row_id of every scanned row, but inlined rows have no data file / file
-        // position, and this connector's merge sink only writes parquet positional delete files
-        // keyed by (data_file_id, position) — it has no way to tombstone an inlined row. Rather
-        // than fail mid-scan with an opaque "Column not found: $row_id" from the inlined page
-        // source, reject early with guidance. Flushing the inlined data to files (DuckLake's
-        // flush_inlined_data, or data_inlining_row_limit = 0 then a rewrite) makes the rows
-        // file-resident and DELETE/UPDATE/MERGE work normally.
-        if (catalog.getInlinedDataInfos(handle.tableId, handle.snapshotId).any { it.hasLiveRows }) {
-            throw TrinoException(NOT_SUPPORTED,
-                    "DELETE/UPDATE/MERGE is not supported while ${handle.schemaName}.${handle.tableName} has " +
-                            "inlined rows (rows written below DuckLake's data_inlining_row_limit). Flush the " +
-                            "inlined data to files first (e.g. DuckLake's flush_inlined_data procedure, or set " +
-                            "data_inlining_row_limit = 0).")
-        }
-
-        // Build insert handle for UPDATE support (delete+insert pattern)
-        val allCatalogColumns: List<DucklakeColumn> = catalog.getAllColumnsWithParentage(handle.tableId, handle.snapshotId)
-        val ducklakeColumns: List<DucklakeColumnHandle> = catalog.getTableColumns(handle.tableId, handle.snapshotId).stream()
-                .filter { col -> col.parentColumn == null }
-                .map { col -> DucklakeColumnHandle(
-                        col.columnId,
-                        col.columnName,
-                        typeConverter.toTrinoType(col, allCatalogColumns),
-                        col.nullsAllowed) }
-                .collect(toImmutableList())
-
-        val partitionSpecs: List<DucklakePartitionSpec> = catalog.getPartitionSpecs(handle.tableId, handle.snapshotId)
-        val activePartitionSpec: Optional<DucklakePartitionSpec> = activePartitionSpecOf(partitionSpecs)
-
-        val tableDataPath: String = resolveTableDataPath(handle.schemaName, handle.tableName, handle.snapshotId)
-
-        val insertHandle = DucklakeWritableTableHandle(
-                handle.schemaName,
-                handle.tableName,
-                handle.tableId,
-                ducklakeColumns,
-                allCatalogColumns,
-                tableDataPath,
-                activePartitionSpec,
-                temporalPartitionEncoding,
-                DucklakeSessionProperties.FORMAT_PARQUET)
-
-        // Capture source file bounds, optional logical starts, and paths. getDataFiles LEFT-JOINs
-        // ducklake_delete_file, returning one row per (data_file, active delete_file) pair —
-        // group by data_file_id to deduplicate and collect resolved delete-file paths. The
-        // merge sink uses these paths to read prior-active positions and union them with
-        // this commit's new deletes; superseding files must preserve prior deletions or rows resurrect.
-        val dataFiles: List<DucklakeDataFile> = catalog.getDataFiles(handle.tableId, handle.snapshotId)
-        val primaryByFileId: LinkedHashMap<Long, DucklakeDataFile> = linkedMapOf()
-        val deletePathsByFileId: LinkedHashMap<Long, MutableList<String>> = linkedMapOf()
-        for (df in dataFiles) {
-            primaryByFileId.putIfAbsent(df.dataFileId, df)
-            if (df.deleteFilePath != null) {
-                val resolved: String = pathResolver.resolveFilePath(
-                        df.deleteFilePath!!,
-                        df.deleteFilePathIsRelative ?: false,
-                        tableDataPath)
-                deletePathsByFileId
-                        .computeIfAbsent(df.dataFileId) { _ -> mutableListOf() }
-                        .add(resolved)
-            }
-        }
-        val dataFileRanges: List<DucklakeMergeTableHandle.DataFileRange> = primaryByFileId.values.stream()
-                .map { df -> DucklakeMergeTableHandle.DataFileRange(
-                        df.dataFileId,
-                        df.rowIdStart,
-                        df.recordCount,
-                        deletePathsByFileId.getOrDefault(df.dataFileId, emptyList()),
-                        pathResolver.resolveFilePath(df.path, df.pathIsRelative, tableDataPath)) }
-                .collect(toImmutableList())
-
-        return DucklakeMergeTableHandle(handle, insertHandle, dataFileRanges)
+        return writes.beginMerge(handle)
     }
 
     override fun finishDucklakeMerge(
             mergeTableHandle: ConnectorMergeTableHandle,
-            fragments: Collection<Slice>)
-    {
-        val mergeHandle = mergeTableHandle as DucklakeMergeTableHandle
-        val tableHandle: DucklakeTableHandle = mergeHandle.tableHandle
-
-        val deleteFragments: MutableList<DucklakeDeleteFragment> = mutableListOf()
-        val insertFragments: MutableList<DucklakeWriteFragment> = mutableListOf()
-
-        for (fragment in fragments) {
-            try {
-                val tagged = DucklakeMergeFragment.fromSlice(fragment)
-                when (tagged.kind) {
-                    DucklakeMergeFragment.Kind.DELETE -> deleteFragments.add(deleteFragmentCodec.fromJson(tagged.payload))
-                    DucklakeMergeFragment.Kind.INSERT -> insertFragments.add(fragmentCodec.fromJson(tagged.payload))
-                }
-            }
-            catch (e: RuntimeException) {
-                throw e as? TrinoException
-                    ?: TrinoException(GENERIC_INTERNAL_ERROR, "Failed to deserialize merge fragment", e)
-            }
-        }
-
-        // Commit atomically in a single snapshot — critical for UPDATE (delete+insert must be atomic)
-        if (!deleteFragments.isEmpty() && !insertFragments.isEmpty()) {
-            // The planning snapshot lets the catalog abort (non-retryably) if another writer
-            // committed a delete file for one of our data files after we planned — otherwise our
-            // replacement delete file would supersede theirs without its positions.
-            translateCatalogExceptions { catalog.commitMerge(tableHandle.tableId, deleteFragments, insertFragments, tableHandle.snapshotId) }
-        }
-        else if (!deleteFragments.isEmpty()) {
-            translateCatalogExceptions { catalog.commitDelete(tableHandle.tableId, deleteFragments, tableHandle.snapshotId) }
-        }
-        else if (!insertFragments.isEmpty()) {
-            translateCatalogExceptions { catalog.commitInsert(tableHandle.tableId, insertFragments) }
-        }
-    }
+            fragments: Collection<Slice>) =
+            writes.finishMerge(mergeTableHandle as DucklakeMergeTableHandle, fragments)
 
     // ==================== View operations ====================
 
-    override fun listViews(session: ConnectorSession, schemaName: Optional<String>): List<SchemaTableName>
-    {
-        val snapshotId = snapshotResolver.resolveSnapshotId(session)
+    override fun listViews(session: ConnectorSession, schemaName: Optional<String>): List<SchemaTableName> =
+            views.listViews(session, schemaName)
 
-        if (schemaName.isPresent) {
-            val schema: DucklakeSchema = catalog.getSchema(schemaName.get(), snapshotId)
-                ?: return ImmutableList.of()
-            return catalog.listViews(schema.schemaId, snapshotId).stream()
-                    .filter { view -> isViewAccessible(view) }
-                    .map { view -> SchemaTableName(schemaName.get(), view.viewName) }
-                    .collect(toImmutableList())
-        }
+    override fun isView(session: ConnectorSession, viewName: SchemaTableName): Boolean = views.isView(session, viewName)
 
-        val views: ImmutableList.Builder<SchemaTableName> = ImmutableList.builder()
-        for (schema in catalog.listSchemas(snapshotId)) {
-            for (view in catalog.listViews(schema.schemaId, snapshotId)) {
-                if (isViewAccessible(view)) {
-                    views.add(SchemaTableName(schema.schemaName, view.viewName))
-                }
-            }
-        }
-        return views.build()
-    }
+    override fun getView(session: ConnectorSession, viewName: SchemaTableName): Optional<ConnectorViewDefinition> =
+            views.getView(session, viewName)
 
-    /**
-     * Existence check used by DROP VIEW / CREATE OR REPLACE VIEW / ALTER VIEW RENAME (via
-     * Trino's `Metadata.isView`). Deliberately does NOT decode the definition, so a
-     * Trino-family view written by another connector in a format we can't read is still
-     * droppable / replaceable — the remedies [DucklakeTrinoViewCodec.decode]'s error points at.
-     */
-    override fun isView(session: ConnectorSession, viewName: SchemaTableName): Boolean
-    {
-        val snapshotId = snapshotResolver.resolveSnapshotId(session)
-        val view: DucklakeView = catalog.getView(viewName.schemaName, viewName.tableName, snapshotId)
-            ?: return false
-        return isViewAccessible(view)
-    }
+    override fun getViews(session: ConnectorSession, schemaName: Optional<String>): Map<SchemaTableName, ConnectorViewDefinition> =
+            views.getViews(session, schemaName)
 
-    /**
-     * Definition for execution (query analysis, COMMENT ON, SHOW CREATE VIEW). Throws
-     * INVALID_VIEW with the reason when the view exists but was not written in this
-     * connector's format — never returns a guessed or partial definition.
-     */
-    override fun getView(session: ConnectorSession, viewName: SchemaTableName): Optional<ConnectorViewDefinition>
-    {
-        val snapshotId = snapshotResolver.resolveSnapshotId(session)
+    override fun createView(
+            session: ConnectorSession,
+            viewName: SchemaTableName,
+            definition: ConnectorViewDefinition,
+            viewProperties: Map<String, Any?>,
+            replace: Boolean) =
+            views.createView(viewName, definition, replace)
 
-        val view: DucklakeView = catalog.getView(viewName.schemaName, viewName.tableName, snapshotId)
-            ?: return Optional.empty()
-        if (!isViewAccessible(view)) {
-            return Optional.empty()
-        }
+    override fun renameView(session: ConnectorSession, source: SchemaTableName, target: SchemaTableName) =
+            views.renameView(session, source, target)
 
-        return Optional.of(DucklakeTrinoViewCodec.decode(view, viewName))
-    }
+    override fun setViewComment(session: ConnectorSession, viewName: SchemaTableName, comment: Optional<String>) =
+            views.setViewComment(session, viewName, comment)
 
-    override fun getViews(session: ConnectorSession, schemaName: Optional<String>): Map<SchemaTableName, ConnectorViewDefinition>
-    {
-        val snapshotId = snapshotResolver.resolveSnapshotId(session)
-        val views: ImmutableMap.Builder<SchemaTableName, ConnectorViewDefinition> = ImmutableMap.builder()
+    override fun setViewColumnComment(session: ConnectorSession, viewName: SchemaTableName, columnName: String, comment: Optional<String>) =
+            views.setViewColumnComment(session, viewName, columnName, comment)
 
-        val schemas: List<DucklakeSchema>
-        if (schemaName.isPresent) {
-            val schema: DucklakeSchema = catalog.getSchema(schemaName.get(), snapshotId)
-                ?: return ImmutableMap.of()
-            schemas = ImmutableList.of(schema)
-        }
-        else {
-            schemas = catalog.listSchemas(snapshotId)
-        }
-
-        for (schema in schemas) {
-            for (view in catalog.listViews(schema.schemaId, snapshotId)) {
-                if (isViewAccessible(view)) {
-                    val name = SchemaTableName(schema.schemaName, view.viewName)
-                    decodeTrinoViewOrSkip(view, name)?.let { def -> views.put(name, def) }
-                }
-            }
-        }
-
-        return views.buildOrThrow()
-    }
-
-    override fun createView(session: ConnectorSession, viewName: SchemaTableName, definition: ConnectorViewDefinition, viewProperties: Map<String, Any?>, replace: Boolean)
-    {
-        // An existing view is replaced in one catalog snapshot, so readers never see it missing
-        // and a failed replace leaves the old definition. A concurrent DROP between this check
-        // and the replace fails the statement rather than silently creating the view.
-        if (replace && catalog.getView(viewName.schemaName, viewName.tableName, catalog.currentSnapshotId) != null) {
-            replaceTrinoView(viewName, definition)
-            return
-        }
-
-        // sql = the Trino SQL, dialect = 'trino', column_aliases = the spec quoted list of column
-        // names, everything else Trino needs as `ducklake_tag` rows (see DucklakeTrinoViewCodec).
-        // Never put engine payloads in column_aliases: upstream DuckDB parses it at catalog load
-        // and refuses the WHOLE catalog otherwise.
-        val encoded = DucklakeTrinoViewCodec.encode(definition)
-        translateCatalogExceptions {
-            catalog.createView(
-                viewName.schemaName,
-                viewName.tableName,
-                definition.originalSql,
-                DucklakeTrinoViewCodec.DIALECT,
-                encoded.columnAliases,
-                encoded.tags,
-            )
-        }
-    }
-
-    override fun renameView(session: ConnectorSession, source: SchemaTableName, target: SchemaTableName)
-    {
-        if (source == target) {
-            return
-        }
-
-        val snapshotId = snapshotResolver.resolveSnapshotId(session)
-        val sourceView: DucklakeView? = catalog.getView(source.schemaName, source.tableName, snapshotId)
-        if (sourceView == null || !isViewAccessible(sourceView)) {
-            throw ViewNotFoundException(source)
-        }
-
-        if (catalog.getTable(target.schemaName, target.tableName, snapshotId) != null || catalog.getView(target.schemaName, target.tableName, snapshotId) != null) {
-            throw TrinoException(ALREADY_EXISTS, "Relation already exists: $target")
-        }
-
-        translateCatalogExceptions {
-            catalog.renameView(
-                source.schemaName,
-                source.tableName,
-                target.schemaName,
-                target.tableName
-            )
-        }
-    }
-
-    override fun setViewComment(session: ConnectorSession, viewName: SchemaTableName, comment: Optional<String>)
-    {
-        val definition: ConnectorViewDefinition = getRequiredViewDefinition(session, viewName)
-        val updated = ConnectorViewDefinition(
-                definition.originalSql,
-                definition.catalog,
-                definition.schema,
-                definition.columns,
-                comment,
-                definition.owner,
-                definition.isRunAsInvoker,
-                definition.path
-        )
-
-        replaceTrinoView(viewName, updated)
-    }
-
-    override fun setViewColumnComment(session: ConnectorSession, viewName: SchemaTableName, columnName: String, comment: Optional<String>)
-    {
-        val definition: ConnectorViewDefinition = getRequiredViewDefinition(session, viewName)
-
-        var updated = false
-        val columnsBuilder: ImmutableList.Builder<ConnectorViewDefinition.ViewColumn> = ImmutableList.builderWithExpectedSize(definition.columns.size)
-        for (column in definition.columns) {
-            if (column.name == columnName) {
-                columnsBuilder.add(ConnectorViewDefinition.ViewColumn(column.name, column.type, comment))
-                updated = true
-            }
-            else {
-                columnsBuilder.add(column)
-            }
-        }
-        if (!updated) {
-            throw ColumnNotFoundException(viewName, columnName)
-        }
-        val columns: List<ConnectorViewDefinition.ViewColumn> = columnsBuilder.build()
-
-        val updatedDefinition = ConnectorViewDefinition(
-                definition.originalSql,
-                definition.catalog,
-                definition.schema,
-                columns,
-                definition.comment,
-                definition.owner,
-                definition.isRunAsInvoker,
-                definition.path
-        )
-
-        replaceTrinoView(viewName, updatedDefinition)
-    }
-
-    private fun replaceTrinoView(viewName: SchemaTableName, definition: ConnectorViewDefinition)
-    {
-        val encoded = DucklakeTrinoViewCodec.encode(definition)
-        translateCatalogExceptions {
-            catalog.replaceViewMetadata(
-                viewName.schemaName,
-                viewName.tableName,
-                definition.originalSql,
-                DucklakeTrinoViewCodec.DIALECT,
-                encoded.columnAliases,
-                encoded.tags,
-            )
-        }
-    }
-
-    override fun dropView(session: ConnectorSession, viewName: SchemaTableName)
-    {
-        val snapshotId = snapshotResolver.resolveSnapshotId(session)
-        val existing: DucklakeView? = catalog.getView(viewName.schemaName, viewName.tableName, snapshotId)
-        if (existing == null) {
-            throw ViewNotFoundException(viewName)
-        }
-
-        translateCatalogExceptions { catalog.dropView(viewName.schemaName, viewName.tableName) }
-    }
-
-    private fun getRequiredViewDefinition(session: ConnectorSession, viewName: SchemaTableName): ConnectorViewDefinition
-    {
-        val snapshotId = snapshotResolver.resolveSnapshotId(session)
-        val view: DucklakeView = catalog.getView(viewName.schemaName, viewName.tableName, snapshotId)
-            ?: throw ViewNotFoundException(viewName)
-        if (!isViewAccessible(view)) {
-            throw ViewNotFoundException(viewName)
-        }
-        return DucklakeTrinoViewCodec.decode(view, viewName)
-    }
-
-    /**
-     * Views this connector LISTS: those whose SQL is Trino SQL (dialect `trino`, or a
-     * `trino/<variant>` written by some other Trino connector). Non-Trino dialects (e.g.
-     * `duckdb`) are hidden — exposing them needs a SQL transpiler.
-     *
-     * Listing is deliberately wider than serving: a Trino-family view we cannot decode
-     * (foreign variant, missing/inconsistent tags) still shows up in SHOW TABLES so an operator
-     * can see it and DROP it; using it fails with a precise INVALID_VIEW error from
-     * [DucklakeTrinoViewCodec.decode]. Bulk paths (`getViews`) skip such views with a warning
-     * rather than failing the whole listing.
-     */
-    private fun isViewAccessible(view: DucklakeView): Boolean
-    {
-        if (DucklakeTrinoViewCodec.isTrinoFamily(view)) {
-            return true
-        }
-        // Future: check viewSqlDialects set + transpiler availability
-        log.debug("Skipping view %s with non-Trino dialect: %s (transpiler not configured)", view.viewName, view.dialect)
-        return false
-    }
-
-    /** Bulk resolution (information_schema.views): incompatible views are skipped, loudly logged. */
-    private fun decodeTrinoViewOrSkip(view: DucklakeView, viewName: SchemaTableName): ConnectorViewDefinition?
-    {
-        val reason = DucklakeTrinoViewCodec.incompatibilityReason(view)
-        if (reason != null) {
-            log.warn("Skipping view %s in bulk view listing — it cannot be executed by this connector: %s " +
-                    "(dialect '%s'). Recreate it from this connector or DROP VIEW it.", viewName, reason, view.dialect)
-            return null
-        }
-        return DucklakeTrinoViewCodec.decode(view, viewName)
-    }
+    override fun dropView(session: ConnectorSession, viewName: SchemaTableName) = views.dropView(session, viewName)
 
     companion object {
-        private val log: Logger = Logger.get(DucklakeMetadata::class.java)
-        private const val METADATA_TABLE_SEPARATOR: String = "$"
-
         // The virtual (hidden) columns exposed via getColumnHandles / getTableMetadata.
         // Constant-per-split ($path, $snapshot_id, $file_size_bytes) plus the row-varying
         // lineage pair ($file_row_number, $row_id), all injected by DucklakePageSourceProvider.
@@ -1707,259 +784,5 @@ class DucklakeMetadata(
                 }
             }
         }
-        private fun getSnapshotIdFromVersion(version: ConnectorTableVersion): Long
-        {
-            val versionType: Type = version.versionType
-            if (versionType === SMALLINT || versionType === TINYINT || versionType === INTEGER || versionType === BIGINT) {
-                return (version.version as Number).toLong()
-            }
-
-            throw TrinoException(NOT_SUPPORTED, "Unsupported type for table version: ${versionType.displayName}")
-        }
-
-        internal fun getSnapshotTimestampFromVersion(session: ConnectorSession, version: ConnectorTableVersion): Instant
-        {
-            val versionType: Type = version.versionType
-            if (versionType == DATE) {
-                return LocalDate.ofEpochDay(version.version as Long)
-                        .atStartOfDay()
-                        .atZone(session.timeZoneKey.zoneId)
-                        .toInstant()
-            }
-            if (versionType is TimestampType) {
-                val epochMicrosUtc: Long = if (versionType.isShort)
-                    version.version as Long
-                else
-                    (version.version as LongTimestamp).epochMicros
-                val epochSecondUtc: Long = floorDiv(epochMicrosUtc, MICROSECONDS_PER_SECOND)
-                val nanosOfSecond: Int = floorMod(epochMicrosUtc, MICROSECONDS_PER_SECOND).toInt() * NANOSECONDS_PER_MICROSECOND
-                return LocalDateTime.ofEpochSecond(epochSecondUtc, nanosOfSecond, ZoneOffset.UTC)
-                        .atZone(session.timeZoneKey.zoneId)
-                        .toInstant()
-            }
-            if (versionType is TimestampWithTimeZoneType) {
-                val epochMillis: Long = if (versionType.isShort)
-                    unpackMillisUtc(version.version as Long)
-                else
-                    (version.version as LongTimestampWithTimeZone).epochMillis
-                return Instant.ofEpochMilli(epochMillis)
-            }
-
-            throw TrinoException(NOT_SUPPORTED, "Unsupported type for temporal table version: ${versionType.displayName}")
-        }
-
-        private fun toDoubleRange(type: Type, stats: DucklakeColumnStats): DoubleRange?
-        {
-            val minStr: String = stats.minValue ?: return null
-            val maxStr: String = stats.maxValue ?: return null
-
-            try {
-
-                if (type == BIGINT || type == INTEGER || type == SMALLINT || type == TINYINT) {
-                    return DoubleRange(minStr.toDouble(), maxStr.toDouble())
-                }
-                if (type == DOUBLE || type == REAL) {
-                    return DoubleRange(minStr.toDouble(), maxStr.toDouble())
-                }
-                if (type == DATE) {
-                    val minDays: Long = LocalDate.parse(minStr).toEpochDay()
-                    val maxDays: Long = LocalDate.parse(maxStr).toEpochDay()
-                    return DoubleRange(minDays.toDouble(), maxDays.toDouble())
-                }
-            }
-            catch (_: RuntimeException) {
-                // If parsing fails, skip range
-            }
-            return null
-        }
-
-        private fun classifyColumnConstraint(
-                specs: List<DucklakePartitionSpec>,
-                column: DucklakeColumnHandle): ConstraintEnforcement
-        {
-            if (specs.isEmpty()) {
-                return ConstraintEnforcement.NOT_ENFORCED
-            }
-
-            var fullyEnforced = true
-            // A predicate can only be enforced (fully or partially) if it is enforceable in EVERY active spec
-            // (spec evolution means different files may have different partition schemes)
-            for (spec in specs) {
-                val field: Optional<DucklakePartitionField> = spec.fields.stream()
-                        .filter { partitionField -> partitionField.columnId == column.columnId }
-                        .findFirst()
-                if (field.isEmpty) {
-                    return ConstraintEnforcement.NOT_ENFORCED
-                }
-
-                val fieldEnforcement: ConstraintEnforcement = classifyTransformEnforcement(field.get(), column)
-                if (fieldEnforcement == ConstraintEnforcement.NOT_ENFORCED) {
-                    return ConstraintEnforcement.NOT_ENFORCED
-                }
-                if (fieldEnforcement == ConstraintEnforcement.PARTIALLY_ENFORCED) {
-                    fullyEnforced = false
-                }
-            }
-            return if (fullyEnforced) ConstraintEnforcement.FULLY_ENFORCED else ConstraintEnforcement.PARTIALLY_ENFORCED
-        }
-
-        private fun classifyTransformEnforcement(field: DucklakePartitionField, column: DucklakeColumnHandle): ConstraintEnforcement
-        {
-            if (field.transform.isIdentity()) {
-                // Identity values allow exact FILE pruning only when every split carries a
-                // parseable value for the active spec. Files written before partitioning, under a
-                // retired spec, imported without partition values, and inlined rows do not. Keep
-                // the predicate as a residual so those rows are still filtered by Trino.
-                return ConstraintEnforcement.PARTIALLY_ENFORCED
-            }
-            if (field.transform.isTemporal()) {
-                // Temporal transforms support safe partition pruning but do not fully enforce
-                // original predicates (e.g. day equality with month transform).
-                val type: Type = column.columnType
-                if (type == DATE || type == TIMESTAMP_MILLIS || type == TIMESTAMP_MICROS || type == TIMESTAMP_TZ_MILLIS || type == TIMESTAMP_TZ_MICROS) {
-                    return ConstraintEnforcement.PARTIALLY_ENFORCED
-                }
-            }
-            return ConstraintEnforcement.NOT_ENFORCED
-        }
-
-        private fun extractDucklakePredicate(summary: TupleDomain<ColumnHandle>): TupleDomain<DucklakeColumnHandle>
-        {
-            if (summary.isNone) {
-                return TupleDomain.none()
-            }
-
-            val domains: Optional<Map<ColumnHandle, Domain>> = summary.getDomains()
-            if (domains.isEmpty) {
-                return TupleDomain.all()
-            }
-
-            val ducklakeDomains: ImmutableMap.Builder<DucklakeColumnHandle, Domain> = ImmutableMap.builder()
-            for (entry in domains.get().entries) {
-                if (entry.key is DucklakeColumnHandle) {
-                    val columnHandle = entry.key as DucklakeColumnHandle
-                    // Only push down primitive types (arrays/complex types can't be pruned)
-                    if (!columnHandle.columnType.typeParameters.isEmpty()) {
-                        continue
-                    }
-                    ducklakeDomains.put(columnHandle, entry.value)
-                }
-            }
-
-            val result: Map<DucklakeColumnHandle, Domain> = ducklakeDomains.buildOrThrow()
-            if (result.isEmpty()) {
-                return TupleDomain.all()
-            }
-            return TupleDomain.withColumnDomains(result)
-        }
-
-        private fun toTupleDomain(domains: Map<DucklakeColumnHandle, Domain>): TupleDomain<DucklakeColumnHandle>
-        {
-            if (domains.isEmpty()) {
-                return TupleDomain.all()
-            }
-            return TupleDomain.withColumnDomains(domains)
-        }
-
-        private fun parseMetadataTableName(tableName: SchemaTableName): MetadataTableName?
-        {
-            val rawTableName: String = tableName.tableName
-            val separator: Int = rawTableName.lastIndexOf(METADATA_TABLE_SEPARATOR)
-            if (separator <= 0 || separator == rawTableName.length - 1) {
-                return null
-            }
-
-            val baseName: String = rawTableName.substring(0, separator)
-            val suffix: String = rawTableName.substring(separator + 1)
-            return DucklakeMetadataTableType.fromSuffix(suffix)
-                    ?.let { type -> MetadataTableName(baseName, type) }
-        }
-
-        private fun toColumnHandles(metadataColumns: List<ColumnMetadata>): Map<String, ColumnHandle>
-        {
-            val handles: ImmutableMap.Builder<String, ColumnHandle> = ImmutableMap.builder()
-            for (index in metadataColumns.indices) {
-                val column: ColumnMetadata = metadataColumns[index]
-                handles.put(
-                        column.name,
-                        DucklakeColumnHandle(
-                                -(index + 1L),
-                                column.name,
-                                column.type,
-                                column.isNullable
-                        ))
-            }
-            return handles.buildOrThrow()
-        }
-
-        private fun getMetadataColumns(metadataTableType: DucklakeMetadataTableType): List<ColumnMetadata> =
-            when (metadataTableType) {
-                DucklakeMetadataTableType.FILES -> ImmutableList.of(
-                        column("data_file_id", BIGINT, false),
-                        column("path", VARCHAR, false),
-                        column("file_format", VARCHAR, false),
-                        column("record_count", BIGINT, false),
-                        column("file_size_bytes", BIGINT, false),
-                        column("row_id_start", BIGINT, true),
-                        column("partition_id", BIGINT, true),
-                        column("delete_file_path", VARCHAR, true))
-                DucklakeMetadataTableType.SNAPSHOTS -> snapshotColumns()
-                DucklakeMetadataTableType.CURRENT_SNAPSHOT -> snapshotColumns()
-                DucklakeMetadataTableType.SNAPSHOT_CHANGES -> ImmutableList.of(
-                        column("snapshot_id", BIGINT, false),
-                        column("changes_made", VARCHAR, true),
-                        column("author", VARCHAR, true),
-                        column("commit_message", VARCHAR, true),
-                        column("commit_extra_info", VARCHAR, true))
-            }
-
-        private fun snapshotColumns(): List<ColumnMetadata> =
-                ImmutableList.of(
-                        column("snapshot_id", BIGINT, false),
-                        column("snapshot_time", TIMESTAMP_TZ_MILLIS, false),
-                        column("schema_version", BIGINT, false),
-                        column("next_catalog_id", BIGINT, false),
-                        column("next_file_id", BIGINT, false))
-
-        private fun column(name: String, type: Type, nullable: Boolean): ColumnMetadata =
-                ColumnMetadata.builder()
-                        .setName(name)
-                        .setType(type)
-                        .setNullable(nullable)
-                        .build()
-
-        /** Translate typed catalog failures to Trino's stable user-facing error classes. */
-        private fun translateCatalogExceptions(action: Runnable)
-        {
-            try {
-                action.run()
-            }
-            catch (e: DucklakeException) {
-                throw translateCatalogException(e)
-            }
-        }
-
-        /** Pure mapping kept internal so every catalog exception class is pinned by a unit test. */
-        internal fun translateCatalogException(e: DucklakeException): TrinoException =
-                when (e) {
-                    is TransactionConflictException -> TrinoException(TRANSACTION_CONFLICT, e.message, e)
-                    is DucklakeSchemaNotEmptyException -> TrinoException(SCHEMA_NOT_EMPTY, e.message, e)
-                    is DucklakeEntityNotFoundException -> TrinoException(
-                            when (e.entityKind.lowercase(Locale.ROOT)) {
-                                "schema" -> SCHEMA_NOT_FOUND
-                                "table", "view" -> TABLE_NOT_FOUND
-                                "column", "field", "partition column" -> COLUMN_NOT_FOUND
-                                else -> NOT_FOUND
-                            },
-                            e.message,
-                            e)
-                    is DucklakeEntityAlreadyExistsException -> TrinoException(ALREADY_EXISTS, e.message, e)
-                    is DucklakeInvalidOperationException -> TrinoException(INVALID_ARGUMENTS, e.message, e)
-                    is DucklakeEncryptedCatalogUnsupportedException,
-                    is DucklakeUnsupportedCatalogVersionException -> TrinoException(NOT_SUPPORTED, e.message, e)
-                    is DucklakeCatalogCorruptionException -> TrinoException(GENERIC_INTERNAL_ERROR, e.message, e)
-                    else -> TrinoException(GENERIC_INTERNAL_ERROR, e.message, e)
-                }
-
     }
 }

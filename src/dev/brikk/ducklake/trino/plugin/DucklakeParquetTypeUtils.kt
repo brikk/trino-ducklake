@@ -109,8 +109,8 @@ object DucklakeParquetTypeUtils {
             val fieldName = rowField.name
                     .orElseThrow { IllegalArgumentException("ROW type field must have a name") }
             val childIdentity = identityChildren.getOrNull(index)
-            val childColumnIO = if (childIdentity == null) columnIO.getChild(fieldName)
-                    else context!!.resolveChild(columnIO, childIdentity)
+            val childColumnIO = if (childIdentity == null || context == null) columnIO.getChild(fieldName)
+                    else context.resolveChild(columnIO, childIdentity)
             val childField = constructField(rowField.type, childColumnIO, childIdentity, context)
             hasAnyField = hasAnyField or childField.isPresent
             children.add(childField)
@@ -191,8 +191,9 @@ object DucklakeParquetTypeUtils {
             val missingField: ((DucklakeColumn, Type) -> Unit)?) {
         private val currentById = currentColumns.associateBy { it.columnId }
         private val eraById = eraColumns.associateBy { it.columnId }
-        private val childrenByParent = currentColumns.filter { it.parentColumn != null }
-                .groupBy { it.parentColumn!! }
+        private val childrenByParent = currentColumns
+                .mapNotNull { column -> column.parentColumn?.let { parent -> parent to column } }
+                .groupBy({ it.first }, { it.second })
                 .mapValues { (_, children) -> children.sortedBy { it.columnOrder } }
 
         fun identity(columnId: Long): DucklakeColumn? = currentById[columnId]

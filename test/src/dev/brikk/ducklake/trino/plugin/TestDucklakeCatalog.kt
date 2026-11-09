@@ -15,7 +15,6 @@ package dev.brikk.ducklake.trino.plugin
 
 import dev.brikk.ducklake.catalog.DucklakeCatalog
 import dev.brikk.ducklake.catalog.DucklakeColumn
-import dev.brikk.ducklake.catalog.DucklakeDataFile
 import dev.brikk.ducklake.catalog.DucklakeSchema
 import dev.brikk.ducklake.catalog.DucklakeTable
 import dev.brikk.ducklake.catalog.JdbcDucklakeCatalog
@@ -367,26 +366,11 @@ class TestDucklakeCatalog {
     private fun getSchemaEvolutionHistoricalSnapshotId(): Long {
         val currentSnapshotId = catalog!!.currentSnapshotId
         val schemaEvolutionTable = getTable("test_schema", "schema_evolution_table", currentSnapshotId)
-        var historicalSnapshotId = -1L
-        var snapshotId = currentSnapshotId
-        while (snapshotId >= 1) {
-            if (catalog!!.getSnapshot(snapshotId) == null) {
-                snapshotId--
-                continue
-            }
-            if (catalog!!.getTable("test_schema", "schema_evolution_table", snapshotId) == null) {
-                snapshotId--
-                continue
-            }
-            val recordCount = catalog!!.getDataFiles(schemaEvolutionTable.tableId, snapshotId).stream()
-                    .mapToLong(java.util.function.ToLongFunction<DucklakeDataFile> { it.recordCount })
-                    .sum()
-            if (recordCount == 2L) {
-                historicalSnapshotId = snapshotId
-                break
-            }
-            snapshotId--
-        }
+        val historicalSnapshotId = (currentSnapshotId downTo 1).firstOrNull { snapshotId ->
+            catalog!!.getSnapshot(snapshotId) != null &&
+                    catalog!!.getTable("test_schema", "schema_evolution_table", snapshotId) != null &&
+                    catalog!!.getDataFiles(schemaEvolutionTable.tableId, snapshotId).sumOf { it.recordCount } == 2L
+        } ?: -1L
         assertThat(historicalSnapshotId).isGreaterThan(0)
         return historicalSnapshotId
     }

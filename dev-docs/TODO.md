@@ -148,9 +148,12 @@ port, feature and release history is not an instruction to redo shipped work.
 - [ ] Add shared replay support for `require-env`: the pinned native metadata-logging
   fixture is currently a visible unsupported-directive file-skip, even with
   `DUCKLAKE_CI=1`. Keep SQL/goldens intact and require real Trino mirrors when enabled.
-- [ ] Decompose `DucklakeMetadata`/`DucklakePageSourceProvider` by concern while
-  preserving SPI and handle shapes: metadata tables, CDC, inline/Parquet sources,
-  and statistics are useful boundaries.
+- [ ] Narrow the deliberate generic catches still in `detekt-baseline.xml`
+  (`TooGenericExceptionCaught`): close-and-wrap in `DucklakeParquetPageSourceFactory` and
+  `DucklakeDeleteFileReader`, Puffin bitmap decode classification, CTAS rollback and
+  merge-fragment decode in `DucklakeWriteMetadata`, `DucklakeMergeSink` finish/cleanup and
+  `DucklakePageSink.abort`. Each needs a regression test proving the narrowed set still
+  closes the resource and keeps the error classification, then its baseline entry goes.
 - [ ] Apply Kotlin idioms only where wire/SPI/Jackson/Airlift contracts permit.
   Preserve required `@JvmRecord` DTO shapes and interop annotations.
 - [ ] Validate release tag/version agreement rather than relying solely on manual

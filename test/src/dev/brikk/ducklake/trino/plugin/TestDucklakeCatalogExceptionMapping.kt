@@ -45,7 +45,7 @@ class TestDucklakeCatalogExceptionMapping {
         val acknowledged = DucklakePostCommitException("INSERT", lostReply)
         for (failure in listOf(unknown, acknowledged)) {
             assertMapped(failure, GENERIC_INTERNAL_ERROR)
-            val mapped = DucklakeMetadata.translateCatalogException(failure)
+            val mapped = DucklakeCatalogExceptions.translateCatalogException(failure)
             assertThat(mapped.message).contains("do not retry or delete output files")
             assertThat(mapped.cause!!.cause).isSameAs(lostReply)
         }
@@ -74,7 +74,7 @@ class TestDucklakeCatalogExceptionMapping {
 
     private fun assertMapped(catalogException: dev.brikk.ducklake.catalog.DucklakeException, expected: io.trino.spi.StandardErrorCode)
     {
-        val mapped = DucklakeMetadata.translateCatalogException(catalogException)
+        val mapped = DucklakeCatalogExceptions.translateCatalogException(catalogException)
         assertThat(mapped.errorCode).isEqualTo(expected.toErrorCode())
         assertThat(mapped.message).isEqualTo(catalogException.message)
         assertThat(mapped.cause).isSameAs(catalogException)

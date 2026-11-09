@@ -13,7 +13,7 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
-import dev.brikk.ducklake.trino.plugin.DucklakeMetadata.Companion.getSnapshotTimestampFromVersion
+import dev.brikk.ducklake.trino.plugin.DucklakeTableVersions.getSnapshotTimestampFromVersion
 import io.trino.spi.connector.ConnectorSession
 import io.trino.spi.connector.ConnectorTableVersion
 import io.trino.spi.connector.PointerType

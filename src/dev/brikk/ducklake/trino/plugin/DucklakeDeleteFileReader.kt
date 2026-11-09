@@ -700,10 +700,7 @@ object DucklakeDeleteFileReader {
     }
 
     private fun getDeleteFileColumn(fileSchema: MessageType, messageColumnIO: MessageColumnIO): DeleteFileColumn {
-        for (field in fileSchema.fields) {
-            if (!field.isPrimitive) {
-                continue
-            }
+        for (field in fileSchema.fields.filter { it.isPrimitive }) {
             val columnIO: ColumnIO = messageColumnIO.getChild(field.name)
             if (columnIO !is PrimitiveColumnIO) {
                 continue

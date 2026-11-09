@@ -49,8 +49,8 @@ class DucklakeParquetSchemaBuilder private constructor() {
             // Build lookup: parentColumnId -> childName -> DucklakeColumn
             val childrenByParent: Map<Long, Map<String, DucklakeColumn>> =
                     allColumns
-                            .filter { it.parentColumn != null }
-                            .groupBy({ it.parentColumn!! }, { it })
+                            .mapNotNull { column -> column.parentColumn?.let { parent -> parent to column } }
+                            .groupBy({ it.first }, { it.second })
                             .mapValues { (_, cols) -> cols.associateBy { it.columnName } }
 
             // Build top-level name -> columnId map

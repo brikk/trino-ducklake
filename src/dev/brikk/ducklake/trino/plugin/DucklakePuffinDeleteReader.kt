@@ -144,7 +144,7 @@ object DucklakePuffinDeleteReader {
         }
         val positions = DucklakeLongSet()
         for (blob in blobs) {
-            if (mustFilter && blob.snapshotId!! > snapshotFilterMax!!) {
+            if (mustFilter && blob.snapshotId!! > snapshotFilterMax) {
                 continue
             }
             positions.addAll(decodeBlobRegion(data, blob.offset, blob.length))

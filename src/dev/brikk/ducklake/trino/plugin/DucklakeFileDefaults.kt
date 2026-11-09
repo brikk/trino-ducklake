@@ -37,7 +37,8 @@ internal class DucklakeFileDefaults(
     columns: List<DucklakeColumn>,
     private val typeConverter: DucklakeTypeConverter) {
     private val targetColumns = columns.associateBy { it.columnId }
-    private val children = columns.filter { it.parentColumn != null }.groupBy { it.parentColumn!! }
+    private val children = columns.mapNotNull { column -> column.parentColumn?.let { parent -> parent to column } }
+        .groupBy({ it.first }, { it.second })
         .mapValues { (_, nodes) -> nodes.sortedBy { it.columnOrder } }
     private val tree = columns
     private val defaults = mutableMapOf<Long, Any?>()
@@ -67,7 +68,7 @@ internal class DucklakeFileDefaults(
         // The catalog's deliberate refusal to project this default for the stored metadata layout.
         throw TrinoException(NOT_SUPPORTED, e.message ?: "Catalog refused file default projection", e)
     } catch (e: DucklakeException) {
-        throw DucklakeMetadata.translateCatalogException(e)
+        throw DucklakeCatalogExceptions.translateCatalogException(e)
     }
 
     fun needsRewrite(columnId: Long): Boolean = columnId in defaults || children[columnId].orEmpty().any { needsRewrite(it.columnId) }

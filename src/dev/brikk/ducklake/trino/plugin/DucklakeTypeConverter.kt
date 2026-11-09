@@ -16,7 +16,6 @@ package dev.brikk.ducklake.trino.plugin
 import com.google.common.collect.ImmutableList
 import com.google.inject.Inject
 import dev.brikk.ducklake.catalog.DucklakeColumn
-import io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR
 import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
 import io.trino.spi.TrinoException
 import io.trino.spi.type.ArrayType
@@ -59,8 +58,9 @@ open class DucklakeTypeConverter @Inject constructor(private val typeManager: Ty
      * tied to column_id. Primitive leaves still use [toTrinoType].
      */
     open fun toTrinoType(column: DucklakeColumn, allColumns: List<DucklakeColumn>): Type {
-        val childrenByParent = allColumns.filter { it.parentColumn != null }
-                .groupBy { it.parentColumn!! }
+        val childrenByParent = allColumns
+                .mapNotNull { column -> column.parentColumn?.let { parent -> parent to column } }
+                .groupBy({ it.first }, { it.second })
                 .mapValues { (_, children) -> children.sortedBy { it.columnOrder } }
 
         fun convert(node: DucklakeColumn): Type {
@@ -94,234 +94,157 @@ open class DucklakeTypeConverter @Inject constructor(private val typeManager: Ty
     }
 
     /**
-     * Convert Ducklake type string to Trino Type
+     * Convert Ducklake type string to Trino Type. Nested `struct`/`list`/`map` signatures are parsed
+     * by the catalog's grammar ([catalogCompositeType]); the rest are scalar type names.
      */
     open fun toTrinoType(ducklakeType: String): Type {
         catalogCompositeType(ducklakeType, typeManager, ::toTrinoType)?.let { return it }
         val normalizedType: String = ducklakeType.trim().lowercase(Locale.ROOT)
 
-        if (normalizedType.startsWith("list<") && normalizedType.endsWith(">")) {
-            val elementType = extractTypeArguments(normalizedType, "list").trim()
-            return ArrayType(toTrinoType(elementType))
+        // Native Trino JSON type (io.trino.type.JsonType, resolved via TypeManager since it is
+        // not on the trino-spi compile classpath). Physically a UTF-8 string in parquet — the
+        // same shape DuckDB writes — so reads/writes reuse the VARCHAR value paths.
+        if (normalizedType == "json") {
+            return typeManager.getType(TypeDescriptor(StandardTypes.JSON))
         }
+        SCALAR_TRINO_TYPES[normalizedType]?.let { return it }
 
-        if (normalizedType.startsWith("struct<") && normalizedType.endsWith(">")) {
-            val fieldsStr = extractTypeArguments(normalizedType, "struct")
-            val fieldParts: List<String> = splitTopLevelCommas(fieldsStr)
-            val fields: ImmutableList.Builder<RowType.Field> = ImmutableList.builder()
-            for (fieldPart in fieldParts) {
-                val colonIndex = fieldPart.indexOf(':')
-                if (colonIndex < 0) {
-                    throw TrinoException(GENERIC_INTERNAL_ERROR, "Invalid struct field (missing colon): $fieldPart")
-                }
-                val fieldName = fieldPart.substring(0, colonIndex).trim()
-                val fieldType = fieldPart.substring(colonIndex + 1).trim()
-                fields.add(RowType.Field(Optional.of(fieldName), toTrinoType(fieldType)))
-            }
-            return RowType.from(fields.build())
+        val decimalMatcher = DECIMAL_PATTERN.matcher(normalizedType)
+        if (decimalMatcher.matches()) {
+            val precision = decimalMatcher.group(1).toInt()
+            val scale = decimalMatcher.group(2).toInt()
+            return DecimalType.createDecimalType(precision, scale)
         }
-
-        if (normalizedType.startsWith("map<") && normalizedType.endsWith(">")) {
-            val argsStr = extractTypeArguments(normalizedType, "map")
-            val parts: List<String> = splitTopLevelCommas(argsStr)
-            if (parts.size != 2) {
-                throw TrinoException(GENERIC_INTERNAL_ERROR, "Invalid map type (expected 2 type arguments, got ${parts.size}): $ducklakeType")
-            }
-            val keyDescriptor: TypeDescriptor = toTrinoType(parts[0].trim()).typeDescriptor
-            val valueDescriptor: TypeDescriptor = toTrinoType(parts[1].trim()).typeDescriptor
-            return typeManager.getParameterizedType(StandardTypes.MAP, ImmutableList.of(
-                    TypeParameter.typeParameter(keyDescriptor),
-                    TypeParameter.typeParameter(valueDescriptor)))
-        }
-
-        return when (normalizedType) {
-            // Boolean
-            "boolean" -> BooleanType.BOOLEAN
-
-            // Signed integers
-            "int8" -> TinyintType.TINYINT
-            "int16" -> SmallintType.SMALLINT
-            "int32" -> IntegerType.INTEGER
-            "int64" -> BigintType.BIGINT
-
-            // Unsigned integers - map to next larger signed type
-            // TODO: Add validation to ensure values don't exceed signed range
-            "uint8" -> SmallintType.SMALLINT  // 0..255 -> -32768..32767
-            "uint16" -> IntegerType.INTEGER    // 0..65535 -> -2^31..2^31-1
-            "uint32" -> BigintType.BIGINT      // 0..2^32-1 -> -2^63..2^63-1
-            "uint64" -> DecimalType.createDecimalType(20, 0) // 0..2^64-1 -> decimal(20,0)
-
-            // 128-bit integers. DuckLake stores these as "int128" / "uint128" (see upstream
-            // ducklake_types.cpp: int128 <-> HUGEINT, uint128 <-> UHUGEINT). int128 fits in
-            // DECIMAL(38, 0) for all but the extreme edges of its ±1.7e38 range; uint128's
-            // 0..3.4e38 range exceeds any Trino decimal, so we degrade it to VARCHAR (data
-            // preserved as text, no numeric ops). See dev-docs/archive/COMPARE-pg_ducklake.md B3.
-            "int128" -> DecimalType.createDecimalType(38, 0)
-            "uint128" -> VarcharType.VARCHAR
-
-            // Floating point
-            "float32" -> RealType.REAL
-            "float64" -> DoubleType.DOUBLE
-
-            // Temporal types
-            "date" -> DateType.DATE
-            "time" -> TimeType.TIME_MICROS  // Ducklake uses microsecond precision
-            "timetz" -> TimeWithTimeZoneType.TIME_TZ_MICROS
-            "timestamp" -> TimestampType.TIMESTAMP_MICROS
-            "timestamptz" -> TimestampWithTimeZoneType.TIMESTAMP_TZ_MICROS
-            "timestamp_s" -> TimestampType.createTimestampType(0)   // second precision
-            "timestamp_ms" -> TimestampType.createTimestampType(3)  // millisecond precision
-            "timestamp_ns" -> TimestampType.createTimestampType(9)  // nanosecond precision
-
-            // String types
-            "varchar" -> VarcharType.VARCHAR
-            "blob" -> VarbinaryType.VARBINARY
-            "uuid" -> UuidType.UUID
-
-            // ⚠️ DEGRADED SEMANTICS - MVP PLACEHOLDERS ONLY
-            // These mappings allow basic data access but DO NOT provide full type support:
-            // - No type-specific operators or functions
-            // - No validation or type safety
-            // - Data is accessible but with reduced functionality
-            // Native Trino JSON type (io.trino.type.JsonType, resolved via TypeManager since it is
-            // not on the trino-spi compile classpath). Physically a UTF-8 string in parquet — the
-            // same shape DuckDB writes — so reads/writes reuse the VARCHAR value paths.
-            "json" -> typeManager.getType(TypeDescriptor(StandardTypes.JSON))
-            "variant" -> VarcharType.VARCHAR  // DEGRADED: No variant support, needs shredding implementation
-            "interval" -> VarcharType.VARCHAR  // DEGRADED: Interval not supported in Trino, stored as string
-
-            // DEGRADED: Geometry types stored as raw bytes, no spatial functions.
-            // DuckLake 1.0 renamed "linestring z" to "linestring_z"; we accept both
-            // so catalogs written against either spec version read correctly.
-            "geometry", "point", "linestring", "polygon",
-            "multipoint", "multilinestring", "multipolygon",
-            "linestring_z", "linestring z", "geometrycollection" -> VarbinaryType.VARBINARY
-
-            else -> {
-                // Check for decimal(P,S)
-                val decimalMatcher = DECIMAL_PATTERN.matcher(normalizedType)
-                if (decimalMatcher.matches()) {
-                    val precision = decimalMatcher.group(1).toInt()
-                    val scale = decimalMatcher.group(2).toInt()
-                    DecimalType.createDecimalType(precision, scale)
-                }
-                else {
-                    throw TrinoException(NOT_SUPPORTED, "Unsupported Ducklake type: $ducklakeType")
-                }
-            }
-        }
+        throw TrinoException(NOT_SUPPORTED, "Unsupported Ducklake type: $ducklakeType")
     }
 
     /**
      * Convert Trino type to Ducklake type string (for write operations)
      */
-    open fun toDucklakeType(trinoType: Type): String {
-        when (trinoType) {
-            BooleanType.BOOLEAN -> return "boolean"
-            TinyintType.TINYINT -> return "int8"
-            SmallintType.SMALLINT -> return "int16"
-            IntegerType.INTEGER -> return "int32"
-            BigintType.BIGINT -> return "int64"
-            RealType.REAL -> return "float32"
-            DoubleType.DOUBLE -> return "float64"
-            is DecimalType -> return "decimal(${trinoType.precision},${trinoType.scale})"
-            DateType.DATE -> return "date"
-            is TimestampType -> {
-                return when (trinoType.precision) {
-                    0 -> "timestamp_s"
-                    3 -> "timestamp_ms"
-                    6 -> "timestamp"
-                    9 -> "timestamp_ns"
-                    // DuckLake only encodes second/milli/micro/nano timestamps; any other Trino
-                    // precision (1, 2, 4, 5, 7, 8) has no representable DuckLake type. Fail loudly at
-                    // DDL time instead of silently collapsing to micros and reading back as TIMESTAMP(6).
-                    else -> throw TrinoException(NOT_SUPPORTED,
-                            "Unsupported timestamp precision ${trinoType.precision} for DuckLake write; supported precisions are 0, 3, 6, 9")
-                }
-            }
-            // DuckLake timestamptz is microsecond-only (DuckDB has a single TIMESTAMPTZ = micros;
-            // no second/milli/nano variants like plain TIMESTAMP). The stored type is always
-            // micros regardless of the declared precision; a column declared at another precision
-            // silently widens to micros on read — tolerated here (unlike TIMESTAMP/TIME) because
-            // there is no narrower tstz storage. The CTAS short-block mismatch this used to cause
-            // is fixed in beginCreateTable, not by rejecting the type.
-            is TimestampWithTimeZoneType -> return "timestamptz"
-        }
+    open fun toDucklakeType(trinoType: Type): String = when (trinoType) {
+        is DecimalType -> "decimal(${trinoType.precision},${trinoType.scale})"
+        is TimestampType -> timestampDucklakeType(trinoType.precision)
+        // DuckLake timestamptz is microsecond-only (DuckDB has a single TIMESTAMPTZ = micros;
+        // no second/milli/nano variants like plain TIMESTAMP). The stored type is always
+        // micros regardless of the declared precision; a column declared at another precision
+        // silently widens to micros on read — tolerated here (unlike TIMESTAMP/TIME) because
+        // there is no narrower tstz storage. The CTAS short-block mismatch this used to cause
+        // is fixed in beginCreateTable, not by rejecting the type.
+        is TimestampWithTimeZoneType -> "timestamptz"
         // DuckLake time / timetz are microsecond-only. Reject any other declared precision rather
         // than silently coercing to micros (which would read back as TIME(6) / a changed precision).
-        if (trinoType is TimeType) {
-            if (trinoType.precision != 6) {
-                throw TrinoException(NOT_SUPPORTED,
-                        "Unsupported time precision ${trinoType.precision} for DuckLake write; only precision 6 (microseconds) is supported")
-            }
-            return "time"
+        is TimeType -> microsecondTimeType("time", "time", trinoType.precision)
+        is TimeWithTimeZoneType -> microsecondTimeType("timetz", "time with time zone", trinoType.precision)
+        is VarcharType -> "varchar"
+        // Nested types: DuckLake stores these as parent column type strings;
+        // child columns are separate rows linked via parent_column.
+        is ArrayType -> "list"
+        is RowType -> "struct"
+        is MapType -> "map"
+        else -> SCALAR_DUCKLAKE_TYPES[trinoType] ?: jsonDucklakeType(trinoType)
+    }
+
+    private fun timestampDucklakeType(precision: Int): String = when (precision) {
+        0 -> "timestamp_s"
+        3 -> "timestamp_ms"
+        6 -> "timestamp"
+        9 -> "timestamp_ns"
+        // DuckLake only encodes second/milli/micro/nano timestamps; any other Trino
+        // precision (1, 2, 4, 5, 7, 8) has no representable DuckLake type. Fail loudly at
+        // DDL time instead of silently collapsing to micros and reading back as TIMESTAMP(6).
+        else -> throw TrinoException(NOT_SUPPORTED,
+                "Unsupported timestamp precision $precision for DuckLake write; supported precisions are 0, 3, 6, 9")
+    }
+
+    private fun microsecondTimeType(ducklakeType: String, typeName: String, precision: Int): String {
+        if (precision != 6) {
+            throw TrinoException(NOT_SUPPORTED,
+                    "Unsupported $typeName precision $precision for DuckLake write; only precision 6 (microseconds) is supported")
         }
-        if (trinoType is TimeWithTimeZoneType) {
-            if (trinoType.precision != 6) {
-                throw TrinoException(NOT_SUPPORTED,
-                        "Unsupported time with time zone precision ${trinoType.precision} for DuckLake write; only precision 6 (microseconds) is supported")
-            }
-            return "timetz"
-        }
-        if (trinoType == VarcharType.VARCHAR || trinoType is VarcharType) {
-            return "varchar"
-        }
-        if (trinoType == VarbinaryType.VARBINARY) {
-            return "blob"
-        }
-        if (trinoType == UuidType.UUID) {
-            return "uuid"
-        }
+        return ducklakeType
+    }
+
+    private fun jsonDucklakeType(trinoType: Type): String {
         if (DucklakeJsonSupport.isJson(trinoType)) {
             return "json"
         }
-
-        // Nested types: DuckLake stores these as parent column type strings;
-        // child columns are separate rows linked via parent_column.
-        if (trinoType is ArrayType) {
-            return "list"
-        }
-        if (trinoType is RowType) {
-            return "struct"
-        }
-        if (trinoType is MapType) {
-            return "map"
-        }
-
         throw TrinoException(NOT_SUPPORTED, "Unsupported Trino type: $trinoType")
     }
 
     companion object {
         private val DECIMAL_PATTERN: Pattern = Pattern.compile("decimal\\((\\d+),\\s*(\\d+)\\)")
 
-        // Extracts the inner type arguments from a parameterized type string (e.g. the content between the outermost angle brackets)
-        private fun extractTypeArguments(typeString: String, prefix: String): String {
-            // prefix< ... >
-            return typeString.substring(prefix.length + 1, typeString.length - 1)
+        private val SCALAR_TRINO_TYPES: Map<String, Type> = buildMap {
+            put("boolean", BooleanType.BOOLEAN)
+
+            // Signed integers
+            put("int8", TinyintType.TINYINT)
+            put("int16", SmallintType.SMALLINT)
+            put("int32", IntegerType.INTEGER)
+            put("int64", BigintType.BIGINT)
+
+            // Unsigned integers map to the next larger signed type; writes are range-checked by
+            // DucklakeUnsignedRangeChecker.
+            put("uint8", SmallintType.SMALLINT)  // 0..255 -> -32768..32767
+            put("uint16", IntegerType.INTEGER)    // 0..65535 -> -2^31..2^31-1
+            put("uint32", BigintType.BIGINT)      // 0..2^32-1 -> -2^63..2^63-1
+            put("uint64", DecimalType.createDecimalType(20, 0)) // 0..2^64-1 -> decimal(20,0)
+
+            // 128-bit integers. DuckLake stores these as "int128" / "uint128" (see upstream
+            // ducklake_types.cpp: int128 <-> HUGEINT, uint128 <-> UHUGEINT). int128 fits in
+            // DECIMAL(38, 0) for all but the extreme edges of its ±1.7e38 range; uint128's
+            // 0..3.4e38 range exceeds any Trino decimal, so we degrade it to VARCHAR (data
+            // preserved as text, no numeric ops). See dev-docs/archive/COMPARE-pg_ducklake.md B3.
+            put("int128", DecimalType.createDecimalType(38, 0))
+            put("uint128", VarcharType.VARCHAR)
+
+            // Floating point
+            put("float32", RealType.REAL)
+            put("float64", DoubleType.DOUBLE)
+
+            // Temporal types
+            put("date", DateType.DATE)
+            put("time", TimeType.TIME_MICROS)  // Ducklake uses microsecond precision
+            put("timetz", TimeWithTimeZoneType.TIME_TZ_MICROS)
+            put("timestamp", TimestampType.TIMESTAMP_MICROS)
+            put("timestamptz", TimestampWithTimeZoneType.TIMESTAMP_TZ_MICROS)
+            put("timestamp_s", TimestampType.createTimestampType(0))   // second precision
+            put("timestamp_ms", TimestampType.createTimestampType(3))  // millisecond precision
+            put("timestamp_ns", TimestampType.createTimestampType(9))  // nanosecond precision
+
+            // String types
+            put("varchar", VarcharType.VARCHAR)
+            put("blob", VarbinaryType.VARBINARY)
+            put("uuid", UuidType.UUID)
+
+            // ⚠️ DEGRADED SEMANTICS - MVP PLACEHOLDERS ONLY
+            // These mappings allow basic data access but DO NOT provide full type support:
+            // - No type-specific operators or functions
+            // - No validation or type safety
+            // - Data is accessible but with reduced functionality
+            put("variant", VarcharType.VARCHAR)  // DEGRADED: No variant support, needs shredding implementation
+            put("interval", VarcharType.VARCHAR)  // DEGRADED: Interval not supported in Trino, stored as string
+
+            // DEGRADED: Geometry types stored as raw bytes, no spatial functions.
+            // DuckLake 1.0 renamed "linestring z" to "linestring_z"; we accept both
+            // so catalogs written against either spec version read correctly.
+            for (geometry in listOf("geometry", "point", "linestring", "polygon",
+                    "multipoint", "multilinestring", "multipolygon",
+                    "linestring_z", "linestring z", "geometrycollection")) {
+                put(geometry, VarbinaryType.VARBINARY)
+            }
         }
 
-        // Splits a string at top-level commas, respecting nested angle brackets
-        private fun splitTopLevelCommas(input: String): List<String> {
-            val parts = mutableListOf<String>()
-            var depth = 0
-            var start = 0
-            var i = 0
-            while (i < input.length) {
-                val c = input[i]
-                if (c == '<') {
-                    depth++
-                }
-                else if (c == '>') {
-                    depth--
-                }
-                else if (c == ',' && depth == 0) {
-                    parts.add(input.substring(start, i).trim())
-                    start = i + 1
-                }
-                i++
-            }
-            parts.add(input.substring(start).trim())
-            return parts
-        }
+        private val SCALAR_DUCKLAKE_TYPES: Map<Type, String> = mapOf(
+                BooleanType.BOOLEAN to "boolean",
+                TinyintType.TINYINT to "int8",
+                SmallintType.SMALLINT to "int16",
+                IntegerType.INTEGER to "int32",
+                BigintType.BIGINT to "int64",
+                RealType.REAL to "float32",
+                DoubleType.DOUBLE to "float64",
+                DateType.DATE to "date",
+                VarbinaryType.VARBINARY to "blob",
+                UuidType.UUID to "uuid")
     }
 }

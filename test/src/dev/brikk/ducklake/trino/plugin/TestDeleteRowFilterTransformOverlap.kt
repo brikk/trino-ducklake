@@ -18,7 +18,7 @@ import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 
 /**
- * Pins [DucklakePageSourceProvider.DeleteRowFilterTransform]'s two-vocabulary contract:
+ * Pins [DeleteRowFilterTransform]'s two-vocabulary contract:
  * global row ids and file-local offsets are matched ONLY under their own interpretation.
  *
  * Two regressions are guarded:
@@ -44,7 +44,7 @@ internal class TestDeleteRowFilterTransformOverlap {
         val globalRowIds: Set<Long> = setOf(5L, 1010L)
         val localOffsets: Set<Long> = setOf(15L, 1005L)
 
-        val filter = DucklakePageSourceProvider.DeleteRowFilterTransform(globalRowIds, localOffsets, 1000L)
+        val filter = DeleteRowFilterTransform(globalRowIds, localOffsets, 1000L)
         val filtered = filter.apply(SourcePage.create(20))
 
         // Only global 1010 (offset 10) and local 15 may drop — 18 retained, not the old 17.
@@ -64,7 +64,7 @@ internal class TestDeleteRowFilterTransformOverlap {
                 .`as`("HashSet merge dedupes overlapping positions")
                 .containsExactlyInAnyOrder(5L, 10L, 15L)
 
-        val filter = DucklakePageSourceProvider.DeleteRowFilterTransform(emptySet(), localOffsets, 0L)
+        val filter = DeleteRowFilterTransform(emptySet(), localOffsets, 0L)
         val filtered = filter.apply(SourcePage.create(20))
 
         // The smoking gun: offset 15 must be dropped. Under the upstream C++ bug the
@@ -81,7 +81,7 @@ internal class TestDeleteRowFilterTransformOverlap {
         // One logical row tombstoned twice — as global id 1010 (Trino `row_id` delete file)
         // and as local offset 10 (inlined delete). It must drop exactly once, and the
         // overlap must not disturb neighbouring tombstones (5 local, 15 global).
-        val filter = DucklakePageSourceProvider.DeleteRowFilterTransform(
+        val filter = DeleteRowFilterTransform(
                 setOf(1010L, 1015L),
                 setOf(5L, 10L),
                 1000L)

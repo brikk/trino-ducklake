@@ -42,7 +42,6 @@ import io.trino.spi.StandardErrorCode.INVALID_PROCEDURE_ARGUMENT
 import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
 import io.trino.spi.TrinoException
 import io.trino.spi.connector.ConnectorSession
-import io.trino.spi.predicate.TupleDomain
 import io.trino.spi.procedure.Procedure
 import io.trino.spi.type.ArrayType
 import io.trino.spi.type.BooleanType.BOOLEAN
@@ -115,16 +114,7 @@ class DucklakeAddFilesProcedure @Inject constructor(
     ) {
         val schemaArg = requireArg(schemaName, "schema_name")
         val tableArg = requireArg(tableName, "table_name")
-        if (fileList.isNullOrEmpty()) {
-            throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "files must be a non-empty array")
-        }
-        val format: String = (fileFormat ?: FORMAT_PARQUET).lowercase()
-        if (format !in DucklakeSessionProperties.SUPPORTED_DATA_FILE_FORMATS) {
-            throw TrinoException(INVALID_PROCEDURE_ARGUMENT,
-                    "add_files file_format must be 'parquet', got '$format'")
-        }
-
-        val filePaths = extractStringArray(fileList)
+        val filePaths = extractStringArray(requireFiles(fileList, fileFormat))
         val snapshotId = catalog.currentSnapshotId
         val tableId = resolveTable(catalog, schemaArg, tableArg, snapshotId).second.tableId
 
@@ -138,16 +128,7 @@ class DucklakeAddFilesProcedure @Inject constructor(
         val partitionSpecs: List<DucklakePartitionSpec> = catalog.getPartitionSpecs(tableId, snapshotId)
         val activePartitionSpec: Optional<DucklakePartitionSpec> = activePartitionSpecOf(partitionSpecs)
 
-        if (activePartitionSpec.isPresent) {
-            for (field in activePartitionSpec.get().fields) {
-                if (field.transform != DucklakePartitionTransform.IDENTITY) {
-                    throw TrinoException(NOT_SUPPORTED, String.format(
-                            "add_files on a partitioned table currently supports identity partition transforms only; "
-                                    + "table \"%s.%s\" has transform %s",
-                            schemaArg, tableArg, field.transform))
-                }
-            }
-        }
+        activePartitionSpec.ifPresent { spec -> requireIdentityTransforms(spec, schemaArg, tableArg) }
 
         val fileSystem: TrinoFileSystem = fileSystemFactory.create(session)
 
@@ -178,6 +159,28 @@ class DucklakeAddFilesProcedure @Inject constructor(
         translatingConflicts { catalog.commitAddFiles(tableId, fragments) }
     }
 
+    /** The non-empty file list, after checking the requested file format is one add_files registers. */
+    private fun requireFiles(fileList: List<*>?, fileFormat: String?): List<*> {
+        if (fileList.isNullOrEmpty()) {
+            throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "files must be a non-empty array")
+        }
+        val format: String = (fileFormat ?: FORMAT_PARQUET).lowercase()
+        if (format !in DucklakeSessionProperties.SUPPORTED_DATA_FILE_FORMATS) {
+            throw TrinoException(INVALID_PROCEDURE_ARGUMENT,
+                    "add_files file_format must be 'parquet', got '$format'")
+        }
+        return fileList
+    }
+
+    private fun requireIdentityTransforms(spec: DucklakePartitionSpec, schemaName: String, tableName: String) {
+        spec.fields.firstOrNull { it.transform != DucklakePartitionTransform.IDENTITY }?.let { field ->
+            throw TrinoException(NOT_SUPPORTED, String.format(
+                    "add_files on a partitioned table currently supports identity partition transforms only; "
+                            + "table \"%s.%s\" has transform %s",
+                    schemaName, tableName, field.transform))
+        }
+    }
+
     private fun buildFragment(
             fileSystem: TrinoFileSystem,
             filePath: String,
@@ -190,18 +193,7 @@ class DucklakeAddFilesProcedure @Inject constructor(
             ignoreExtraColumns: Boolean,
             hivePartitioning: Boolean,
     ): dev.brikk.ducklake.catalog.DucklakeWriteFragment {
-        val inputFile: TrinoInputFile
-        val fileSize: Long
-        try {
-            inputFile = fileSystem.newInputFile(Location.of(filePath))
-            if (!inputFile.exists()) {
-                throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "File does not exist: $filePath")
-            }
-            fileSize = inputFile.length()
-        }
-        catch (e: IOException) {
-            throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "Failed to open file: $filePath", e)
-        }
+        val (inputFile: TrinoInputFile, fileSize: Long) = openExistingFile(fileSystem, filePath)
 
         val hivePartitionValues: Map<String, String> = if (hivePartitioning)
             parseHivePartitions(filePath)
@@ -217,24 +209,7 @@ class DucklakeAddFilesProcedure @Inject constructor(
                     parquetReaderOptions,
                     memoryContext,
                     fileFormatDataSourceStats)
-            // Read the tail once at the size MetadataReader.readFooter would use, parse
-            // footer_size from its post-script, and hand the bytes to readFooter through the
-            // single-shot prefetch wrapper (which falls through to the delegate if the footer is
-            // larger than this read), saving an object-store round trip per file.
-            val tailReadSize = minOf(dataSource.estimatedSize, parquetReaderOptions.footerReadSize.toBytes())
-            var footerSize = 0L
-            var footerSource: ParquetDataSource = dataSource
-            if (tailReadSize >= POST_SCRIPT_SIZE) {
-                val tail: io.airlift.slice.Slice = dataSource.readTail(tailReadSize.toInt())
-                footerSize = footerLengthFromPostScript(tail)
-                footerSource = FooterPrefetchingParquetDataSource.wrapWithPrefetchedTail(dataSource, tail)
-            }
-
-            val parquetMetadata: ParquetMetadata = MetadataReader.readFooter(
-                    footerSource,
-                    parquetReaderOptions,
-                    Optional.empty(),
-                    Optional.empty())
+            val (parquetMetadata: ParquetMetadata, footerSize: Long) = readFooter(dataSource)
             val fileMetadata: FileMetadata = parquetMetadata.fileMetaData
 
             val mapper = DucklakeAddFilesNameMapper(
@@ -244,13 +219,7 @@ class DucklakeAddFilesProcedure @Inject constructor(
                     hivePartitionValues,
                     filePath,
                     "$schemaName.$tableName")
-            val result: DucklakeAddFilesNameMapper.Result
-            try {
-                result = mapper.map(fileMetadata.schema, allColumns, topLevelColumns)
-            }
-            catch (e: DucklakeAddFilesException) {
-                throw TrinoException(INVALID_PROCEDURE_ARGUMENT, e.message)
-            }
+            val result: DucklakeAddFilesNameMapper.Result = mapColumns(mapper, fileMetadata, allColumns, topLevelColumns)
 
             // Convert the trimmed Trino-side ParquetMetadata to the legacy
             // org.apache.parquet.format.FileMetaData thrift shape that our extractor
@@ -266,21 +235,8 @@ class DucklakeAddFilesProcedure @Inject constructor(
 
             val recordCount = aggregateRecordCount(thriftMetadata)
 
-            validatePartitionCoverage(
-                    filePath,
-                    activePartitionSpec,
-                    result.partitionValues,
-                    topLevelColumns,
-                    hivePartitioning)
+            validatePartitionCoverage(filePath, activePartitionSpec, result.partitionValues, topLevelColumns, hivePartitioning)
 
-            val partitionId: OptionalLong = activePartitionSpec.map { spec -> OptionalLong.of(spec.partitionId) }
-                    .orElse(OptionalLong.empty())
-
-            val partitionValues: Map<Int, String> = remapPartitionValuesToPartitionKeyIndex(
-                    result.partitionValues,
-                    activePartitionSpec)
-
-            val nameMap = result.nameMap
             return dev.brikk.ducklake.catalog.DucklakeWriteFragment(
                     filePath,
                     /* pathIsRelative */ false,
@@ -289,9 +245,9 @@ class DucklakeAddFilesProcedure @Inject constructor(
                     footerSize,
                     recordCount,
                     stats,
-                    partitionValues,
-                    if (partitionId.isPresent) partitionId.asLong else null,
-                    nameMap)
+                    remapPartitionValuesToPartitionKeyIndex(result.partitionValues, activePartitionSpec),
+                    activePartitionSpec.map { it.partitionId }.orElse(null),
+                    result.nameMap)
         }
         catch (e: IOException) {
             throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "Failed to read parquet footer: $filePath", e)
@@ -307,6 +263,56 @@ class DucklakeAddFilesProcedure @Inject constructor(
             }
         }
     }
+
+    private fun openExistingFile(fileSystem: TrinoFileSystem, filePath: String): Pair<TrinoInputFile, Long> {
+        try {
+            val inputFile = fileSystem.newInputFile(Location.of(filePath))
+            if (!inputFile.exists()) {
+                throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "File does not exist: $filePath")
+            }
+            return inputFile to inputFile.length()
+        }
+        catch (e: IOException) {
+            throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "Failed to open file: $filePath", e)
+        }
+    }
+
+    /**
+     * The footer and its `footer_size`. Read the tail once at the size MetadataReader.readFooter
+     * would use, parse footer_size from its post-script, and hand the bytes to readFooter through
+     * the single-shot prefetch wrapper (which falls through to the delegate if the footer is
+     * larger than this read), saving an object-store round trip per file.
+     */
+    @Throws(IOException::class)
+    private fun readFooter(dataSource: ParquetDataSource): Pair<ParquetMetadata, Long> {
+        val tailReadSize = minOf(dataSource.estimatedSize, parquetReaderOptions.footerReadSize.toBytes())
+        var footerSize = 0L
+        var footerSource: ParquetDataSource = dataSource
+        if (tailReadSize >= POST_SCRIPT_SIZE) {
+            val tail: io.airlift.slice.Slice = dataSource.readTail(tailReadSize.toInt())
+            footerSize = footerLengthFromPostScript(tail)
+            footerSource = FooterPrefetchingParquetDataSource.wrapWithPrefetchedTail(dataSource, tail)
+        }
+
+        val parquetMetadata: ParquetMetadata = MetadataReader.readFooter(
+                footerSource,
+                parquetReaderOptions,
+                Optional.empty(),
+                Optional.empty())
+        return parquetMetadata to footerSize
+    }
+
+    private fun mapColumns(
+            mapper: DucklakeAddFilesNameMapper,
+            fileMetadata: FileMetadata,
+            allColumns: List<DucklakeColumn>,
+            topLevelColumns: List<DucklakeColumn>): DucklakeAddFilesNameMapper.Result =
+        try {
+            mapper.map(fileMetadata.schema, allColumns, topLevelColumns)
+        }
+        catch (e: DucklakeAddFilesException) {
+            throw TrinoException(INVALID_PROCEDURE_ARGUMENT, e.message, e)
+        }
 
     private fun remapPartitionValuesToPartitionKeyIndex(
             byFieldId: Map<Int, String>,
@@ -412,7 +418,8 @@ class DucklakeAddFilesProcedure @Inject constructor(
                 val b5 = tail.getByte(base + 5)
                 val b6 = tail.getByte(base + 6)
                 val b7 = tail.getByte(base + 7)
-                val isParquetMagic = b4 == 'P'.code.toByte() && b5 == 'A'.code.toByte() && b6 == 'R'.code.toByte() && (b7 == '1'.code.toByte() || b7 == 'E'.code.toByte())
+                val isParquetMagic = b4 == 'P'.code.toByte() && b5 == 'A'.code.toByte() && b6 == 'R'.code.toByte() &&
+                        (b7 == '1'.code.toByte() || b7 == 'E'.code.toByte())
                 if (!isParquetMagic) {
                     return 0
                 }
@@ -488,41 +495,39 @@ class DucklakeAddFilesProcedure @Inject constructor(
             for (block in metadata.blocks) {
                 val rg = org.apache.parquet.format.RowGroup()
                 rg.setNum_rows(block.rowCount())
-                val chunks: MutableList<org.apache.parquet.format.ColumnChunk> = mutableListOf()
-                for (column in block.columns()) {
-                    val chunk = org.apache.parquet.format.ColumnChunk()
-                    val meta = org.apache.parquet.format.ColumnMetaData()
-                    meta.setType(toThriftPhysicalType(column.primitiveType.primitiveTypeName))
-                    meta.setNum_values(column.valueCount)
-                    meta.setTotal_compressed_size(column.totalSize)
-                    val nativeStats: org.apache.parquet.column.statistics.Statistics<*>? = column.statistics
-                    if (nativeStats != null) {
-                        val statistics = org.apache.parquet.format.Statistics()
-                        if (!nativeStats.isEmpty) {
-                            val minBytes = nativeStats.minBytes
-                            val maxBytes = nativeStats.maxBytes
-                            if (minBytes != null) {
-                                statistics.setMin_value(minBytes)
-                            }
-                            if (maxBytes != null) {
-                                statistics.setMax_value(maxBytes)
-                            }
-                        }
-                        if (nativeStats.numNulls >= 0) {
-                            statistics.setNull_count(nativeStats.numNulls)
-                        }
-                        meta.setStatistics(statistics)
-                    }
-                    chunk.setMeta_data(meta)
-                    chunks.add(chunk)
-                }
-                rg.setColumns(chunks)
+                rg.setColumns(block.columns().map { column -> toThriftColumnChunk(column) })
                 rowGroups.add(rg)
                 numRows += block.rowCount()
             }
             thrift.setRow_groups(rowGroups)
             thrift.setNum_rows(numRows)
             return thrift
+        }
+
+        private fun toThriftColumnChunk(column: io.trino.parquet.metadata.ColumnChunkMetadata): org.apache.parquet.format.ColumnChunk {
+            val chunk = org.apache.parquet.format.ColumnChunk()
+            val meta = org.apache.parquet.format.ColumnMetaData()
+            meta.setType(toThriftPhysicalType(column.primitiveType.primitiveTypeName))
+            meta.setNum_values(column.valueCount)
+            meta.setTotal_compressed_size(column.totalSize)
+            val nativeStats: org.apache.parquet.column.statistics.Statistics<*>? = column.statistics
+            if (nativeStats != null) {
+                meta.setStatistics(toThriftStatistics(nativeStats))
+            }
+            chunk.setMeta_data(meta)
+            return chunk
+        }
+
+        private fun toThriftStatistics(nativeStats: org.apache.parquet.column.statistics.Statistics<*>): org.apache.parquet.format.Statistics {
+            val statistics = org.apache.parquet.format.Statistics()
+            if (!nativeStats.isEmpty) {
+                nativeStats.minBytes?.let { statistics.setMin_value(it) }
+                nativeStats.maxBytes?.let { statistics.setMax_value(it) }
+            }
+            if (nativeStats.numNulls >= 0) {
+                statistics.setNull_count(nativeStats.numNulls)
+            }
+            return statistics
         }
 
         private fun toThriftPhysicalType(

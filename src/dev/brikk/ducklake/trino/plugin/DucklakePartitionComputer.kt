@@ -279,26 +279,10 @@ object DucklakePartitionComputer {
             return murmur3_32_fixed().hashLong(DATE.getInt(block, position).toLong()).asInt()
         }
         if (type is TimestampType) {
-            val epochMicros: Long
-            if (type.isShort) {
-                epochMicros = type.getLong(block, position)
-            }
-            else {
-                epochMicros = (type.getObject(block, position) as LongTimestamp).epochMicros
-            }
-            return murmur3_32_fixed().hashLong(epochMicros).asInt()
+            return murmur3_32_fixed().hashLong(timestampEpochMicros(type, block, position)).asInt()
         }
         if (type is TimestampWithTimeZoneType) {
-            val epochMicros: Long
-            if (type.isShort) {
-                epochMicros = unpackMillisUtc(type.getLong(block, position)) * 1_000L
-            }
-            else {
-                val tz: LongTimestampWithTimeZone =
-                        type.getObject(block, position) as LongTimestampWithTimeZone
-                epochMicros = tz.epochMillis * 1_000L + tz.picosOfMilli / 1_000_000L
-            }
-            return murmur3_32_fixed().hashLong(epochMicros).asInt()
+            return murmur3_32_fixed().hashLong(timestampTzEpochMicros(type, block, position)).asInt()
         }
         if (type is VarcharType) {
             val slice: Slice = type.getSlice(block, position)
@@ -318,5 +302,17 @@ object DucklakePartitionComputer {
             throw IllegalArgumentException("bucket(N) is not defined for type $type (Iceberg spec)")
         }
         throw IllegalArgumentException("bucket(N) does not yet support type: $type")
+    }
+
+    private fun timestampEpochMicros(type: TimestampType, block: Block, position: Int): Long =
+        if (type.isShort) type.getLong(block, position)
+        else (type.getObject(block, position) as LongTimestamp).epochMicros
+
+    private fun timestampTzEpochMicros(type: TimestampWithTimeZoneType, block: Block, position: Int): Long {
+        if (type.isShort) {
+            return unpackMillisUtc(type.getLong(block, position)) * 1_000L
+        }
+        val tz: LongTimestampWithTimeZone = type.getObject(block, position) as LongTimestampWithTimeZone
+        return tz.epochMillis * 1_000L + tz.picosOfMilli / 1_000_000L
     }
 }

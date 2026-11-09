@@ -65,7 +65,7 @@ class DucklakeSplitManager @Inject constructor(
     private val temporalPartitionEncoding: DucklakeTemporalPartitionEncoding = config.getTemporalPartitionEncoding()
     private val temporalPartitionEncodingReadLeniency: Boolean = config.isTemporalPartitionEncodingReadLeniency()
     private val readWorkLimits = DucklakeReadWorkLimits(config)
-    private val final11Reads = config.isEnableFinal11Reads()
+    private val readStrategy = DucklakeReadStrategy.of(config)
 
     override fun getSplits(
             transaction: ConnectorTransactionHandle?,
@@ -81,7 +81,7 @@ class DucklakeSplitManager @Inject constructor(
         log.debug("Getting splits for table %s at snapshot %d", tableHandle.tableName, tableHandle.snapshotId)
 
         // Get all data files for this table at the snapshot
-        var dataFiles: List<DucklakeDataFile> = catalog.getDataFiles(
+        val dataFiles: List<DucklakeDataFile> = catalog.getDataFiles(
                 tableHandle.tableId,
                 tableHandle.snapshotId)
         readWorkLimits.files(dataFiles)
@@ -107,79 +107,13 @@ class DucklakeSplitManager @Inject constructor(
                 }
                 .collect(toImmutableList())
 
-        var parquetSplits: List<DucklakeSplit> = listOf()
-        if (!dataFiles.isEmpty()) {
-            val tableMetadata: DucklakeTable = catalog.getTableById(tableHandle.tableId, tableHandle.snapshotId)
-                    ?: throw IllegalStateException("Table metadata missing for table ID: ${tableHandle.tableId}")
-            val schemaMetadata: DucklakeSchema = catalog.getSchema(tableHandle.schemaName, tableHandle.snapshotId)
-                    ?: throw IllegalStateException("Schema metadata missing for schema: ${tableHandle.schemaName}")
-            val tableDataPath: String = pathResolver.resolveTableDataPath(schemaMetadata, tableMetadata)
-
-            val fileStatisticsDomain: TupleDomain<DucklakeColumnHandle> = buildFileStatisticsDomain(constraint)
-                    .intersect(tableHandle.unenforcedPredicate)
-            dataFiles = pruneDataFiles(dataFiles, tableHandle, fileStatisticsDomain)
-            dataFiles = pruneByPartitionValues(dataFiles, tableHandle)
-            dataFiles = pruneByPath(dataFiles, tableHandle, tableDataPath)
-
-            // Pre-fetch partition spec + file partition values for the splits we're about
-            // to build. The page source uses these to constant-fill partition columns
-            // when the parquet body is missing them (hive-style external file imports).
-            val specsForProjection: List<DucklakePartitionSpec> = catalog.getPartitionSpecs(
-                    tableHandle.tableId, tableHandle.snapshotId)
-            val activeSpec: Optional<DucklakePartitionSpec> = if (specsForProjection.isEmpty())
-                Optional.empty()
-            else
-                Optional.of(specsForProjection.last())
-            val partitionValuesByFile: Map<Long, List<DucklakeFilePartitionValue>> = if (activeSpec.isPresent)
-                catalog.getFilePartitionValues(tableHandle.tableId, tableHandle.snapshotId)
-            else
-                mapOf()
-
-            // Batch-fetch the source-name overrides recorded in ducklake_name_mapping for
-            // files registered via add_files (those carry a non-null mapping_id). The page
-            // source uses these when a column's table name doesn't appear in the parquet
-            // schema (e.g. case-difference, or a renamed column whose old file kept the old
-            // parquet name). Avoid the query when no files in this set have mapping_ids.
-            val mappingIds: Set<Long> = dataFiles.stream()
-                    .map { it.mappingId }
-                    .filter { it != null }
-                    .map { it!! }
-                    .collect(java.util.stream.Collectors.toUnmodifiableSet())
-            val nameMapsByMappingId: Map<Long, Map<Long, String>> = fetchNameMaps(mappingIds)
-            // Hive-partition entries of the same name maps: columns whose value lives in the
-            // data-file PATH (`key=value/`) rather than the parquet body. DuckDB's
-            // `ducklake_add_data_files(..., hive_partitioning => true)` records partition columns
-            // this way (no partition spec, no ducklake_file_partition_value rows) — see
-            // getPartitionNameMaps. createMergedSplit parses the value out of each file's path and
-            // constant-fills the column via the existing missing-column machinery.
-            val partitionNameMapsByMappingId: Map<Long, Map<Long, String>> = fetchPartitionNameMaps(mappingIds)
-
-            // Fetch inlined-delete rows for this table at this snapshot, grouped by
-            // data_file_id. DuckLake stores small deletes (below DATA_INLINING_ROW_LIMIT)
-            // in ducklake_inlined_delete_<tableId>(file_id, row_id, begin_snapshot) rather
-            // than as a parquet delete file. The page source merges these positions into
-            // the same deleted-row set as parquet delete files. Empty map when the per-table
-            // metadata table doesn't exist (common case).
-            val inlinedDeletesByFileId: Map<Long, Set<Long>> = if (catalog.hasInlinedDeletes(
-                            tableHandle.tableId, tableHandle.snapshotId))
-                catalog.getInlinedDeletes(tableHandle.tableId, tableHandle.snapshotId)
-            else
-                emptyMap()
-
-            // Group by dataFileId to merge multiple delete files per data file
-            // (a data file can accumulate multiple delete files across snapshots)
-            val groupedFiles: Map<Long, List<DucklakeDataFile>> = dataFiles.groupBy { it.dataFileId }
-            parquetSplits = groupedFiles.values
-                    .map { group -> createMergedSplit(group, tableDataPath, fileStatisticsDomain, activeSpec, partitionValuesByFile, nameMapsByMappingId, partitionNameMapsByMappingId, inlinedDeletesByFileId, tableHandle.snapshotId) }
-        }
+        val parquetSplits: List<DucklakeSplit> = if (dataFiles.isEmpty()) listOf()
+            else dataFileSplits(tableHandle, dataFiles, constraint)
 
         // Empty table (no data files at all) with an inlined data table: emit an inlined
         // split so the engine gets a proper empty result instead of zero splits.
         // This does NOT apply when pruning eliminated all files — that means no rows match.
-        // Final-1.1 registry entries can describe absent physical tables: keep zero splits
-        // there rather than inventing an empty payload table to open.
-        val legacyEmptyInline = !final11Reads && tableHasNoDataFiles
-        if (legacyEmptyInline && inlinedSplits.isEmpty() && !inlinedDataInfos.isEmpty()) {
+        if (readStrategy.emitsEmptyInlinedSplit(tableHasNoDataFiles) && inlinedSplits.isEmpty() && !inlinedDataInfos.isEmpty()) {
             val latestInfo: DucklakeInlinedDataInfo = inlinedDataInfos.last()
             log.debug("Emitting empty inlined split for table %s (tableId=%d, schemaVersion=%d)",
                     tableHandle.tableName, latestInfo.tableId, latestInfo.schemaVersion)
@@ -202,6 +136,74 @@ class DucklakeSplitManager @Inject constructor(
                 inlinedSplits.size)
 
         FixedSplitSource(allSplits)
+    }
+
+    /** One split per data file (its delete files merged in), after stats, partition and `$path` pruning. */
+    private fun dataFileSplits(
+            tableHandle: DucklakeTableHandle,
+            dataFiles: List<DucklakeDataFile>,
+            constraint: Constraint): List<DucklakeSplit> {
+        val tableMetadata: DucklakeTable = catalog.getTableById(tableHandle.tableId, tableHandle.snapshotId)
+                ?: throw IllegalStateException("Table metadata missing for table ID: ${tableHandle.tableId}")
+        val schemaMetadata: DucklakeSchema = catalog.getSchema(tableHandle.schemaName, tableHandle.snapshotId)
+                ?: throw IllegalStateException("Schema metadata missing for schema: ${tableHandle.schemaName}")
+        val tableDataPath: String = pathResolver.resolveTableDataPath(schemaMetadata, tableMetadata)
+
+        val fileStatisticsDomain: TupleDomain<DucklakeColumnHandle> = buildFileStatisticsDomain(constraint)
+                .intersect(tableHandle.unenforcedPredicate)
+        val statsPruned: List<DucklakeDataFile> = pruneDataFiles(dataFiles, tableHandle, fileStatisticsDomain)
+        val partitionPruned: List<DucklakeDataFile> = pruneByPartitionValues(statsPruned, tableHandle)
+        val prunedFiles: List<DucklakeDataFile> = pruneByPath(partitionPruned, tableHandle, tableDataPath)
+
+        // Pre-fetch partition spec + file partition values for the splits we're about
+        // to build. The page source uses these to constant-fill partition columns
+        // when the parquet body is missing them (hive-style external file imports).
+        val specsForProjection: List<DucklakePartitionSpec> = catalog.getPartitionSpecs(
+                tableHandle.tableId, tableHandle.snapshotId)
+        val activeSpec: Optional<DucklakePartitionSpec> = if (specsForProjection.isEmpty())
+            Optional.empty()
+        else
+            Optional.of(specsForProjection.last())
+        val partitionValuesByFile: Map<Long, List<DucklakeFilePartitionValue>> = if (activeSpec.isPresent)
+            catalog.getFilePartitionValues(tableHandle.tableId, tableHandle.snapshotId)
+        else
+            mapOf()
+
+        // Batch-fetch the source-name overrides recorded in ducklake_name_mapping for
+        // files registered via add_files (those carry a non-null mapping_id). The page
+        // source uses these when a column's table name doesn't appear in the parquet
+        // schema (e.g. case-difference, or a renamed column whose old file kept the old
+        // parquet name). Avoid the query when no files in this set have mapping_ids.
+        val mappingIds: Set<Long> = prunedFiles.mapNotNull { it.mappingId }.toSet()
+        val nameMapsByMappingId: Map<Long, Map<Long, String>> = fetchNameMaps(mappingIds)
+        // Hive-partition entries of the same name maps: columns whose value lives in the
+        // data-file PATH (`key=value/`) rather than the parquet body. DuckDB's
+        // `ducklake_add_data_files(..., hive_partitioning => true)` records partition columns
+        // this way (no partition spec, no ducklake_file_partition_value rows) — see
+        // getPartitionNameMaps. createMergedSplit parses the value out of each file's path and
+        // constant-fills the column via the existing missing-column machinery.
+        val partitionNameMapsByMappingId: Map<Long, Map<Long, String>> = fetchPartitionNameMaps(mappingIds)
+
+        // Fetch inlined-delete rows for this table at this snapshot, grouped by
+        // data_file_id. DuckLake stores small deletes (below DATA_INLINING_ROW_LIMIT)
+        // in ducklake_inlined_delete_<tableId>(file_id, row_id, begin_snapshot) rather
+        // than as a parquet delete file. The page source merges these positions into
+        // the same deleted-row set as parquet delete files. Empty map when the per-table
+        // metadata table doesn't exist (common case).
+        val inlinedDeletesByFileId: Map<Long, Set<Long>> = if (catalog.hasInlinedDeletes(
+                        tableHandle.tableId, tableHandle.snapshotId))
+            catalog.getInlinedDeletes(tableHandle.tableId, tableHandle.snapshotId)
+        else
+            emptyMap()
+
+        // Group by dataFileId to merge multiple delete files per data file
+        // (a data file can accumulate multiple delete files across snapshots)
+        val groupedFiles: Map<Long, List<DucklakeDataFile>> = prunedFiles.groupBy { it.dataFileId }
+        return groupedFiles.values
+                .map { group ->
+                    createMergedSplit(group, tableDataPath, fileStatisticsDomain, activeSpec, partitionValuesByFile,
+                            nameMapsByMappingId, partitionNameMapsByMappingId, inlinedDeletesByFileId, tableHandle.snapshotId)
+                }
     }
 
     /**
@@ -253,17 +255,9 @@ class DucklakeSplitManager @Inject constructor(
             return listOf()
         }
 
-        // The final-1.1 legacy stats DTO has no endpoint exactness: the public catalog
-        // range API deliberately retains EVERY active ID. Reuse our already paged file
-        // enumeration rather than transferring that same set through its old list SQL.
-        if (final11Reads && catalog.getSpecVersion() == "1.1") return dataFiles
+        if (readStrategy.skipsCatalogStatsPruning(catalog)) return dataFiles
 
-        val domains: Map<DucklakeColumnHandle, Domain> = predicate.domains.orElseThrow()
-                .filterKeys { !it.isVirtual() && !it.isRowIdColumn() }
-        if (domains.values.any { it.isNone }) {
-            return listOf()
-        }
-        val candidates = domains.mapNotNull { (column, domain) -> spanOf(domain)?.let { column to it } }
+        val candidates: List<Pair<DucklakeColumnHandle, Range>> = statsPruningSpans(predicate) ?: return listOf()
         if (candidates.isEmpty()) {
             return dataFiles
         }
@@ -274,21 +268,15 @@ class DucklakeSplitManager @Inject constructor(
         val candidateFileIds: MutableSet<Long> = beginSnapshotByFileId.keys.toMutableSet()
         var pruningApplied = false
 
-        for ((column, span) in candidates) {
-            val stored: DucklakeColumn = storedColumns[column.columnId] ?: continue
-            if (!DucklakeStatsPredicateNormalizer.supports(column.columnType, stored.columnType)) {
-                continue
-            }
-            val minValue: String? = span.lowValue.orElse(null)?.let { DucklakeStatsPredicateNormalizer.toStatText(column.columnType, it) }
-            val maxValue: String? = span.highValue.orElse(null)?.let { DucklakeStatsPredicateNormalizer.toStatText(column.columnType, it) }
-            if (minValue == null && maxValue == null) {
-                continue
-            }
-
+        // Lazy, so each range is rendered just before its catalog query, as the loop reaches it.
+        val ranges = candidates.asSequence().mapNotNull { (column, span) ->
+            storedColumns[column.columnId]?.let { stored -> statsRange(column, span, stored)?.let { Triple(column, stored, it) } }
+        }
+        for ((column, stored, range) in ranges) {
             val matchingFileIds: Set<Long> = catalog.findDataFileIdsInRange(
                     tableHandle.tableId,
                     tableHandle.snapshotId,
-                    ColumnRangePredicate(column.columnId, minValue, maxValue)).toSet()
+                    range).toSet()
             pruningApplied = true
             // A file written before the column's current version began may carry stats text of an
             // earlier type (e.g. FLOAT bounds the catalog keeps verbatim across a REAL -> DOUBLE
@@ -310,6 +298,29 @@ class DucklakeSplitManager @Inject constructor(
         val prunedDataFiles: List<DucklakeDataFile> = dataFiles.filter { it.dataFileId in candidateFileIds }
         log.debug("Pruned data files from %d to %d for table %s", dataFiles.size, prunedDataFiles.size, tableHandle.tableName)
         return prunedDataFiles
+    }
+
+    /** The span of each real column's domain that can prune, or null when a domain admits no value. */
+    private fun statsPruningSpans(predicate: TupleDomain<DucklakeColumnHandle>): List<Pair<DucklakeColumnHandle, Range>>? {
+        val domains: Map<DucklakeColumnHandle, Domain> = predicate.domains.orElseThrow()
+                .filterKeys { !it.isVirtual() && !it.isRowIdColumn() }
+        if (domains.values.any { it.isNone }) {
+            return null
+        }
+        return domains.mapNotNull { (column, domain) -> spanOf(domain)?.let { column to it } }
+    }
+
+    /** The catalog stats range for [span], or null when its bounds cannot be rendered exactly for the stored type. */
+    private fun statsRange(column: DucklakeColumnHandle, span: Range, stored: DucklakeColumn): ColumnRangePredicate? {
+        if (!DucklakeStatsPredicateNormalizer.supports(column.columnType, stored.columnType)) {
+            return null
+        }
+        val minValue: String? = span.lowValue.orElse(null)?.let { DucklakeStatsPredicateNormalizer.toStatText(column.columnType, it) }
+        val maxValue: String? = span.highValue.orElse(null)?.let { DucklakeStatsPredicateNormalizer.toStatText(column.columnType, it) }
+        if (minValue == null && maxValue == null) {
+            return null
+        }
+        return ColumnRangePredicate(column.columnId, minValue, maxValue)
     }
 
     /**
@@ -410,22 +421,7 @@ class DucklakeSplitManager @Inject constructor(
         val filePartValues: Map<Long, List<DucklakeFilePartitionValue>> =
                 catalog.getFilePartitionValues(tableHandle.tableId, tableHandle.snapshotId)
 
-        // Build columnId -> list of (partitionKeyIndex, transform, arity) for all fields.
-        // A single column can have multiple transforms (e.g., year + month on the same date column).
-        // Arity is populated only for BUCKET transforms; other kinds carry empty.
-        val columnToPartKeys: MutableMap<Long, MutableList<PartitionKeyMapping>> = mutableMapOf()
-        for (spec in specs) {
-            for (field in spec.fields) {
-                columnToPartKeys.computeIfAbsent(field.columnId) { _ -> mutableListOf() }
-                        .add(
-                            PartitionKeyMapping(
-                                field.partitionKeyIndex,
-                                field.transform,
-                                field.arity?.let { OptionalInt.of(it) } ?: OptionalInt.empty(),
-                            ),
-                        )
-            }
-        }
+        val columnToPartKeys: Map<Long, List<PartitionKeyMapping>> = partitionKeysByColumn(specs)
 
         // Partition-evolution guard (see buildIdentityPartitionValues): a file's partition
         // values are keyed by the key indices of the spec it was written under, and specs
@@ -444,7 +440,7 @@ class DucklakeSplitManager @Inject constructor(
         for (entry in enforced.getDomains().orElse(mapOf<DucklakeColumnHandle, Domain>()).entries) {
             val column: DucklakeColumnHandle = entry.key
             val domain: Domain = entry.value
-            val mappings: MutableList<PartitionKeyMapping> = columnToPartKeys[column.columnId] ?: continue
+            val mappings: List<PartitionKeyMapping> = columnToPartKeys[column.columnId] ?: continue
 
             candidateFileIds.removeIf { fileId ->
                 val filePartitionId: Long? = partitionIdByFileId[fileId]
@@ -453,31 +449,7 @@ class DucklakeSplitManager @Inject constructor(
                 }
                 val values: List<DucklakeFilePartitionValue> = filePartValues.getOrDefault(fileId, listOf())
                 // A file is pruned if ANY partition transform definitively excludes it
-                for (mapping in mappings) {
-                    val partEntry: Optional<DucklakeFilePartitionValue> = values.stream()
-                            .filter { v -> v.partitionKeyIndex == mapping.keyIndex }
-                            .findFirst()
-                    if (partEntry.isEmpty) {
-                        continue
-                    }
-                    val partValue: String? = partEntry.get().partitionValue
-                    if (partValue == null) {
-                        // NULL partition value: every row's source value is NULL (transforms map
-                        // NULL to NULL), so a domain that excludes NULL definitively excludes the
-                        // file. This is the ENFORCED predicate — the engine adds no residual
-                        // filter — so merely "not pruning" would leak the file's NULL rows into
-                        // `col = 'x'` results (caught by TestDucklakePartitionedWriteFormats'
-                        // NULL-region INSERT). A null-allowing domain keeps the file.
-                        if (!domain.isNullAllowed) {
-                            return@removeIf true
-                        }
-                        continue
-                    }
-                    if (!partitionValueMatchesDomain(column.columnType, partValue, domain, mapping.transform, mapping.arity)) {
-                        return@removeIf true // this transform excludes the file
-                    }
-                }
-                false // no transform excluded the file
+                mappings.any { mapping -> transformExcludesFile(column, domain, mapping, values) }
             }
 
             if (candidateFileIds.isEmpty()) {
@@ -491,6 +463,43 @@ class DucklakeSplitManager @Inject constructor(
                 .collect(toImmutableList())
         log.debug("Partition pruning: %d -> %d files for table %s", dataFiles.size, result.size, tableHandle.tableName)
         return result
+    }
+
+    /**
+     * columnId -> list of (partitionKeyIndex, transform, arity) for all fields. A single column can
+     * have multiple transforms (e.g., year + month on the same date column). Arity is populated only
+     * for BUCKET transforms; other kinds carry empty.
+     */
+    private fun partitionKeysByColumn(specs: List<DucklakePartitionSpec>): Map<Long, List<PartitionKeyMapping>> {
+        val columnToPartKeys: MutableMap<Long, MutableList<PartitionKeyMapping>> = mutableMapOf()
+        for (field in specs.flatMap { it.fields }) {
+            columnToPartKeys.getOrPut(field.columnId) { mutableListOf() }
+                    .add(
+                        PartitionKeyMapping(
+                            field.partitionKeyIndex,
+                            field.transform,
+                            field.arity?.let { OptionalInt.of(it) } ?: OptionalInt.empty(),
+                        ),
+                    )
+        }
+        return columnToPartKeys
+    }
+
+    private fun transformExcludesFile(
+            column: DucklakeColumnHandle,
+            domain: Domain,
+            mapping: PartitionKeyMapping,
+            values: List<DucklakeFilePartitionValue>): Boolean {
+        val partEntry: DucklakeFilePartitionValue = values.firstOrNull { v -> v.partitionKeyIndex == mapping.keyIndex }
+                ?: return false
+        // NULL partition value: every row's source value is NULL (transforms map
+        // NULL to NULL), so a domain that excludes NULL definitively excludes the
+        // file. This is the ENFORCED predicate — the engine adds no residual
+        // filter — so merely "not pruning" would leak the file's NULL rows into
+        // `col = 'x'` results (caught by TestDucklakePartitionedWriteFormats'
+        // NULL-region INSERT). A null-allowing domain keeps the file.
+        val partValue: String = partEntry.partitionValue ?: return !domain.isNullAllowed
+        return !partitionValueMatchesDomain(column.columnType, partValue, domain, mapping.transform, mapping.arity)
     }
 
     private fun partitionValueMatchesDomain(
@@ -702,21 +711,19 @@ class DucklakeSplitManager @Inject constructor(
          * skipping deletes — a missed delete returns rows that should not be visible.
          */
         private fun validateDeleteFileFormats(dataFiles: List<DucklakeDataFile>, tableHandle: DucklakeTableHandle) {
-            for (dataFile in dataFiles) {
-                val deleteFileFormat: String = dataFile.deleteFileFormat ?: continue
-                val normalized: String = deleteFileFormat.lowercase(Locale.ROOT)
-                if (normalized == "parquet" || normalized == "puffin") {
-                    continue
-                }
-                throw TrinoException(NOT_SUPPORTED, String.format(
-                        "Table %s.%s references a delete file with format '%s', which this connector cannot read. " +
-                                "Supported formats are 'parquet' (positional delete files) and 'puffin' (DuckLake " +
-                                "deletion-vector files). Compact the table to materialize deletes before reading.",
-                        tableHandle.schemaName,
-                        tableHandle.tableName,
-                        deleteFileFormat))
-            }
+            val deleteFileFormat: String = dataFiles.firstNotNullOfOrNull { dataFile ->
+                dataFile.deleteFileFormat?.takeUnless { it.lowercase(Locale.ROOT) in READABLE_DELETE_FILE_FORMATS }
+            } ?: return
+            throw TrinoException(NOT_SUPPORTED, String.format(
+                    "Table %s.%s references a delete file with format '%s', which this connector cannot read. " +
+                            "Supported formats are 'parquet' (positional delete files) and 'puffin' (DuckLake " +
+                            "deletion-vector files). Compact the table to materialize deletes before reading.",
+                    tableHandle.schemaName,
+                    tableHandle.tableName,
+                    deleteFileFormat))
         }
+
+        private val READABLE_DELETE_FILE_FORMATS: Set<String> = setOf("parquet", "puffin")
 
         private fun parsePartitionValue(type: Type, value: String): Any =
             DucklakePartitionValueParser.parseIdentity(type, value)
@@ -745,11 +752,10 @@ class DucklakeSplitManager @Inject constructor(
             val out: MutableMap<Long, String> = linkedMapOf()
             for ((columnId, sourceName) in partitionKeysByColumnId) {
                 val raw: String = pathValues[sourceName.lowercase(Locale.ROOT)] ?: continue
-                if (raw == HIVE_DEFAULT_PARTITION) {
-                    // NULL partition — leave unset so the read path yields NULL.
-                    continue
+                // NULL partition — leave unset so the read path yields NULL.
+                if (raw != HIVE_DEFAULT_PARTITION) {
+                    out[columnId] = DucklakeHivePartitionCodec.decode(raw)
                 }
-                out[columnId] = DucklakeHivePartitionCodec.decode(raw)
             }
             return out
         }

@@ -21,6 +21,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.parallel.Execution
 import org.junit.jupiter.api.parallel.ExecutionMode
 import java.nio.file.Files
+import java.sql.ResultSet
 import java.nio.file.Path
 import java.nio.file.Paths
 
@@ -80,25 +81,19 @@ internal open class TestDucklakeAddFiles
      * test harness wires `ducklake.data-path` to a per-suite temp directory and
      * stores it as the `data_path` key in `ducklake_metadata`.
      */
-    private fun dataPathDir(): String
-    {
+    private fun dataPathDir(): String =
+        queryCatalog("SELECT value FROM ducklake_metadata WHERE key = 'data_path'", "Failed to read data_path from ducklake_metadata") { rs ->
+            check(rs.next()) { "ducklake_metadata.data_path missing" }
+            rs.getString(1)
+        }
+
+    private fun <T> queryCatalog(sql: String, failure: String, read: (ResultSet) -> T): T =
         try {
-            openCatalogConnection().use { conn ->
-                conn.createStatement().use { stmt ->
-                    stmt.executeQuery(
-                            "SELECT value FROM ducklake_metadata WHERE key = 'data_path'").use { rs ->
-                        if (!rs.next()) {
-                            throw IllegalStateException("ducklake_metadata.data_path missing")
-                        }
-                        return rs.getString(1)
-                    }
-                }
-            }
+            openCatalogConnection().use { conn -> conn.createStatement().use { stmt -> stmt.executeQuery(sql).use(read) } }
         }
         catch (e: Exception) {
-            throw RuntimeException("Failed to read data_path from ducklake_metadata", e)
+            throw IllegalStateException(failure, e)
         }
-    }
 
     // ==================== Round-trip ====================
 
@@ -376,43 +371,18 @@ internal open class TestDucklakeAddFiles
         }
     }
 
-    private fun countColumnMappings(): Int
-    {
-        try {
-            openCatalogConnection().use { conn ->
-                conn.createStatement().use { stmt ->
-                    stmt.executeQuery(
-                            "SELECT COUNT(*) FROM ducklake_column_mapping").use { rs ->
-                        return if (rs.next()) rs.getInt(1) else 0
-                    }
-                }
-            }
+    private fun countColumnMappings(): Int =
+        queryCatalog("SELECT COUNT(*) FROM ducklake_column_mapping", "Failed to count ducklake_column_mapping rows") { rs ->
+            if (rs.next()) rs.getInt(1) else 0
         }
-        catch (e: Exception) {
-            throw RuntimeException("Failed to count ducklake_column_mapping rows", e)
-        }
-    }
 
-    private fun footerSizeForLatestDataFile(): Long
-    {
-        try {
-            openCatalogConnection().use { conn ->
-                conn.createStatement().use { stmt ->
-                    stmt.executeQuery(
-                            "SELECT footer_size FROM ducklake_data_file ORDER BY data_file_id DESC LIMIT 1").use { rs ->
-                        if (!rs.next()) {
-                            throw IllegalStateException("no ducklake_data_file rows")
-                        }
-                        val value = rs.getLong(1)
-                        return if (rs.wasNull()) -1 else value
-                    }
-                }
-            }
+    private fun footerSizeForLatestDataFile(): Long =
+        queryCatalog("SELECT footer_size FROM ducklake_data_file ORDER BY data_file_id DESC LIMIT 1",
+                "Failed to read footer_size from ducklake_data_file") { rs ->
+            check(rs.next()) { "no ducklake_data_file rows" }
+            val value = rs.getLong(1)
+            if (rs.wasNull()) -1 else value
         }
-        catch (e: Exception) {
-            throw RuntimeException("Failed to read footer_size from ducklake_data_file", e)
-        }
-    }
 
     @Test
     fun testAddFilesPopulatesFooterSize()
@@ -438,12 +408,7 @@ internal open class TestDucklakeAddFiles
                     .`as`("add_files must populate a non-zero footer_size (parsed from the parquet post-script)")
                     .isGreaterThan(0L)
             // Sanity ceiling: full file size on disk. Footer is a subset of the file.
-            val fileSize = try {
-                Files.size(Paths.get(fileAbs))
-            }
-            catch (e: java.io.IOException) {
-                throw RuntimeException(e)
-            }
+            val fileSize = Files.size(Paths.get(fileAbs))
             assertThat(footerSize).isLessThan(fileSize)
 
             // Read path must still work with the new hint.
@@ -721,7 +686,7 @@ internal open class TestDucklakeAddFiles
                 }
             }
             catch (e: java.io.IOException) {
-                throw RuntimeException(e)
+                throw java.io.UncheckedIOException(e)
             }
         }
     }

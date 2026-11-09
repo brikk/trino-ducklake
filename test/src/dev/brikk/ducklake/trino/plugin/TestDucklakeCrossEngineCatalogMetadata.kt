@@ -26,6 +26,7 @@ import org.junit.jupiter.api.TestInstance
 import org.junit.jupiter.api.parallel.Execution
 import org.junit.jupiter.api.parallel.ExecutionMode
 import java.sql.DriverManager
+import java.sql.ResultSet
 
 /**
  * Catalog-metadata slice of cross-engine compatibility: covers the wire-format contracts that
@@ -82,50 +83,18 @@ open class TestDucklakeCrossEngineCatalogMetadata
             computeActual("ALTER TABLE $fullTrino ADD COLUMN qty INTEGER")
             computeActual("DELETE FROM $fullTrino WHERE id = 2")
 
-            createDuckdbConnection().use { conn ->
-                conn.createStatement().use { stmt ->
-                    stmt.executeQuery(
-                            "SELECT snapshot_id, changes FROM ducklake_snapshots('ducklake_db') ORDER BY snapshot_id").use { rs ->
-                        // Parsing alone proves acceptability — any malformed entry makes the whole
-                        // function throw. Still, assert we can traverse every row without error.
-                        var rowCount = 0
-                        var sawCreatedSchema = false
-                        var sawCreatedTable = false
-                        var sawInserted = false
-                        var sawAltered = false
-                        var sawDeleted = false
-                        while (rs.next()) {
-                            rowCount++
-                            // Force materialization of the MAP<VARCHAR, LIST<VARCHAR>> — that is where
-                            // ParseChangesMade() runs inside DuckDB's Bind path, but we also read the
-                            // value here to catch any lazy-decode surprises.
-                            val changes = rs.getObject("changes") ?: continue
-                            val changesText = changes.toString()
-                            if (changesText.contains("schemas_created") && changesText.contains(schemaName)) {
-                                sawCreatedSchema = true
-                            }
-                            if (changesText.contains("tables_created") && changesText.contains(tableName)) {
-                                sawCreatedTable = true
-                            }
-                            if (changesText.contains("tables_inserted_into")) {
-                                sawInserted = true
-                            }
-                            if (changesText.contains("tables_altered")) {
-                                sawAltered = true
-                            }
-                            if (changesText.contains("tables_deleted_from")) {
-                                sawDeleted = true
-                            }
-                        }
-                        assertThat(rowCount).`as`("ducklake_snapshots row count").isGreaterThanOrEqualTo(5)
-                        assertThat(sawCreatedSchema).`as`("DuckDB parsed a `created_schema` entry").isTrue()
-                        assertThat(sawCreatedTable).`as`("DuckDB parsed a `created_table` entry").isTrue()
-                        assertThat(sawInserted).`as`("DuckDB parsed a `inserted_into_table` entry").isTrue()
-                        assertThat(sawAltered).`as`("DuckDB parsed a `altered_table` entry").isTrue()
-                        assertThat(sawDeleted).`as`("DuckDB parsed a `deleted_from_table` entry").isTrue()
-                    }
-                }
-            }
+            // Parsing alone proves acceptability — any malformed entry makes the whole
+            // function throw. Still, assert we can traverse every row without error.
+            val changes: List<String?> = duckdbSnapshotChanges(ALL_SNAPSHOT_CHANGES)
+            val changesTexts: List<String> = changes.filterNotNull()
+            assertThat(changes.size).`as`("ducklake_snapshots row count").isGreaterThanOrEqualTo(5)
+            assertThat(changesTexts.any { it.contains("schemas_created") && it.contains(schemaName) })
+                    .`as`("DuckDB parsed a `created_schema` entry").isTrue()
+            assertThat(changesTexts.any { it.contains("tables_created") && it.contains(tableName) })
+                    .`as`("DuckDB parsed a `created_table` entry").isTrue()
+            assertThat(changesTexts.any { it.contains("tables_inserted_into") }).`as`("DuckDB parsed a `inserted_into_table` entry").isTrue()
+            assertThat(changesTexts.any { it.contains("tables_altered") }).`as`("DuckDB parsed a `altered_table` entry").isTrue()
+            assertThat(changesTexts.any { it.contains("tables_deleted_from") }).`as`("DuckDB parsed a `deleted_from_table` entry").isTrue()
 
             // Drop table + schema to cover the `dropped_*` emissions too. Those are numeric and
             // already spec-conformant; asserting the parse still succeeds guards against future
@@ -133,17 +102,7 @@ open class TestDucklakeCrossEngineCatalogMetadata
             computeActual("DROP TABLE $fullTrino")
             computeActual("DROP SCHEMA $schemaName")
 
-            createDuckdbConnection().use { conn ->
-                conn.createStatement().use { stmt ->
-                    stmt.executeQuery(
-                            "SELECT changes FROM ducklake_snapshots('ducklake_db') " +
-                                    "ORDER BY snapshot_id DESC LIMIT 5").use { rs ->
-                        while (rs.next()) {
-                            rs.getObject("changes")
-                        }
-                    }
-                }
-            }
+            duckdbSnapshotChanges("SELECT changes FROM ducklake_snapshots('ducklake_db') ORDER BY snapshot_id DESC LIMIT 5")
         }
         finally {
             tryDropTable(fullTrino)
@@ -176,30 +135,12 @@ open class TestDucklakeCrossEngineCatalogMetadata
             computeActual("CREATE TABLE $fullTrino (id INTEGER)")
             computeActual("INSERT INTO $fullTrino VALUES (1)")
 
-            createDuckdbConnection().use { conn ->
-                conn.createStatement().use { stmt ->
-                    stmt.executeQuery(
-                            "SELECT snapshot_id, changes FROM ducklake_snapshots('ducklake_db') ORDER BY snapshot_id").use { rs ->
-                        var sawQuotedSchema = false
-                        var sawQuotedTable = false
-                        while (rs.next()) {
-                            val changes = rs.getObject("changes") ?: continue
-                            val text = changes.toString()
-                            // DuckDB's parsed MAP round-trips the unquoted schema/table names through
-                            // CatalogListToValue -> KeywordHelper::WriteOptionallyQuoted, so a name with
-                            // commas comes back wrapped in double quotes like "xengine,weird_schema".
-                            if (text.contains(schemaName)) {
-                                sawQuotedSchema = true
-                            }
-                            if (text.contains(tableName)) {
-                                sawQuotedTable = true
-                            }
-                        }
-                        assertThat(sawQuotedSchema).`as`("DuckDB saw the comma-bearing schema name").isTrue()
-                        assertThat(sawQuotedTable).`as`("DuckDB saw the comma-bearing table name").isTrue()
-                    }
-                }
-            }
+            // DuckDB's parsed MAP round-trips the unquoted schema/table names through
+            // CatalogListToValue -> KeywordHelper::WriteOptionallyQuoted, so a name with
+            // commas comes back wrapped in double quotes like "xengine,weird_schema".
+            val changesTexts: List<String> = duckdbSnapshotChanges(ALL_SNAPSHOT_CHANGES).filterNotNull()
+            assertThat(changesTexts.any { it.contains(schemaName) }).`as`("DuckDB saw the comma-bearing schema name").isTrue()
+            assertThat(changesTexts.any { it.contains(tableName) }).`as`("DuckDB saw the comma-bearing table name").isTrue()
         }
         finally {
             tryDropTable(fullTrino)
@@ -261,32 +202,21 @@ open class TestDucklakeCrossEngineCatalogMetadata
             }
 
             // Normal read.
-            createDuckdbConnection().use { duck ->
-                duck.createStatement().use { stmt ->
-                    stmt.executeQuery("SELECT id, name, amount FROM $fullDuckdb ORDER BY id").use { rs ->
-                        assertThat(rs.next()).isTrue()
-                        assertThat(rs.getInt("id")).isEqualTo(1)
-                        assertThat(rs.getString("name")).isEqualTo("alice")
-                        assertThat(rs.getDouble("amount")).isEqualTo(1.5)
-                        assertThat(rs.next()).isTrue()
-                        assertThat(rs.getInt("id")).isEqualTo(2)
-                        assertThat(rs.next()).isFalse()
-                    }
-                }
+            queryDuckdb("SELECT id, name, amount FROM $fullDuckdb ORDER BY id") { rs ->
+                assertThat(rs.next()).isTrue()
+                assertThat(rs.getInt("id")).isEqualTo(1)
+                assertThat(rs.getString("name")).isEqualTo("alice")
+                assertThat(rs.getDouble("amount")).isEqualTo(1.5)
+                assertThat(rs.next()).isTrue()
+                assertThat(rs.getInt("id")).isEqualTo(2)
+                assertThat(rs.next()).isFalse()
             }
 
             // DESCRIBE path — separately exercises upstream's column-metadata materialization.
-            createDuckdbConnection().use { duck ->
-                duck.createStatement().use { stmt ->
-                    stmt.executeQuery("DESCRIBE $fullDuckdb").use { rs ->
-                        val columnNames = ArrayList<String>()
-                        while (rs.next()) {
-                            columnNames.add(rs.getString(1))
-                        }
-                        assertThat(columnNames).containsExactly("id", "name", "amount")
-                    }
-                }
+            val columnNames: List<String> = queryDuckdb("DESCRIBE $fullDuckdb") { rs ->
+                buildList { while (rs.next()) add(rs.getString(1)) }
             }
+            assertThat(columnNames).containsExactly("id", "name", "amount")
         }
         finally {
             tryDropTable(fullTrino)
@@ -324,32 +254,13 @@ open class TestDucklakeCrossEngineCatalogMetadata
             computeActual("CREATE OR REPLACE VIEW $schemaName.v_dst AS SELECT id, name FROM test_schema.simple_table")
             computeActual("DROP VIEW $schemaName.v_dst")
 
-            createDuckdbConnection().use { conn ->
-                conn.createStatement().use { stmt ->
-                    stmt.executeQuery(
-                            "SELECT snapshot_id, changes FROM ducklake_snapshots('ducklake_db') ORDER BY snapshot_id").use { rs ->
-                        var rowCount = 0
-                        var sawAlteredView = false
-                        var sawDroppedView = false
-                        while (rs.next()) {
-                            rowCount++
-                            val changes = rs.getObject("changes") ?: continue
-                            val text = changes.toString()
-                            if (text.contains("views_altered")) {
-                                sawAlteredView = true
-                            }
-                            if (text.contains("views_dropped")) {
-                                sawDroppedView = true
-                            }
-                        }
-                        assertThat(rowCount).`as`("ducklake_snapshots row count").isGreaterThanOrEqualTo(5)
-                        assertThat(sawAlteredView)
-                                .`as`("DuckDB parsed at least one `altered_view` entry (rename + replace both map here)")
-                                .isTrue()
-                        assertThat(sawDroppedView).`as`("DuckDB parsed a `dropped_view` entry").isTrue()
-                    }
-                }
-            }
+            val changes: List<String?> = duckdbSnapshotChanges(ALL_SNAPSHOT_CHANGES)
+            val changesTexts: List<String> = changes.filterNotNull()
+            assertThat(changes.size).`as`("ducklake_snapshots row count").isGreaterThanOrEqualTo(5)
+            assertThat(changesTexts.any { it.contains("views_altered") })
+                    .`as`("DuckDB parsed at least one `altered_view` entry (rename + replace both map here)")
+                    .isTrue()
+            assertThat(changesTexts.any { it.contains("views_dropped") }).`as`("DuckDB parsed a `dropped_view` entry").isTrue()
         }
         finally {
             try {
@@ -596,6 +507,17 @@ open class TestDucklakeCrossEngineCatalogMetadata
     }
 
     @Throws(Exception::class)
+    private fun <T> queryDuckdb(sql: String, read: (ResultSet) -> T): T =
+        createDuckdbConnection().use { conn -> conn.createStatement().use { stmt -> stmt.executeQuery(sql).use(read) } }
+
+    /**
+     * Every row's `changes` as text (null where a snapshot has none). Reading each value forces
+     * materialization of the MAP<VARCHAR, LIST<VARCHAR>> — that is where ParseChangesMade() runs
+     * inside DuckDB's Bind path — and also catches any lazy-decode surprises.
+     */
+    private fun duckdbSnapshotChanges(sql: String): List<String?> =
+        queryDuckdb(sql) { rs -> buildList { while (rs.next()) add(rs.getObject("changes")?.toString()) } }
+
     private fun readCurrentSchemaVersion(catalog: DucklakeCatalogGenerator.IsolatedCatalog): Long
     {
         DriverManager.getConnection(catalog.jdbcUrl, catalog.user, catalog.password).use { pgConn ->
@@ -620,5 +542,9 @@ open class TestDucklakeCrossEngineCatalogMetadata
                     .fetchOne(0, Int::class.javaObjectType)
             return count?.toLong() ?: 0L
         }
+    }
+
+    private companion object {
+        const val ALL_SNAPSHOT_CHANGES = "SELECT snapshot_id, changes FROM ducklake_snapshots('ducklake_db') ORDER BY snapshot_id"
     }
 }

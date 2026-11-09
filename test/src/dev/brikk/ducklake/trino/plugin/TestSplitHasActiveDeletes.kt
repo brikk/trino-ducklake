@@ -19,7 +19,7 @@ import org.junit.jupiter.api.Test
 
 /**
  * Pins B3b's predicate-disabling trigger. [DucklakePageSourceProvider] branches on
- * [DucklakePageSourceProvider.splitHasActiveDeletes] when deciding whether to push
+ * [DucklakeParquetPageSourceFactory.splitHasActiveDeletes] when deciding whether to push
  * the query predicate into the parquet reader / DuckDB scan; this test guarantees the
  * branch fires for every form of "active deletes" the catalog produces (external delete
  * files, puffin DV files, and inlined deletes from `ducklake_inlined_delete_*`)
@@ -34,7 +34,7 @@ internal class TestSplitHasActiveDeletes {
     @Test
     fun splitWithoutAnyDeletesAllowsPushdown() {
         val split = baseSplit(listOf(), setOf())
-        assertThat(DucklakePageSourceProvider.splitHasActiveDeletes(split))
+        assertThat(DucklakeParquetPageSourceFactory.splitHasActiveDeletes(split))
                 .`as`("no delete files and no inlined deletes — predicate pushdown is safe")
                 .isFalse()
     }
@@ -42,7 +42,7 @@ internal class TestSplitHasActiveDeletes {
     @Test
     fun splitWithExternalDeleteFileDisablesPushdown() {
         val split = baseSplit(listOf("/data/ducklake-delete-aaa.parquet"), setOf())
-        assertThat(DucklakePageSourceProvider.splitHasActiveDeletes(split))
+        assertThat(DucklakeParquetPageSourceFactory.splitHasActiveDeletes(split))
                 .`as`("external parquet delete file is present — pushdown would break cumulative-offset math")
                 .isTrue()
     }
@@ -50,7 +50,7 @@ internal class TestSplitHasActiveDeletes {
     @Test
     fun splitWithPuffinDeleteFileDisablesPushdown() {
         val split = baseSplit(listOf("/data/ducklake-aaa-delete.puffin"), setOf())
-        assertThat(DucklakePageSourceProvider.splitHasActiveDeletes(split))
+        assertThat(DucklakeParquetPageSourceFactory.splitHasActiveDeletes(split))
                 .`as`("puffin DV file is also a delete file — same pruning hazard")
                 .isTrue()
     }
@@ -58,7 +58,7 @@ internal class TestSplitHasActiveDeletes {
     @Test
     fun splitWithInlinedDeletesDisablesPushdown() {
         val split = baseSplit(listOf(), setOf(3L, 7L))
-        assertThat(DucklakePageSourceProvider.splitHasActiveDeletes(split))
+        assertThat(DucklakeParquetPageSourceFactory.splitHasActiveDeletes(split))
                 .`as`("inlined deletes from ducklake_inlined_delete_* must also disable pushdown")
                 .isTrue()
     }
@@ -68,7 +68,7 @@ internal class TestSplitHasActiveDeletes {
         val split = baseSplit(
                 listOf("/data/ducklake-delete-aaa.parquet"),
                 setOf(3L))
-        assertThat(DucklakePageSourceProvider.splitHasActiveDeletes(split)).isTrue()
+        assertThat(DucklakeParquetPageSourceFactory.splitHasActiveDeletes(split)).isTrue()
     }
 
     private fun baseSplit(deleteFilePaths: List<String>, inlinedDeletedRowPositions: Set<Long>): DucklakeSplit {

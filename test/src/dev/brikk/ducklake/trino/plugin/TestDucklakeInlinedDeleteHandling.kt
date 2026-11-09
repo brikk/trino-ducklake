@@ -301,7 +301,8 @@ class TestDucklakeInlinedDeleteHandling {
                 column: DucklakeColumnHandle): Long {
             var rows = 0L
             pageSourceProvider.createPageSource(
-                    null, SESSION, split, tableHandle, java.util.Optional.empty(), ImmutableList.of<ColumnHandle>(column), DynamicFilter.EMPTY).use { pageSource ->
+                    null, SESSION, split, tableHandle, java.util.Optional.empty(), ImmutableList.of<ColumnHandle>(column),
+                    DynamicFilter.EMPTY).use { pageSource ->
                 while (!pageSource.isFinished) {
                     val page = pageSource.nextSourcePage
                     if (page != null) {

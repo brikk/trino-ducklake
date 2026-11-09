@@ -396,7 +396,8 @@ class TestDucklakePageSourceProvider {
 
         var rows = 0L
         pageSourceProvider.createPageSource(
-            null, SESSION, split, tableHandle, Optional.empty(), ImmutableList.of<ColumnHandle>(idColumn, nameColumn, valueColumn), DynamicFilter.EMPTY).use { pageSource ->
+            null, SESSION, split, tableHandle, Optional.empty(), ImmutableList.of<ColumnHandle>(idColumn, nameColumn, valueColumn),
+            DynamicFilter.EMPTY).use { pageSource ->
             while (!pageSource.isFinished) {
                 val page = pageSource.nextSourcePage
                 if (page != null) {

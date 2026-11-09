@@ -76,7 +76,7 @@ class TestDucklakeReadPathPerformance {
         val fixture = Fixture()
         measure("decode-filter") {
             val deleted = DucklakePuffinDeleteReader.decodeBlob(fixture.blob)
-            val filter = DucklakePageSourceProvider.DeleteRowFilterTransform(emptySet(), deleted, 0L)
+            val filter = DeleteRowFilterTransform(emptySet(), deleted, 0L)
             var kept = 0L
             repeat(1000) { kept += filter.apply(SourcePage.create(1000)).positionCount }
             assertThat(kept).isEqualTo(700_000L)

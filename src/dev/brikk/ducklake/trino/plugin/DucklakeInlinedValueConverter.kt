@@ -166,17 +166,7 @@ object DucklakeInlinedValueConverter {
     // (ducklake_util.cpp::ToSQLString LIST branch); `java.sql.Array` is accepted too.
     private fun extractArrayElements(jdbcValue: Any): Array<Any?> {
         if (jdbcValue is java.sql.Array) {
-            try {
-                val raw = jdbcValue.array
-                if (raw is Array<*>) {
-                    @Suppress("UNCHECKED_CAST")
-                    return raw as Array<Any?>
-                }
-                throw IllegalArgumentException("Unexpected raw JDBC array contents: ${raw.javaClass.name}")
-            }
-            catch (e: SQLException) {
-                throw IllegalArgumentException("Failed to read JDBC array value", e)
-            }
+            return jdbcArrayElements(jdbcValue)
         }
         if (jdbcValue is Array<*>) {
             @Suppress("UNCHECKED_CAST")
@@ -192,71 +182,92 @@ object DucklakeInlinedValueConverter {
         throw IllegalArgumentException("Unexpected array JDBC value: ${jdbcValue.javaClass.name}")
     }
 
+    private fun jdbcArrayElements(jdbcValue: java.sql.Array): Array<Any?> {
+        try {
+            val raw = jdbcValue.array
+            if (raw is Array<*>) {
+                @Suppress("UNCHECKED_CAST")
+                return raw as Array<Any?>
+            }
+            throw IllegalArgumentException("Unexpected raw JDBC array contents: ${raw.javaClass.name}")
+        }
+        catch (e: SQLException) {
+            throw IllegalArgumentException("Failed to read JDBC array value", e)
+        }
+    }
+
     private fun parseDucklakeListText(raw: String): Array<Any?> {
         val text = raw.trim()
-        if (!text.startsWith("[") || !text.endsWith("]")) {
-            throw IllegalArgumentException("Invalid inlined list text: $raw")
-        }
+        require(text.startsWith("[") && text.endsWith("]")) { "Invalid inlined list text: $raw" }
         val inner = text.substring(1, text.length - 1).trim()
         if (inner.isEmpty()) {
             return arrayOfNulls(0)
         }
 
         val elements = mutableListOf<Any?>()
+        var i = skipWhitespace(inner, 0)
+        while (i < inner.length) {
+            i = if (inner[i] == '\'') readQuotedElement(inner, i, elements) else readUnquotedElement(inner, i, elements)
+            i = skipWhitespace(inner, i)
+            if (i < inner.length && inner[i] == ',') {
+                i++
+            }
+            i = skipWhitespace(inner, i)
+        }
+        return elements.toTypedArray()
+    }
+
+    private fun skipWhitespace(text: String, from: Int): Int {
+        var i = from
+        while (i < text.length && text[i].isWhitespace()) {
+            i++
+        }
+        return i
+    }
+
+    /** Reads the quoted element opening at [open] (a backslash escapes the next character, `''` is a quote); returns the index after it. */
+    private fun readQuotedElement(inner: String, open: Int, elements: MutableList<Any?>): Int {
+        val sb = StringBuilder()
         val len = inner.length
-        var i = 0
+        var i = open + 1
         while (i < len) {
-            while (i < len && inner[i].isWhitespace()) {
-                i++
-            }
-            if (i >= len) {
-                break
-            }
-            if (inner[i] == '\'') {
-                val sb = StringBuilder()
-                i++
-                while (i < len) {
-                    val cc = inner[i]
-                    if (cc == '\\' && i + 1 < len) {
-                        sb.append(inner[i + 1])
-                        i += 2
-                        continue
-                    }
-                    if (cc == '\'') {
-                        if (i + 1 < len && inner[i + 1] == '\'') {
-                            sb.append('\'')
-                            i += 2
-                            continue
-                        }
-                        i++
-                        break
-                    }
+            val cc = inner[i]
+            when {
+                cc == '\\' && i + 1 < len -> {
+                    sb.append(inner[i + 1])
+                    i += 2
+                }
+                cc == '\'' && i + 1 < len && inner[i + 1] == '\'' -> {
+                    sb.append('\'')
+                    i += 2
+                }
+                cc == '\'' -> {
+                    elements.add(sb.toString())
+                    return i + 1
+                }
+                else -> {
                     sb.append(cc)
                     i++
                 }
-                elements.add(sb.toString())
-            }
-            else {
-                val start = i
-                while (i < len && inner[i] != ',') {
-                    i++
-                }
-                val token = inner.substring(start, i).trim()
-                // An unquoted `NULL` token maps to a SQL null. DuckDB serializes blob bytes
-                // unquoted too, so a blob whose bytes spell exactly "NULL" is indistinguishable
-                // from a genuine null at the text level — an inherent ambiguity in DuckDB's list
-                // serialization. We resolve it in favour of the common, intended case (a genuine
-                // null element) rather than the rare blob-spelling-NULL payload.
-                elements.add(if (token == "NULL") null else token)
-            }
-            while (i < len && inner[i].isWhitespace()) {
-                i++
-            }
-            if (i < len && inner[i] == ',') {
-                i++
             }
         }
-        return elements.toTypedArray()
+        elements.add(sb.toString())
+        return i
+    }
+
+    private fun readUnquotedElement(inner: String, start: Int, elements: MutableList<Any?>): Int {
+        var i = start
+        while (i < inner.length && inner[i] != ',') {
+            i++
+        }
+        val token = inner.substring(start, i).trim()
+        // An unquoted `NULL` token maps to a SQL null. DuckDB serializes blob bytes
+        // unquoted too, so a blob whose bytes spell exactly "NULL" is indistinguishable
+        // from a genuine null at the text level — an inherent ambiguity in DuckDB's list
+        // serialization. We resolve it in favour of the common, intended case (a genuine
+        // null element) rather than the rare blob-spelling-NULL payload.
+        elements.add(if (token == "NULL") null else token)
+        return i
     }
 
     /**
@@ -278,17 +289,7 @@ object DucklakeInlinedValueConverter {
         while (i < len) {
             val c = text[i]
             if (c == '\\') {
-                // DuckDB never emits a bare backslash — 0x5C is always escaped as \x5C — so we
-                // require a complete \xNN here. Anything else is malformed input.
-                if (i + 3 >= len || text[i + 1] != 'x') {
-                    throw IllegalArgumentException("Truncated or invalid \\xNN escape in blob text: $text")
-                }
-                val hi = hexDigit(text[i + 2])
-                val lo = hexDigit(text[i + 3])
-                if (hi < 0 || lo < 0) {
-                    throw IllegalArgumentException("Invalid hex digits in \\xNN escape: $text")
-                }
-                out[j++] = ((hi shl 4) or lo).toByte()
+                out[j++] = decodeHexEscape(text, i)
                 i += 4
                 continue
             }
@@ -302,6 +303,20 @@ object DucklakeInlinedValueConverter {
             return out
         }
         return out.copyOf(j)
+    }
+
+    private fun decodeHexEscape(text: String, i: Int): Byte {
+        // DuckDB never emits a bare backslash — 0x5C is always escaped as \x5C — so we
+        // require a complete \xNN here. Anything else is malformed input.
+        if (i + 3 >= text.length || text[i + 1] != 'x') {
+            throw IllegalArgumentException("Truncated or invalid \\xNN escape in blob text: $text")
+        }
+        val hi = hexDigit(text[i + 2])
+        val lo = hexDigit(text[i + 3])
+        if (hi < 0 || lo < 0) {
+            throw IllegalArgumentException("Invalid hex digits in \\xNN escape: $text")
+        }
+        return ((hi shl 4) or lo).toByte()
     }
 
     private fun hexDigit(c: Char): Int {

@@ -288,17 +288,17 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
             val joinedRows = filesById[dataFileId]
                 ?: throw TrinoException(GENERIC_INTERNAL_ERROR, "Inlined deletion references inactive data_file_id $dataFileId")
             val primary = joinedRows.first()
-            val activeDeleteRows = joinedRows.filter { it.deleteFilePath != null }
-                    .distinctBy { it.deleteFilePath }
+            val activeDeleteRows = joinedRows.mapNotNull { row -> row.deleteFilePath?.let { path -> row to path } }
+                    .distinctBy { (_, path) -> path }
             check(activeDeleteRows.size <= 1) {
                 "data_file_id $dataFileId has ${activeDeleteRows.size} active delete files"
             }
             val merged = TreeMap<Long, Long>()
-            activeDeleteRows.singleOrNull()?.let { dataFile ->
-                val beginSnapshot = deleteBeginByPath[dataFile.deleteFilePath]
+            activeDeleteRows.singleOrNull()?.let { (dataFile, deleteFilePath) ->
+                val beginSnapshot = deleteBeginByPath[deleteFilePath]
                     ?: throw TrinoException(GENERIC_INTERNAL_ERROR,
-                            "Cannot resolve begin snapshot for delete file ${dataFile.deleteFilePath}")
-                readExistingDeletePositions(fileSystem, tableDataPath, dataFile, beginSnapshot)
+                            "Cannot resolve begin snapshot for delete file $deleteFilePath")
+                readExistingDeletePositions(fileSystem, tableDataPath, dataFile, deleteFilePath, beginSnapshot)
                         .forEach { (position, snapshot) -> merged.merge(position, snapshot, ::minOf) }
             }
             newDeletes.forEach { deletion -> merged.merge(deletion.position, deletion.snapshotId, ::minOf) }
@@ -317,9 +317,10 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
             fileSystem: TrinoFileSystem,
             tableDataPath: String,
             file: dev.brikk.ducklake.catalog.DucklakeDataFile,
+            deleteFilePath: String,
             beginSnapshot: Long): Map<Long, Long> {
         val deletePath = pathResolver.resolveFilePath(
-                file.deleteFilePath!!,
+                deleteFilePath,
                 file.deleteFilePathIsRelative ?: false,
                 tableDataPath)
         if (file.deleteFileFormat.equals("puffin", ignoreCase = true)) {

@@ -84,11 +84,13 @@ class TestDucklakeChangeFeedPartialFile : AbstractTestQueryFramework() {
         }
     }
 
-    private fun insertions(from: Long, to: Long): List<Pair<Int, String>> =
+    private data class Insertion(val snapshot: Long, val id: Int, val data: String)
+
+    private fun insertions(from: Long, to: Long): List<Insertion> =
             computeActual("SELECT snapshot_id, id, data FROM " +
                     "TABLE(ducklake.system.table_insertions('test_schema', 't', $from, $to)) ORDER BY id")
                     .materializedRows
-                    .map { (it.getField(0) as Long).toInt() to (it.getField(2) as String) }
+                    .map { Insertion(it.getField(0) as Long, it.getField(1) as Int, it.getField(2) as String) }
 
     @Test
     fun eachRowAttributedToItsOriginSnapshotNotBeginSnapshot() {
@@ -107,9 +109,10 @@ class TestDucklakeChangeFeedPartialFile : AbstractTestQueryFramework() {
         // (origin snap2 > snap1) must be DROPPED even though they live in the same physical file
         // whose begin_snapshot == snap1.
         val rows = insertions(1, snap1)
-        assertThat(rows.map { it.second }.distinct()).containsExactly("s1")
+        assertThat(rows.map { it.data }.distinct()).containsExactly("s1")
         assertThat(rows).hasSize(100)
-        assertThat(rows.map { it.first }.distinct()).containsExactly(snap1.toInt())
+        assertThat(rows.map { it.snapshot }.distinct()).containsExactly(snap1)
+        assertThat(rows.map { it.id }).containsExactlyElementsOf(0 until 100)
     }
 
     @Test
@@ -117,11 +120,10 @@ class TestDucklakeChangeFeedPartialFile : AbstractTestQueryFramework() {
         // Window [snap1 + 1, snap2]: only the SECOND insert's rows qualify. The first insert's rows
         // (origin snap1 < start) must be excluded even though the file's begin_snapshot == snap1.
         val rows = insertions(snap1 + 1, snap2)
-        assertThat(rows.map { it.second }.distinct()).containsExactly("s2")
+        assertThat(rows.map { it.data }.distinct()).containsExactly("s2")
         assertThat(rows).hasSize(100)
-        assertThat(rows.map { it.first }.distinct()).containsExactly(snap2.toInt())
-        assertThat(rows.map { it.first == snap2.toInt() }.all { it }).isTrue()
-        assertThat(rows.map { it.second }.all { it == "s2" }).isTrue()
+        assertThat(rows.map { it.snapshot }.distinct()).containsExactly(snap2)
+        assertThat(rows.map { it.id }).containsExactlyElementsOf(100 until 200)
     }
 
     @Test

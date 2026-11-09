@@ -13,6 +13,8 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
+import dev.brikk.ducklake.trino.plugin.DucklakeReadSupport.toLocation
+
 import com.google.inject.Inject
 import com.google.inject.Provider
 import dev.brikk.ducklake.catalog.DucklakeCatalog
@@ -343,11 +345,6 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
         return positions.values.associate { value ->
             (if (positions.global) value - DucklakeRowIdentity.requireStart(file.rowIdStart) else value) to beginSnapshot
         }
-    }
-
-    private fun toLocation(path: String): Location {
-        val location = Location.of(path)
-        return if (location.scheme().isPresent) location else Location.of("file://$path")
     }
 
     /**

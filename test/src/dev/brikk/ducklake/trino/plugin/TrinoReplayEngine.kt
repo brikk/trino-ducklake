@@ -171,6 +171,7 @@ class TrinoReplayEngine : ReplayReadEngine {
         val run = gateFor(sql) as? TrinoCorpusDialect.Run
             ?: error("executeQuery on a non-runnable query: ${gateFor(sql)}")
         val s = TrinoReplayBindings.rewrite(run.trinoSql, alias, catalog)
+        var executedSql = s
         val result =
             try {
                 val typedSql = TrinoMapAccessRewriter.rewrite(s, catalog, session.schema.orElse(null)) { table ->
@@ -179,9 +180,10 @@ class TrinoReplayEngine : ReplayReadEngine {
                     val schema = runner.execute(session, "SELECT * FROM $table LIMIT 0")
                     schema.columnNames.zip(schema.types.map { it.displayName }).toMap()
                 }
+                executedSql = typedSql
                 runner.execute(session, typedSql)
             } catch (e: RuntimeException) {
-                throw classifyEngineError(e, currentCatalog) { schema, table ->
+                throw classifyEngineError(e, currentCatalog, executedSql) { schema, table ->
                     currentConfig?.let { lakeRelationsNamed(it, schema, table) }
                 }
             }
@@ -265,19 +267,19 @@ class TrinoReplayEngine : ReplayReadEngine {
     companion object {
         private const val CONNECTOR_PACKAGE = "dev.brikk.ducklake.trino."
         private val UNKNOWN_FUNCTION = Regex("""Function '[^']+' not registered""")
-        private val STRING_LITERAL_OPERAND = Regex("""Cannot apply operator: .*\b(var)?char\(\d+\)""")
         private val MISSING_TABLE = Regex("""Table '([^.']+)\.("[^"]*(?:""[^"]*)*"|[^.']+)\.(.+)' does not exist""")
 
         /**
          * Message text only narrows server-side error codes. Engine NOT_SUPPORTED and function
          * argument mismatches fail; a connector NOT_SUPPORTED gate or unknown function can skip.
-         * Bounded character operands approximate DuckDB's implicit literal casts. Relation lookup
+         * Literal operands are checked at the failing operator's SQL location. Relation lookup
          * includes every snapshot: a name ever held by a table or Trino view must fail, not skip.
          * A null lookup means no lake is connected, not an empty relation history.
          */
         internal fun classifyEngineError(
             e: RuntimeException,
             currentCatalog: String?,
+            sql: String,
             lakeRelationsNamed: (String, String) -> List<String?>?,
         ): RuntimeException {
             val failure = generateSequence<Throwable>(e) { it.cause }
@@ -292,7 +294,9 @@ class TrinoReplayEngine : ReplayReadEngine {
                 "FUNCTION_NOT_FOUND" ->
                     "dialect: function does not exist in Trino: $first".takeIf { UNKNOWN_FUNCTION.containsMatchIn(first) }
                 "TYPE_MISMATCH" ->
-                    "dialect: no implicit cast from a string literal: $first".takeIf { STRING_LITERAL_OPERAND.containsMatchIn(first) }
+                    "dialect: no implicit cast from a string literal: $first".takeIf {
+                        TrinoReplayLiteralMismatch.isLiteralOperand(sql, failure)
+                    }
                 "TABLE_NOT_FOUND" -> relationOutsideLake(first, currentCatalog, lakeRelationsNamed)
                 else -> null
             }

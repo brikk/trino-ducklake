@@ -15,22 +15,9 @@ package dev.brikk.ducklake.trino.plugin
 
 import dev.brikk.ducklake.catalog.DucklakeCatalog
 import dev.brikk.ducklake.catalog.DucklakeTable
-import io.trino.spi.connector.Constraint
-import io.trino.spi.connector.DynamicFilterSnapshot
-import io.trino.testing.connector.TestingConnectorSession.SESSION
 
 /** A table of the shared test catalog's `test_schema` at [snapshotId]. */
 internal fun testSchemaTable(catalog: DucklakeCatalog, snapshotId: Long, tableName: String): DucklakeTable {
     val schema = catalog.listSchemas(snapshotId).first { it.schemaName == "test_schema" }
     return catalog.listTables(schema.schemaId, snapshotId).first { it.tableName == tableName }
 }
-
-/** Every data-file split [splitManager] plans for [tableHandle], with an always-true constraint. */
-internal fun allSplits(splitManager: DucklakeSplitManager, tableHandle: DucklakeTableHandle): List<DucklakeSplit> =
-    splitManager.getSplits(null, SESSION, tableHandle, mutableSetOf(), Constraint.alwaysTrue()).use { splitSource ->
-        buildList {
-            while (!splitSource.isFinished) {
-                splitSource.getNextBatch(1000, DynamicFilterSnapshot.EMPTY).get().forEach { add(it as DucklakeSplit) }
-            }
-        }
-    }

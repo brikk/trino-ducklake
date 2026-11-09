@@ -63,8 +63,8 @@ internal sealed class DucklakeReadStrategy {
     /** Whether a table with no data files but an inlined-data table gets one (empty) inlined split. */
     abstract fun emitsEmptyInlinedSplit(tableHasNoDataFiles: Boolean): Boolean
 
-    /** Whether file pruning on catalog column stats is skipped for [catalog]. */
-    abstract fun skipsCatalogStatsPruning(catalog: DucklakeCatalog): Boolean
+    /** Whether catalog-stats file pruning is disabled in this read mode. */
+    abstract val skipsCatalogStatsPruning: Boolean
 
     /** The released format-1.0 read path. */
     object Format10 : DucklakeReadStrategy() {
@@ -114,7 +114,7 @@ internal sealed class DucklakeReadStrategy {
 
         override fun emitsEmptyInlinedSplit(tableHasNoDataFiles: Boolean): Boolean = tableHasNoDataFiles
 
-        override fun skipsCatalogStatsPruning(catalog: DucklakeCatalog): Boolean = false
+        override val skipsCatalogStatsPruning: Boolean = false
     }
 
     /** The opt-in final-1.1 read path: bounded work, qualified defaults, no NULL substitution. */
@@ -133,7 +133,7 @@ internal sealed class DucklakeReadStrategy {
                 table: ConnectorTableHandle,
                 tree: List<DucklakeColumn>,
                 typeConverter: DucklakeTypeConverter): DucklakeFileDefaults? =
-            if (catalog.getSpecVersion() == "1.1" && table is DucklakeTableHandle)
+            if (table is DucklakeTableHandle)
                 DucklakeFileDefaults(catalog, table, tree, typeConverter) else null
 
         override fun rejectUnreadableColumns(columns: List<DucklakeColumnHandle>, tree: List<DucklakeColumn>) {
@@ -187,7 +187,7 @@ internal sealed class DucklakeReadStrategy {
         // The legacy stats DTO has no endpoint exactness: the public catalog range API
         // deliberately retains EVERY active ID. Reuse the already paged file enumeration rather
         // than transferring that same set through its old list SQL.
-        override fun skipsCatalogStatsPruning(catalog: DucklakeCatalog): Boolean = catalog.getSpecVersion() == "1.1"
+        override val skipsCatalogStatsPruning: Boolean = true
     }
 
     companion object {

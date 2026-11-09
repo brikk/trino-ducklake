@@ -13,7 +13,6 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
-import com.google.common.collect.ImmutableList.toImmutableList
 import com.google.common.collect.ImmutableMap
 import com.google.inject.Inject
 import io.airlift.log.Logger
@@ -48,10 +47,8 @@ import io.trino.spi.type.Type
 import java.util.Locale
 import java.util.ArrayList
 import java.util.LinkedHashMap
-import java.util.LinkedHashSet
 import java.util.Optional
 import java.util.OptionalInt
-import java.util.stream.Collectors.toCollection
 
 /**
  * Split manager for Ducklake connector.
@@ -97,14 +94,13 @@ class DucklakeSplitManager @Inject constructor(
         // on the carried flag instead of issuing a second per-element hasInlinedRows round trip.
         val inlinedDataInfos: List<DucklakeInlinedDataInfo> = catalog.getInlinedDataInfos(tableHandle.tableId, tableHandle.snapshotId)
         readWorkLimits.descriptors(dataFiles.size.toLong() + inlinedDataInfos.size)
-        var inlinedSplits: List<DucklakeInlinedSplit> = inlinedDataInfos.stream()
+        var inlinedSplits: List<DucklakeInlinedSplit> = inlinedDataInfos
                 .filter { info -> info.hasLiveRows }
                 .map { info ->
                     log.debug("Found inlined data for table %s (tableId=%d, schemaVersion=%d)",
                             tableHandle.tableName, info.tableId, info.schemaVersion)
                     DucklakeInlinedSplit(info.tableId, info.schemaVersion, tableHandle.snapshotId)
                 }
-                .collect(toImmutableList())
 
         val parquetSplits: List<DucklakeSplit> = if (dataFiles.isEmpty()) listOf()
             else dataFileSplits(tableHandle, dataFiles, constraint)
@@ -252,7 +248,7 @@ class DucklakeSplitManager @Inject constructor(
             return listOf()
         }
 
-        if (readStrategy.skipsCatalogStatsPruning(catalog)) return dataFiles
+        if (readStrategy.skipsCatalogStatsPruning) return dataFiles
 
         val candidates: List<Pair<DucklakeColumnHandle, Range>> = statsPruningSpans(predicate) ?: return listOf()
         if (candidates.isEmpty()) {
@@ -430,9 +426,7 @@ class DucklakeSplitManager @Inject constructor(
         val specPartitionIds: Set<Long> = specs.map { it.partitionId }.toSet()
         val partitionIdByFileId: Map<Long, Long?> = dataFiles.associate { it.dataFileId to it.partitionId }
 
-        val candidateFileIds: MutableSet<Long> = dataFiles.stream()
-                .map { it.dataFileId }
-                .collect(toCollection { LinkedHashSet<Long>() })
+        val candidateFileIds: MutableSet<Long> = dataFiles.mapTo(linkedSetOf()) { it.dataFileId }
 
         for (entry in enforced.getDomains().orElse(mapOf<DucklakeColumnHandle, Domain>()).entries) {
             val column: DucklakeColumnHandle = entry.key
@@ -454,9 +448,7 @@ class DucklakeSplitManager @Inject constructor(
             }
         }
 
-        val result: List<DucklakeDataFile> = dataFiles.stream()
-                .filter { f -> candidateFileIds.contains(f.dataFileId) }
-                .collect(toImmutableList())
+        val result: List<DucklakeDataFile> = dataFiles.filter { it.dataFileId in candidateFileIds }
         log.debug("Partition pruning: %d -> %d files for table %s", dataFiles.size, result.size, tableHandle.tableName)
         return result
     }

@@ -13,8 +13,6 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
-import com.google.common.collect.ImmutableList
-import com.google.common.collect.ImmutableList.toImmutableList
 import dev.brikk.ducklake.catalog.DucklakeCatalog
 import dev.brikk.ducklake.catalog.DucklakeSchema
 import dev.brikk.ducklake.catalog.DucklakeTable
@@ -22,7 +20,6 @@ import dev.brikk.ducklake.catalog.JdbcDucklakeCatalog
 import io.trino.spi.connector.ColumnHandle
 import io.trino.spi.connector.ConnectorSplit
 import io.trino.spi.connector.Constraint
-import io.trino.spi.connector.DynamicFilterSnapshot
 import io.trino.spi.predicate.Domain
 import io.trino.spi.predicate.TupleDomain
 import io.trino.spi.type.DateType.DATE
@@ -236,10 +233,10 @@ class TestDucklakeSplitManager {
         val tableHandle = DucklakeTableHandle("test_schema", "mixed_inline_table", table.tableId, snapshotId)
 
         val splits = getRawSplits(tableHandle, Constraint.alwaysTrue())
-        val parquetSplitCount = splits.stream().filter { it is DucklakeSplit }.count()
-        val inlinedSplitCount = splits.stream().filter { it is DucklakeInlinedSplit }.count()
+        val parquetSplitCount = splits.count { it is DucklakeSplit }
+        val inlinedSplitCount = splits.count { it is DucklakeInlinedSplit }
 
-        assertThat(parquetSplitCount).isEqualTo(catalog!!.getDataFiles(table.tableId, snapshotId).size.toLong())
+        assertThat(parquetSplitCount).isEqualTo(catalog!!.getDataFiles(table.tableId, snapshotId).size)
         assertThat(parquetSplitCount).isGreaterThan(0)
         assertThat(inlinedSplitCount).isEqualTo(1)
     }
@@ -259,48 +256,28 @@ class TestDucklakeSplitManager {
 
     @Throws(Exception::class)
     private fun getSplits(tableHandle: DucklakeTableHandle, constraint: Constraint): List<DucklakeSplit> {
-        return getRawSplits(tableHandle, constraint).stream()
-                .map { it as DucklakeSplit }
-                .collect(toImmutableList())
+        return allSplits(checkNotNull(splitManager), tableHandle, constraint)
     }
 
     @Throws(Exception::class)
     private fun getRawSplits(tableHandle: DucklakeTableHandle, constraint: Constraint): List<ConnectorSplit> {
-        splitManager!!.getSplits(
-                null,
-                null,
-                tableHandle,
-                mutableSetOf(),
-                constraint).use { splitSource ->
-            val splits: ImmutableList.Builder<ConnectorSplit> = ImmutableList.builder()
-            while (!splitSource.isFinished) {
-                splits.addAll(splitSource.getNextBatch(1000, DynamicFilterSnapshot.EMPTY).get())
-            }
-            return splits.build()
-        }
+        return allConnectorSplits(checkNotNull(splitManager), tableHandle, constraint)
     }
 
     private fun getSchema(schemaName: String, snapshotId: Long): DucklakeSchema {
-        return catalog!!.listSchemas(snapshotId).stream()
-                .filter { schema -> schema.schemaName == schemaName }
-                .findFirst()
-                .orElseThrow { AssertionError("Missing schema: $schemaName") }
+        return catalog!!.listSchemas(snapshotId).firstOrNull { it.schemaName == schemaName }
+                ?: throw AssertionError("Missing schema: $schemaName")
     }
 
     private fun getTable(schemaName: String, tableName: String, snapshotId: Long): DucklakeTable {
         val schema = getSchema(schemaName, snapshotId)
-        return catalog!!.listTables(schema.schemaId, snapshotId).stream()
-                .filter { table -> table.tableName == tableName }
-                .findFirst()
-                .orElseThrow { AssertionError("Missing table: $schemaName.$tableName") }
+        return catalog!!.listTables(schema.schemaId, snapshotId).firstOrNull { it.tableName == tableName }
+                ?: throw AssertionError("Missing table: $schemaName.$tableName")
     }
 
     private fun getColumnId(tableId: Long, snapshotId: Long, columnName: String): Long {
-        return catalog!!.getTableColumns(tableId, snapshotId).stream()
-                .filter { column -> column.columnName == columnName }
-                .findFirst()
-                .orElseThrow { AssertionError("Missing column: $columnName") }
-                .columnId
+        return (catalog!!.getTableColumns(tableId, snapshotId).firstOrNull { it.columnName == columnName }
+                ?: throw AssertionError("Missing column: $columnName")).columnId
     }
 
     @Throws(Exception::class)
@@ -308,8 +285,8 @@ class TestDucklakeSplitManager {
         val table = getTable("test_schema", tableName, snapshotId)
         val tableHandle = DucklakeTableHandle("test_schema", tableName, table.tableId, snapshotId)
         val splits = getRawSplits(tableHandle, Constraint.alwaysTrue())
-        val parquetSplits = splits.stream().filter { it is DucklakeSplit }.count()
-        val inlinedSplits = splits.stream().filter { it is DucklakeInlinedSplit }.count()
+        val parquetSplits = splits.count { it is DucklakeSplit }
+        val inlinedSplits = splits.count { it is DucklakeInlinedSplit }
 
         if (expectParquetSplit) {
             assertThat(parquetSplits).`as`("parquet split count for %s", tableName).isGreaterThan(0)

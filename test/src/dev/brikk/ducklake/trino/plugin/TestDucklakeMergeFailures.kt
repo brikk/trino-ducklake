@@ -19,7 +19,9 @@ import dev.brikk.ducklake.catalog.DucklakeWriteFragment
 import io.airlift.json.JsonCodec
 import io.airlift.slice.Slice
 import io.airlift.slice.Slices.utf8Slice
+import io.airlift.units.DataSize
 import io.trino.filesystem.memory.MemoryFileSystem
+import io.trino.filesystem.TrinoFileSystem
 import io.trino.plugin.hive.parquet.ParquetReaderConfig
 import io.trino.parquet.writer.ParquetWriterOptions
 import io.trino.plugin.base.metrics.FileFormatDataSourceStats
@@ -40,6 +42,7 @@ import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Test
 import java.io.IOException
+import java.io.UncheckedIOException
 import java.lang.reflect.Proxy
 import java.util.Optional
 import java.util.concurrent.CompletableFuture
@@ -153,12 +156,46 @@ class TestDucklakeMergeFailures {
             assertThatThrownBy { fixture.finishMerge(listOf(valid, utf8Slice(json))) }
                 .isInstanceOfSatisfying(TrinoException::class.java) {
                     assertThat(it.errorCode).isEqualTo(GENERIC_INTERNAL_ERROR.toErrorCode())
-                    assertThat(it.cause).isNotNull()
+                    assertThat(it.cause).isInstanceOf(IllegalArgumentException::class.java)
                 }
                 .hasMessageContaining("deserialize merge fragment")
         }
         assertThat(fixture.commits).isEmpty()
     }
+
+    @Test
+    fun deleteWriterClosesItsOutputOnWriteFailureAndPreservesThePrimaryError() {
+        for (failure in listOf(IOException("write failed"), IllegalStateException("writer failed"), AssertionError("writer invariant"))) {
+            val fixture = Fixture()
+            val fs = FailureTrackingFileSystem().apply { writeFailure = failure }
+            val sink = fixture.sink(fileSystem = fs, writerOptions = ParquetWriterOptions.builder()
+                .setMaxBlockSize(DataSize.ofBytes(1)).setBatchSize(1).build())
+            sink.storeMergedRows(deletePage())
+            val assertion = assertThatThrownBy { sink.finish() }
+            if (failure is IOException) assertion.isInstanceOf(UncheckedIOException::class.java).hasCause(failure)
+            else assertion.isSameAs(failure)
+            assertThat(fs.openedOutputs).hasSize(1)
+            assertThat(fs.closedOutputs).containsAll(fs.openedOutputs)
+        }
+    }
+
+    @Test
+    fun insertFinishFailuresStillAllowBothSinksToBeAborted() {
+        val fixture = Fixture()
+        val aborted = mutableListOf<String>()
+        val failure = UncheckedIOException(IOException("insert output failed"))
+        val sink = fixture.sink(
+            insert = fixture.pageSink(abort = { aborted.add("insert") }) { throw failure },
+            lineage = fixture.pageSink(abort = { aborted.add("lineage") }) { CompletableFuture.completedFuture(emptyList()) })
+        assertThatThrownBy { sink.finish() }.isInstanceOfSatisfying(TrinoException::class.java) {
+            assertThat(it.errorCode).isEqualTo(GENERIC_INTERNAL_ERROR.toErrorCode())
+        }.hasCause(failure)
+        sink.abort()
+        assertThat(aborted).containsExactly("lineage", "insert")
+    }
+
+    private fun deletePage(): Page = Page(BIGINT.createNullBlock(), writeNativeValue(TINYINT, DELETE_OPERATION_NUMBER.toLong()),
+        writeNativeValue(INTEGER, 0L), DucklakeMergeRowId.block(7, writeNativeValue(BIGINT, 0L)))
 
     private class Fixture {
         val writeCodec = JsonCodec.jsonCodec(DucklakeWriteFragment::class.java)
@@ -192,10 +229,11 @@ class TestDucklakeMergeFailures {
             metadata.finishMerge(SESSION, handle, emptyList(), fragments, emptyList())
         }
 
-        fun pageSink(finish: () -> CompletableFuture<Collection<Slice>>): ConnectorPageSink =
+        fun pageSink(abort: () -> Unit = {}, finish: () -> CompletableFuture<Collection<Slice>>): ConnectorPageSink =
             Proxy.newProxyInstance(ConnectorPageSink::class.java.classLoader, arrayOf(ConnectorPageSink::class.java)) { _, method, _ ->
                 when (method.name) {
                     "finish" -> finish()
+                    "abort" -> abort()
                     "getMemoryUsage" -> 0L
                     else -> error("Unexpected insert sink call ${method.name}")
                 }
@@ -203,8 +241,12 @@ class TestDucklakeMergeFailures {
 
         fun sink(
             lineage: ConnectorPageSink? = null,
+            fileSystem: TrinoFileSystem = MemoryFileSystem(),
+            insert: ConnectorPageSink? = null,
+            writerOptions: ParquetWriterOptions = ParquetWriterOptions.builder().build(),
             finish: () -> CompletableFuture<Collection<Slice>> = { CompletableFuture.completedFuture(emptyList()) }): DucklakeMergeSink =
-            DucklakeMergeSink(handle, MemoryFileSystem(), deleteCodec, ParquetWriterOptions.builder().build(),
-                ParquetReaderConfig().toParquetReaderOptions(), FileFormatDataSourceStats(), "test", false, pageSink(finish), lineage)
+            DucklakeMergeSink(handle, fileSystem, deleteCodec, writerOptions,
+                ParquetReaderConfig().toParquetReaderOptions(), FileFormatDataSourceStats(), "test", false,
+                insert ?: pageSink(finish = finish), lineage)
     }
 }

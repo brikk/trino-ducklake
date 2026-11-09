@@ -316,6 +316,7 @@ internal class DucklakeWriteMetadata(
                 dropUnpublishedCreatedTable(tableId, tableName)
             }
             catch (e: RuntimeException) {
+                // Rollback must attempt every table even when a catalog or driver fails unexpectedly.
                 failures += e
             }
         }
@@ -454,9 +455,8 @@ internal class DucklakeWriteMetadata(
                     DucklakeMergeFragment.Kind.INSERT -> insertFragments.add(fragmentCodec.fromJson(tagged.payload))
                 }
             }
-            catch (e: RuntimeException) {
-                throw e as? TrinoException
-                    ?: TrinoException(GENERIC_INTERNAL_ERROR, "Failed to deserialize merge fragment", e)
+            catch (e: IllegalArgumentException) {
+                throw TrinoException(GENERIC_INTERNAL_ERROR, "Failed to deserialize merge fragment", e)
             }
         }
 

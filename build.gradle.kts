@@ -22,6 +22,7 @@ require(r07CatalogCandidate == null || r07CatalogCandidate in setOf("", catalogV
     "Use -Pr07CatalogCandidate (or =$catalogVersion) for experimental planning on the released catalog; local bundles and snapshots are not accepted"
 }
 kotlin.sourceSets.main { kotlin.srcDir("trino-$trinoVersion/src") }
+kotlin.sourceSets.test { kotlin.srcDir("trino-$trinoVersion/test") }
 // <trino-version>-<our-release>: never label a 484 build as compatible with 483.
 version = "$trinoVersion-0.5.4" + if (r07CatalogCandidate != null) "-r07" else ""
 
@@ -31,7 +32,8 @@ detekt {
     buildUponDefaultConfig = true
     config.setFrom(rootProject.file("config/detekt/detekt.yml"))
     baseline = file("detekt-baseline.xml")
-    source.setFrom("src", "test", "trino-$trinoVersion/src", if (providers.gradleProperty("r07CatalogCandidate").isPresent) "candidate/src" else "released")
+    source.setFrom("src", "test", "trino-$trinoVersion/src", "trino-$trinoVersion/test",
+        if (providers.gradleProperty("r07CatalogCandidate").isPresent) "candidate/src" else "released")
 }
 
 // The brikk-sql (dev.brikk.house) TEST-ONLY tooling uses Maven Central releases; optional snapshots

@@ -128,6 +128,28 @@ class TestDucklakePuffinDeleteReader {
     }
 
     @Test
+    fun malformedBitmapBodiesStayIoFailuresAndTheirInputIsClosed() {
+        val single = buildBlob(mapOf(0 to longArrayOf(1)))
+        val multiple = buildBlob(mapOf(0 to longArrayOf(1), 1 to longArrayOf(2)))
+        val malformed = listOf(
+            single.copyOf().apply { ByteBuffer.wrap(this).order(ByteOrder.LITTLE_ENDIAN).putInt(20, 0) },
+            multiple.copyOf().apply { ByteBuffer.wrap(this).order(ByteOrder.LITTLE_ENDIAN).putInt(20, 0) },
+            multiple.copyOf(28).apply { ByteBuffer.wrap(this).putInt(size - 8) },
+            multiple.copyOf().apply {
+                ByteBuffer.wrap(this).order(ByteOrder.LITTLE_ENDIAN).putInt(20, 12346).putInt(24, -1)
+            })
+        for (blob in malformed) {
+            val fs = FailureTrackingFileSystem()
+            val location = io.trino.filesystem.Location.of("memory:///bad.puffin")
+            fs.newOutputFile(location).createOrOverwrite(blob)
+            assertThatThrownBy { DucklakePuffinDeleteReader.readDeletedPositions(fs.newInputFile(location)) }
+                .isInstanceOf(IOException::class.java).hasMessageContaining("Corrupt puffin deletion vector: bitmap decode failed")
+                .hasCauseInstanceOf(Exception::class.java)
+            fs.assertInputsClosed()
+        }
+    }
+
+    @Test
     fun testMagicMismatchRejected() {
         val bitmaps = HashMap<Int, LongArray>()
         bitmaps[0] = longArrayOf(1L)

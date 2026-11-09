@@ -365,10 +365,9 @@ class TestDucklakeS3ParquetEndToEnd : AbstractTestQueryFramework() {
             assertThat(computeActual("SELECT label FROM $table ORDER BY id").materializedRows
                     .map { it.getField(0) as String })
                     .containsExactly("a", "b", "c")
-            // DROP COLUMN.
             computeActual("ALTER TABLE $table DROP COLUMN extra")
             assertThat(computeActual("SELECT * FROM $table ORDER BY id").materializedRows.map { it.fieldCount })
-                    .allSatisfy { assertThat(it).isEqualTo(2) }
+                    .containsExactly(2, 2, 2)
             assertFilesOnS3("s3_evolve")
         }
         finally {

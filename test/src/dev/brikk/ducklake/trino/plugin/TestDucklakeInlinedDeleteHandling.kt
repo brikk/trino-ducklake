@@ -13,7 +13,6 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
-import com.google.common.collect.ImmutableList
 import dev.brikk.ducklake.catalog.DucklakeCatalog
 import dev.brikk.ducklake.catalog.DucklakeDataFile
 import dev.brikk.ducklake.catalog.DucklakeSchema
@@ -24,10 +23,7 @@ import io.trino.filesystem.local.LocalFileSystemFactory
 import io.trino.plugin.base.metrics.FileFormatDataSourceStats
 import io.trino.plugin.hive.parquet.ParquetReaderConfig
 import io.trino.spi.connector.ColumnHandle
-import io.trino.spi.connector.ConnectorSplit
-import io.trino.spi.connector.Constraint
 import io.trino.spi.connector.DynamicFilter
-import io.trino.spi.connector.DynamicFilterSnapshot
 import io.trino.spi.type.DoubleType.DOUBLE
 import io.trino.testing.connector.TestingConnectorSession.SESSION
 import org.assertj.core.api.Assertions.assertThat
@@ -61,7 +57,7 @@ class TestDucklakeInlinedDeleteHandling {
                     "test_schema", "simple_table", table.tableId, snapshotId)
             val priceColumn = priceColumn(fx.catalog, table.tableId, snapshotId)
 
-            val baselineSplit = getSplits(fx.splitManager, tableHandle).first()
+            val baselineSplit = allSplits(fx.splitManager, tableHandle).first()
             val baselineRows = countRows(fx.pageSourceProvider, tableHandle, baselineSplit, priceColumn)
             assertThat(baselineRows).isGreaterThan(1)
 
@@ -70,10 +66,7 @@ class TestDucklakeInlinedDeleteHandling {
             insertInlinedDelete(fx.isolated.jdbcUrl, fx.isolated.user, fx.isolated.password,
                     table.tableId, victim.dataFileId, 0L, snapshotId)
 
-            val splitAfter = getSplits(fx.splitManager, tableHandle).stream()
-                    .filter { split -> split.dataFilePath == baselineSplit.dataFilePath }
-                    .findFirst()
-                    .orElseThrow()
+            val splitAfter = allSplits(fx.splitManager, tableHandle).first { it.dataFilePath == baselineSplit.dataFilePath }
             assertThat(splitAfter.inlinedDeletedRowPositions).containsExactly(0L)
 
             val rowsAfter = countRows(fx.pageSourceProvider, tableHandle, splitAfter, priceColumn)
@@ -94,7 +87,7 @@ class TestDucklakeInlinedDeleteHandling {
                     "test_schema", "partitioned_table", table.tableId, snapshotId)
             val idColumn = idColumn(fx.catalog, table.tableId, snapshotId)
 
-            val baselineSplits = getSplits(fx.splitManager, tableHandle)
+            val baselineSplits = allSplits(fx.splitManager, tableHandle)
             assertThat(baselineSplits).hasSizeGreaterThanOrEqualTo(2)
 
             val targetSplit = baselineSplits.first()
@@ -109,15 +102,9 @@ class TestDucklakeInlinedDeleteHandling {
             insertInlinedDelete(fx.isolated.jdbcUrl, fx.isolated.user, fx.isolated.password,
                     table.tableId, targetFile.dataFileId, 0L, snapshotId)
 
-            val splitsAfter = getSplits(fx.splitManager, tableHandle)
-            val targetAfter = splitsAfter.stream()
-                    .filter { split -> split.dataFilePath == targetSplit.dataFilePath }
-                    .findFirst()
-                    .orElseThrow()
-            val otherAfter = splitsAfter.stream()
-                    .filter { split -> split.dataFilePath == otherSplit.dataFilePath }
-                    .findFirst()
-                    .orElseThrow()
+            val splitsAfter = allSplits(fx.splitManager, tableHandle)
+            val targetAfter = splitsAfter.first { it.dataFilePath == targetSplit.dataFilePath }
+            val otherAfter = splitsAfter.first { it.dataFilePath == otherSplit.dataFilePath }
 
             assertThat(targetAfter.inlinedDeletedRowPositions).containsExactly(0L)
             assertThat(otherAfter.inlinedDeletedRowPositions).isEmpty()
@@ -142,7 +129,7 @@ class TestDucklakeInlinedDeleteHandling {
                     "test_schema", "simple_table", table.tableId, snapshotId)
             val priceColumn = priceColumn(fx.catalog, table.tableId, snapshotId)
 
-            val baselineSplit = getSplits(fx.splitManager, tableHandle).first()
+            val baselineSplit = allSplits(fx.splitManager, tableHandle).first()
             val baselineRows = countRows(fx.pageSourceProvider, tableHandle, baselineSplit, priceColumn)
 
             val victim = findDataFileForSplit(fx.catalog, table.tableId, snapshotId, baselineSplit)
@@ -154,10 +141,7 @@ class TestDucklakeInlinedDeleteHandling {
             // must return false for the current snapshot.
             assertThat(fx.catalog.hasInlinedDeletes(table.tableId, snapshotId)).isFalse()
 
-            val splitAfter = getSplits(fx.splitManager, tableHandle).stream()
-                    .filter { split -> split.dataFilePath == baselineSplit.dataFilePath }
-                    .findFirst()
-                    .orElseThrow()
+            val splitAfter = allSplits(fx.splitManager, tableHandle).first { it.dataFilePath == baselineSplit.dataFilePath }
             assertThat(splitAfter.inlinedDeletedRowPositions).isEmpty()
 
             val rowsAfter = countRows(fx.pageSourceProvider, tableHandle, splitAfter, priceColumn)
@@ -274,22 +258,6 @@ class TestDucklakeInlinedDeleteHandling {
         }
 
         @Throws(Exception::class)
-        private fun getSplits(splitManager: DucklakeSplitManager, tableHandle: DucklakeTableHandle): List<DucklakeSplit> {
-            splitManager.getSplits(
-                    null, SESSION, tableHandle, mutableSetOf(), Constraint.alwaysTrue()).use { splitSource ->
-                val splits = ImmutableList.builder<DucklakeSplit>()
-                while (!splitSource.isFinished) {
-                    for (split: ConnectorSplit in splitSource.getNextBatch(1000, DynamicFilterSnapshot.EMPTY).get()) {
-                        if (split is DucklakeSplit) {
-                            splits.add(split)
-                        }
-                    }
-                }
-                return splits.build()
-            }
-        }
-
-        @Throws(Exception::class)
         private fun countRows(
                 pageSourceProvider: DucklakePageSourceProvider,
                 tableHandle: DucklakeTableHandle,
@@ -297,7 +265,7 @@ class TestDucklakeInlinedDeleteHandling {
                 column: DucklakeColumnHandle): Long {
             var rows = 0L
             pageSourceProvider.createPageSource(
-                    null, SESSION, split, tableHandle, java.util.Optional.empty(), ImmutableList.of<ColumnHandle>(column),
+                    null, SESSION, split, tableHandle, java.util.Optional.empty(), listOf<ColumnHandle>(column),
                     DynamicFilter.EMPTY).use { pageSource ->
                 while (!pageSource.isFinished) {
                     val page = pageSource.nextSourcePage
@@ -311,43 +279,29 @@ class TestDucklakeInlinedDeleteHandling {
 
         private fun findDataFileForSplit(
                 catalog: DucklakeCatalog, tableId: Long, snapshotId: Long, split: DucklakeSplit): DucklakeDataFile {
-            return catalog.getDataFiles(tableId, snapshotId).stream()
-                    .filter { dataFile -> split.dataFilePath.endsWith(dataFile.path) }
-                    .findFirst()
-                    .orElseThrow { AssertionError("Missing data file metadata for split path: " + split.dataFilePath) }
+            return catalog.getDataFiles(tableId, snapshotId).firstOrNull { split.dataFilePath.endsWith(it.path) }
+                    ?: throw AssertionError("Missing data file metadata for split path: " + split.dataFilePath)
         }
 
         private fun priceColumn(catalog: DucklakeCatalog, tableId: Long, snapshotId: Long): DucklakeColumnHandle {
-            val columnId = catalog.getTableColumns(tableId, snapshotId).stream()
-                    .filter { column -> column.columnName == "price" }
-                    .findFirst()
-                    .orElseThrow()
-                    .columnId
+            val columnId = catalog.getTableColumns(tableId, snapshotId).first { it.columnName == "price" }.columnId
             return DucklakeColumnHandle(columnId, "price", DOUBLE, true)
         }
 
         private fun idColumn(catalog: DucklakeCatalog, tableId: Long, snapshotId: Long): DucklakeColumnHandle {
-            val columnId = catalog.getTableColumns(tableId, snapshotId).stream()
-                    .filter { column -> column.columnName == "id" }
-                    .findFirst()
-                    .orElseThrow()
-                    .columnId
+            val columnId = catalog.getTableColumns(tableId, snapshotId).first { it.columnName == "id" }.columnId
             return DucklakeColumnHandle(columnId, "id", io.trino.spi.type.IntegerType.INTEGER, true)
         }
 
         private fun getSchema(catalog: DucklakeCatalog, schemaName: String, snapshotId: Long): DucklakeSchema {
-            return catalog.listSchemas(snapshotId).stream()
-                    .filter { schema -> schema.schemaName == schemaName }
-                    .findFirst()
-                    .orElseThrow { AssertionError("Missing schema: $schemaName") }
+            return catalog.listSchemas(snapshotId).firstOrNull { it.schemaName == schemaName }
+                    ?: throw AssertionError("Missing schema: $schemaName")
         }
 
         private fun getTable(catalog: DucklakeCatalog, schemaName: String, tableName: String, snapshotId: Long): DucklakeTable {
             val schema = getSchema(catalog, schemaName, snapshotId)
-            return catalog.listTables(schema.schemaId, snapshotId).stream()
-                    .filter { table -> table.tableName == tableName }
-                    .findFirst()
-                    .orElseThrow { AssertionError("Missing table: $schemaName.$tableName") }
+            return catalog.listTables(schema.schemaId, snapshotId).firstOrNull { it.tableName == tableName }
+                    ?: throw AssertionError("Missing table: $schemaName.$tableName")
         }
     }
 }

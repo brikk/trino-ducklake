@@ -10,6 +10,9 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
+import dev.brikk.ducklake.catalog.DucklakeCatalogFormat
+import dev.brikk.ducklake.catalog.DucklakeCatalogFormatNotAdmittedException
+import dev.brikk.ducklake.catalog.JdbcDucklakeCatalog
 import io.trino.testing.DistributedQueryRunner
 import io.trino.testing.TestingSession.testSessionBuilder
 import org.assertj.core.api.Assertions.assertThat
@@ -28,14 +31,19 @@ class TestDucklakeCatalogFormatLock {
     lateinit var data: Path
 
     @Test
-    fun format10CatalogRefusesBothKindsOf11TableBeforeReadingOrWriting() = withLockedCatalog("1.1") { _, runner ->
+    fun format10CatalogRefusesBothKindsOf11TableBeforeReadingOrWriting() = withLockedCatalog("1.1") { _, runner, config ->
+        assertThat(config.toCatalogConfig().requiredCatalogFormat).isEqualTo(DucklakeCatalogFormat.V1_0)
+        assertThatThrownBy { JdbcDucklakeCatalog(config.toCatalogConfig()).use { it.currentSnapshotId } }
+            .isInstanceOf(DucklakeCatalogFormatNotAdmittedException::class.java)
+        assertThat(DucklakeReadStrategy.Format10.skipsCatalogStatsPruning).isFalse()
+        assertThat(DucklakeReadStrategy.Final11(DucklakeReadWorkLimits(DucklakeConfig())).skipsCatalogStatsPruning).isTrue()
         for (sql in listOf("SELECT i FROM parquet_t", "SELECT i FROM inline_t", "INSERT INTO parquet_t VALUES 43")) {
             assertThatThrownBy { runner.execute(sql) }.hasMessageContaining("1.1").hasMessageContaining("1.0")
         }
     }
 
     @Test
-    fun existingCatalogRechecksItsFormatAfterAnotherEngineMigratesIt() = withLockedCatalog("1.0") { uri, runner ->
+    fun existingCatalogRechecksItsFormatAfterAnotherEngineMigratesIt() = withLockedCatalog("1.0") { uri, runner, _ ->
         assertThat(runner.execute("SELECT i FROM parquet_t").onlyValue).isEqualTo(42)
         native(uri, "1.1", true, "SELECT 1")
         for (sql in listOf("SELECT i FROM parquet_t", "SELECT i FROM inline_t", "INSERT INTO parquet_t VALUES 43")) {
@@ -43,7 +51,7 @@ class TestDucklakeCatalogFormatLock {
         }
     }
 
-    private fun withLockedCatalog(format: String, action: (String, DistributedQueryRunner) -> Unit) {
+    private fun withLockedCatalog(format: String, action: (String, DistributedQueryRunner, DucklakeConfig) -> Unit) {
         val server = DucklakeTestCatalogEnvironment.getServer()
         val database = "format_" + UUID.randomUUID().toString().replace("-", "")
         server.createDatabase(database)
@@ -61,7 +69,10 @@ class TestDucklakeCatalogFormatLock {
                     "ducklake.catalog.database-password" to server.getPassword(),
                     "ducklake.catalog.format-version" to "1.0", "ducklake.data-path" to data.toString(),
                     "fs.hadoop.enabled" to "true"))
-                action(uri, runner)
+                 val config = DucklakeConfig().setCatalogDatabaseUrl(server.getJdbcUrl(database))
+                     .setCatalogDatabaseUser(server.getUser()).setCatalogDatabasePassword(server.getPassword())
+                     .setCatalogFormatVersion("1.0").setDataPath(data.toString())
+                 action(uri, runner, config)
             }
     }
 

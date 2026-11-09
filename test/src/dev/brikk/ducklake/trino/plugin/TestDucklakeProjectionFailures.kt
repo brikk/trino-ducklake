@@ -24,6 +24,8 @@ import io.trino.plugin.hive.parquet.ParquetReaderConfig
 import io.trino.parquet.writer.ParquetSchemaConverter
 import io.trino.parquet.writer.ParquetWriter
 import io.trino.parquet.writer.ParquetWriterOptions
+import io.trino.parquet.ParquetReaderOptions
+import io.airlift.units.DataSize
 import io.trino.plugin.base.metrics.FileFormatDataSourceStats
 import io.trino.spi.Page
 import io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR
@@ -131,6 +133,42 @@ class TestDucklakeProjectionFailures {
         assertThatThrownBy { fixture.read(fixture.split, fixture.column, fixture.failingFileSystem(failure)) }.isSameAs(failure)
     }
 
+    @Test
+    fun constructionClosesOpenedSourcesAndPreservesDiagnostics() {
+        val fixture = Fixture()
+        for (failure in listOf(IOException("footer read failed"), IllegalStateException("invalid reader state"),
+            IllegalArgumentException("invalid schema"), org.apache.parquet.io.ParquetDecodingException("invalid encoding"),
+            ArithmeticException("row count overflow"), TrinoException(NOT_SUPPORTED, "physical field unsupported"))) {
+            val fs = fixture.trackingFileSystem().apply { readFailure = failure }
+            val closeFailure = IOException("close failed")
+            fs.inputCloseFailure = closeFailure
+            val assertion = assertThatThrownBy { fixture.read(fixture.split, fixture.column, fs) }
+            if (failure is TrinoException) assertion.isSameAs(failure)
+            else assertion.isInstanceOfSatisfying(TrinoException::class.java) {
+                assertThat(it.errorCode).isEqualTo(GENERIC_INTERNAL_ERROR.toErrorCode())
+                assertThat(it.cause).isSameAs(failure)
+            }
+            assertThat(failure.suppressed).contains(closeFailure)
+            fs.assertInputsClosed()
+        }
+    }
+
+    @Test
+    fun constructionClosesOnUnexpectedErrorsAndLateProjectionFailures() {
+        val fixture = Fixture()
+        val error = AssertionError("reader invariant")
+        val fs = fixture.trackingFileSystem().apply { readFailure = error }
+        assertThatThrownBy { fixture.read(fixture.split, fixture.column, fs) }.isSameAs(error)
+        fs.assertInputsClosed()
+
+        val projectionFs = fixture.trackingFileSystem()
+        assertThatThrownBy { fixture.read(fixture.split, fixture.column.copy(initialDefault = "invalid"), projectionFs) }
+            .isInstanceOfSatisfying(TrinoException::class.java) {
+                assertThat(it.errorCode).isEqualTo(GENERIC_INTERNAL_ERROR.toErrorCode())
+            }.hasMessageContaining("initial_default")
+        projectionFs.assertInputsClosed()
+    }
+
     private class Fixture {
         var eraContainsColumn = false
         val column = DucklakeColumnHandle(2, "added", BIGINT, true)
@@ -168,9 +206,12 @@ class TestDucklakeProjectionFailures {
             }
         }
 
+        fun trackingFileSystem(): FailureTrackingFileSystem = FailureTrackingFileSystem(fileSystem)
+
         fun read(split: ConnectorSplit, column: DucklakeColumnHandle, fs: TrinoFileSystem = fileSystem): List<Long?> {
             val provider = DucklakePageSourceProvider(TrinoFileSystemFactory { fs }, FileFormatDataSourceStats(),
-                ParquetReaderConfig().toParquetReaderOptions(), catalog, DucklakeConfig(), DucklakeTypeConverter(TESTING_TYPE_MANAGER))
+                ParquetReaderOptions.builder().withSmallFileThreshold(DataSize.ofBytes(0)).build(),
+                catalog, DucklakeConfig(), DucklakeTypeConverter(TESTING_TYPE_MANAGER))
             return provider.createPageSource(null, SESSION, split, DucklakeTableHandle("main", "t", 1, 2),
                 Optional.empty(), listOf(column), DynamicFilter.EMPTY).use { source ->
                 buildList {

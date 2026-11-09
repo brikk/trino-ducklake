@@ -67,7 +67,7 @@ internal object DucklakeTableVersions
             else
                 (version.version as LongTimestamp).epochMicros
             val epochSecondUtc: Long = floorDiv(epochMicrosUtc, MICROSECONDS_PER_SECOND)
-            val nanosOfSecond: Int = floorMod(epochMicrosUtc, MICROSECONDS_PER_SECOND).toInt() * NANOSECONDS_PER_MICROSECOND
+            val nanosOfSecond: Int = floorMod(epochMicrosUtc, MICROSECONDS_PER_SECOND) * NANOSECONDS_PER_MICROSECOND
             return LocalDateTime.ofEpochSecond(epochSecondUtc, nanosOfSecond, ZoneOffset.UTC)
                     .atZone(session.timeZoneKey.zoneId)
                     .toInstant()

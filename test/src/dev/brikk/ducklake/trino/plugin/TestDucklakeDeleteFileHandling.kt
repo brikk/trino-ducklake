@@ -25,10 +25,7 @@ import io.trino.filesystem.local.LocalFileSystemFactory
 import io.trino.plugin.base.metrics.FileFormatDataSourceStats
 import io.trino.plugin.hive.parquet.ParquetReaderConfig
 import io.trino.spi.connector.ColumnHandle
-import io.trino.spi.connector.ConnectorSplit
-import io.trino.spi.connector.Constraint
 import io.trino.spi.connector.DynamicFilter
-import io.trino.spi.connector.DynamicFilterSnapshot
 import io.trino.spi.type.DoubleType.DOUBLE
 import io.trino.testing.connector.TestingConnectorSession.SESSION
 import org.assertj.core.api.Assertions.assertThat
@@ -70,7 +67,7 @@ class TestDucklakeDeleteFileHandling {
             val priceColumnId = getColumnId(catalog, table.tableId, snapshotId, "price")
             val priceColumn = DucklakeColumnHandle(priceColumnId, "price", DOUBLE, true)
 
-            val splitBeforeDelete = getSplits(splitManager, tableHandle).first()
+            val splitBeforeDelete = allSplits(splitManager, tableHandle).first()
             val baselineRows = countRows(pageSourceProvider, tableHandle, splitBeforeDelete, priceColumn)
             assertThat(baselineRows).isGreaterThan(1)
 
@@ -87,7 +84,7 @@ class TestDucklakeDeleteFileHandling {
                 deleteFilePath.pathIsRelative,
                 Files.size(deleteFilePath.absolutePath))
 
-            val splitAfterDelete = getSplits(splitManager, tableHandle)
+            val splitAfterDelete = allSplits(splitManager, tableHandle)
                 .firstOrNull { split -> split.dataFilePath == splitBeforeDelete.dataFilePath }
                 ?: throw AssertionError("Expected split for data file: " + splitBeforeDelete.dataFilePath)
 
@@ -104,24 +101,6 @@ class TestDucklakeDeleteFileHandling {
     private data class DeleteFilePath(val pathForCatalog: String, val pathIsRelative: Boolean, val absolutePath: Path)
 
     companion object {
-        @Throws(Exception::class)
-        private fun getSplits(splitManager: DucklakeSplitManager, tableHandle: DucklakeTableHandle): List<DucklakeSplit> {
-            splitManager.getSplits(
-                null,
-                SESSION,
-                tableHandle,
-                mutableSetOf(),
-                Constraint.alwaysTrue()).use { splitSource ->
-                val splits = mutableListOf<DucklakeSplit>()
-                while (!splitSource.isFinished) {
-                    for (split: ConnectorSplit in splitSource.getNextBatch(1000, DynamicFilterSnapshot.EMPTY).get()) {
-                        splits.add(split as DucklakeSplit)
-                    }
-                }
-                return splits
-            }
-        }
-
         @Throws(Exception::class)
         private fun countRows(
             pageSourceProvider: DucklakePageSourceProvider,

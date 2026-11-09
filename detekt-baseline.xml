@@ -34,12 +34,7 @@
     <ID>ThrowsCount:DucklakeAddFilesNameMapper.kt:DucklakeAddFilesNameMapper$private fun mapMap: DucklakeNameMapEntry</ID>
     <ID>ThrowsCount:DucklakeStatsLeafProjector.kt:DucklakeStatsLeafProjector$private fun collect</ID>
     <ID>ThrowsCount:DucklakeTableProperties.kt:DucklakeTableProperties.Companion$private fun parsePartitionField: PartitionFieldSpec</ID>
-    <ID>TooGenericExceptionCaught:DucklakeDeleteFileReader.kt:DucklakeDeleteFileReader$e: RuntimeException</ID>
-    <ID>TooGenericExceptionCaught:DucklakeMergeSink.kt:DucklakeMergeSink$e: Exception</ID>
-    <ID>TooGenericExceptionCaught:DucklakeMergeSink.kt:DucklakeMergeSink$t: Throwable</ID>
     <ID>TooGenericExceptionCaught:DucklakePageSink.kt:DucklakePageSink$e: RuntimeException</ID>
-    <ID>TooGenericExceptionCaught:DucklakeParquetPageSourceFactory.kt:DucklakeParquetPageSourceFactory$e: RuntimeException</ID>
-    <ID>TooGenericExceptionCaught:DucklakePuffinDeleteReader.kt:DucklakePuffinDeleteReader$e: RuntimeException</ID>
     <ID>TooGenericExceptionCaught:DucklakeStatsExtractor.kt:DucklakeStatsExtractor$e: RuntimeException</ID>
     <ID>TooGenericExceptionCaught:DucklakeWriteMetadata.kt:DucklakeWriteMetadata$e: RuntimeException</ID>
     <ID>TooGenericExceptionThrown:TestDucklakeNestedLeafStats.kt:TestDucklakeNestedLeafStats$throw RuntimeException("Failed to read data_path from ducklake_metadata", e)</ID>

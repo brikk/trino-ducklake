@@ -220,12 +220,13 @@ deletion queue (DuckLake 1.0) and none for inlined rows.
 
 - **Shortcut:** `TrinoReplayEngine.classifyEngineError` turns a mirror error into an engine-skip
   only for connector-thrown `NOT_SUPPORTED`, `FUNCTION_NOT_FOUND` for an unknown function,
-  `TYPE_MISMATCH` against a bounded character operand, and `TABLE_NOT_FOUND` for a name the lake
+  `TYPE_MISMATCH` whose failing operator has a proven quoted VARCHAR literal operand, and
+  `TABLE_NOT_FOUND` for a name the lake
   never held as a table (checked across all snapshots in the replay PostgreSQL catalog). Within
-  those branches the narrowing patterns and the relation name are read from the message text,
-  because Trino exposes neither structurally.
-- **Cost:** the `TYPE_MISMATCH` pattern also accepts `char(n)` and explicitly bounded
-  `varchar(n)` expressions, so a type-mapping defect there could skip. Any new production
+  those branches the operator types and relation name are read from the message text. Literal
+  identity, side and length are checked in the executed SQL's Trino AST at the structured error
+  location; missing locations or unrecognized shapes fail rather than skip.
+- **Cost:** Trino's operator diagnostics still require message parsing. Any new production
   `NOT_SUPPORTED` that is not a deliberate capability gate silently becomes a corpus skip.
 - **Real fix:** the replay library reports which relations a query reads from the lake, and
   Trino reports unresolved names structurally.

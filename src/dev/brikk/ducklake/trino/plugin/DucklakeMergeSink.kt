@@ -15,6 +15,7 @@ package dev.brikk.ducklake.trino.plugin
 
 import dev.brikk.ducklake.catalog.DucklakeDeleteFragment
 import dev.brikk.ducklake.trino.plugin.DucklakeMergeTableHandle.DataFileRange
+import dev.brikk.ducklake.trino.plugin.DucklakeReadSupport.toLocation
 import io.airlift.json.JsonCodec
 import io.airlift.log.Logger
 import io.airlift.slice.Slice
@@ -230,26 +231,35 @@ open class DucklakeMergeSink(
             }
         }
 
-        try {
-            val insertFragments: Collection<Slice> = insertSink.finish().get()
-            fragments.addAll(insertFragments.map {
-                DucklakeMergeFragment(DucklakeMergeFragment.Kind.INSERT, it.toStringUtf8()).toSlice()
-            })
-            if (lineageInsertSink != null) {
-                fragments.addAll(lineageInsertSink.finish().get().map {
-                    DucklakeMergeFragment(DucklakeMergeFragment.Kind.INSERT, it.toStringUtf8()).toSlice()
-                })
-            }
-        }
-        catch (e: Exception) {
-            if (e is InterruptedException) Thread.currentThread().interrupt()
-            val failure = if (e is ExecutionException) e.cause ?: e else e
-            throw failure as? TrinoException
-                ?: TrinoException(GENERIC_INTERNAL_ERROR, "Failed to finish insert sink", failure)
+        for (sink in listOfNotNull(insertSink, lineageInsertSink)) {
+            fragments.addAll(finishInsertSink(sink))
         }
 
         val asCollection: Collection<Slice> = fragments
         return completedFuture(asCollection)
+    }
+
+    private fun finishInsertSink(sink: ConnectorPageSink): List<Slice> {
+        val failure = try {
+            return sink.finish().get().map {
+                DucklakeMergeFragment(DucklakeMergeFragment.Kind.INSERT, it.toStringUtf8()).toSlice()
+            }
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            e
+        } catch (e: ExecutionException) {
+            e.cause ?: e
+        } catch (e: TrinoException) {
+            e
+        } catch (e: UncheckedIOException) {
+            e
+        } catch (e: IllegalArgumentException) {
+            e
+        } catch (e: IllegalStateException) {
+            e
+        }
+        throw failure as? TrinoException
+            ?: TrinoException(GENERIC_INTERNAL_ERROR, "Failed to finish insert sink", failure)
     }
 
     @Throws(IOException::class)
@@ -350,11 +360,7 @@ open class DucklakeMergeSink(
                 java.util.Optional.empty(),
                 java.util.Optional.empty())
 
-        // Write all positions (prior ∪ new) as a single page. close() must be called even on
-        // write failure or both the writer and the wrapped output stream leak.
-        val fileMetaData: org.apache.parquet.format.FileMetaData
-        val fileSize: Long
-        try {
+        parquetWriter.use {
             val dataFilePathSlice: Slice = Slices.utf8Slice(range.dataFilePath)
             val pathBuilder: io.trino.spi.block.BlockBuilder = VARCHAR.createBlockBuilder(null, totalPositions.toInt())
             val posBuilder: io.trino.spi.block.BlockBuilder = BIGINT.createBlockBuilder(null, totalPositions.toInt())
@@ -365,14 +371,9 @@ open class DucklakeMergeSink(
             val pathBlock: Block = pathBuilder.build()
             val posBlock: Block = posBuilder.build()
             parquetWriter.write(Page(pathBlock.positionCount, pathBlock, posBlock))
-            parquetWriter.close()
-            fileMetaData = parquetWriter.getFileMetaData()
-            fileSize = parquetWriter.estimatedWrittenBytes
         }
-        catch (t: Throwable) {
-            try { parquetWriter.close() } catch (_: Exception) {}
-            throw t
-        }
+        val fileMetaData = parquetWriter.getFileMetaData()
+        val fileSize = parquetWriter.estimatedWrittenBytes
 
         log.debug("Wrote parquet delete file %s with %d total positions (%d new this commit) for data file %d",
                 filePath, totalPositions, newDeleteCount, dataFileId)
@@ -389,15 +390,6 @@ open class DucklakeMergeSink(
 
     internal fun footerSizeOf(fileMetaData: org.apache.parquet.format.FileMetaData): Long =
         parquetFooterSize(fileMetaData, "delete file")
-
-    /** Resolve a delete-file path to a Location, wrapping a bare local path as a file URI.
-     * Prefix file:// on the RAW path (not Path.toUri(), which percent-encodes and would
-     * double-encode paths already carrying literal %XX escapes); Trino's Location does not
-     * percent-decode. */
-    private fun toLocation(path: String): Location {
-        val location = Location.of(path)
-        return if (location.scheme().isPresent) location else Location.of("file://" + path)
-    }
 
     private fun findDataFileRange(dataFileId: Long): DataFileRange? =
             filesById[dataFileId]

@@ -333,14 +333,13 @@ APIs or fixes needed in `ducklake-catalog` before the connector can close an ite
   `TestR07ConsumerTrial` direct-reader statistics cases enable 1.1 reads after
   `toCatalogConfig()` has locked the client to 1.0. Fix the fixtures, not catalog admission or
   the skip list.
-- [ ] Narrow replay `TYPE_MISMATCH` skips to proven varchar literals. The classifier's
-  `(var)?char(n)` message pattern also accepts CHAR and explicitly bounded expressions.
-- [ ] Strengthen two test checks: the id-range checks in
-  `TestDucklakeChangeFeedPartialFile.windowToSecondSnapshotOnlyIncludesLaterOriginRows` repeat
-  snapshot/data checks (`insertions` discards id); the field-count `allSatisfy` in
-  `TestDucklakeS3ParquetEndToEnd.schemaEvolutionOverS3` passes on an empty result.
 - [ ] Add shared replay support for `require-env`: the pinned native metadata-logging fixture
   is a visible unsupported-directive file-skip, even with `DUCKLAKE_CI=1`.
+- [ ] Resolve the existing `types` corpus oracle/setup failures: `all_types.test:32,42,49`
+  cannot convert a JDBC TIME cell, and `null_type.test` uses NULL types refused by the fixed
+  DuckLake 1.0 oracle, with cascading setup failures. The follow-up comparison on `e374bae`
+  and its remediation both had 66 record failures and zero Trino mirror failures; do not
+  skip-list these files to make the directory green.
 - [ ] RV-28a-c: require meaningful mirror coverage per selected corpus directory (the test asserts
   `totalPassed > 50` and one mirror pass overall); return the dialect gate's refusal reason
   instead of a Boolean; make unexpected timeouts fail. Add negative controls (all queries
@@ -364,18 +363,8 @@ APIs or fixes needed in `ducklake-catalog` before the connector can close an ite
   STATS.
 - [ ] CI-05: a full test run once aborted natively (`double free or corruption`, exit 134); no
   backtrace identified the component. Regular CI tests on JDK 26 to see whether it recurs.
-- [ ] Narrow the deliberate generic catches still in `detekt-baseline.xml`
-  (`TooGenericExceptionCaught`): close-and-wrap in `DucklakeParquetPageSourceFactory` and
-  `DucklakeDeleteFileReader`, Puffin bitmap decode classification, CTAS rollback and
-  merge-fragment decode in `DucklakeWriteMetadata`, `DucklakeMergeSink` finish/cleanup and
-  `DucklakePageSink.abort`. Each needs a regression test proving the narrowed set still closes
-  the resource and keeps the error classification, then its baseline entry goes.
-- [ ] Small cleanups: `toLocation` is duplicated in `DucklakeMergeSink`, `DucklakeDeleteFileReader`
-  and `DucklakeFlushInlinedDataProcedure` (use `DucklakeReadSupport.toLocation`; also the
-  duplicated `handleParquetException`, R-N4); three test classes keep their own `getSplits`
-  helper; the `final11Reads && spec == "1.1"` check is redundant with the catalog format lock
-  (drop it with a test that the lock refuses); the redundant `.toInt()` in
-  `DucklakeTableVersions`; the partial-delete catalog probe in `DucklakeSplitManager` that
+- [ ] Small cleanups: duplicated `handleParquetException` (R-N4); the partial-delete catalog
+  probe in `DucklakeSplitManager` that
   `validateDeleteFileFormats` already covers (R-N3); dead non-Parquet format branches in the
   write path (W-N2); unused `topLevelMatches` in `DucklakeAddFilesNameMapper` (P-N1).
 - [ ] RV-27c1/c2, RV-D07: the release workflow does not check the tag against the project

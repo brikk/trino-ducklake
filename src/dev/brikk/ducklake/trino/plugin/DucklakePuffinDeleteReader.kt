@@ -326,12 +326,12 @@ object DucklakePuffinDeleteReader {
     /**
      * Decode [bitmapCount] `(high_bits, Roaring)` entries from [buf], reconstructing each position as
      * `(high_bits << 32) | (low & 0xFFFFFFFF)`. Per-bitmap reads can throw unchecked
-     * BufferUnderflow / IndexOutOfBounds / IllegalArgument on a truncated or garbage body; those are
+     * buffer, size and Roaring-format errors on a truncated or garbage body; those are
      * translated to IOException so a corrupt file fails the split the same clean way every other
      * corruption mode does.
      */
     private fun decodeBitmaps(buf: ByteBuffer, bitmapCount: Long, length: Int): DucklakeLongSet {
-        try {
+        val failure = try {
             if (bitmapCount > 1) validateHighWords(buf.duplicate().order(ByteOrder.LITTLE_ENDIAN), bitmapCount)
             // DuckLake's count/high-word/Roaring32 payload is the portable Roaring64 format.
             val start = buf.position() - Long.SIZE_BYTES
@@ -342,11 +342,21 @@ object DucklakePuffinDeleteReader {
             return positions
         }
         catch (e: IOException) {
-            fail("Corrupt puffin deletion vector: bitmap decode failed (bitmap_count=$bitmapCount, blob length=$length)", e)
+            e
         }
-        catch (e: RuntimeException) {
-            fail("Corrupt puffin deletion vector: bitmap decode failed (bitmap_count=$bitmapCount, blob length=$length)", e)
+        catch (e: java.nio.BufferUnderflowException) {
+            e
         }
+        catch (e: IllegalArgumentException) {
+            e
+        }
+        catch (e: org.roaringbitmap.InvalidRoaringFormat) {
+            e
+        }
+        catch (e: NegativeArraySizeException) {
+            e
+        }
+        fail("Corrupt puffin deletion vector: bitmap decode failed (bitmap_count=$bitmapCount, blob length=$length)", failure)
     }
 
     private fun validateHighWords(buffer: ByteBuffer, count: Long) {

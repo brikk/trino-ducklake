@@ -46,6 +46,7 @@ import io.trino.spi.connector.ConnectorTableHandle
 import io.trino.spi.predicate.Domain
 import io.trino.spi.predicate.TupleDomain
 import io.trino.spi.type.BigintType.BIGINT
+import org.apache.parquet.ParquetRuntimeException
 import org.apache.parquet.column.ColumnDescriptor
 import org.apache.parquet.io.ColumnIO
 import org.apache.parquet.io.MessageColumnIO
@@ -119,24 +120,13 @@ internal class DucklakeParquetPageSourceFactory(
             cachedMetadata: ParquetMetadata?): ConnectorPageSource
     {
         val split = target.split
-        val memoryContext: AggregatedMemoryContext = newSimpleAggregatedMemoryContext()
-        var dataSource: ParquetDataSource? = null
-        try {
-            dataSource = createDataSource(
-                    inputFile,
-                    OptionalLong.of(split.fileSizeBytes),
-                    parquetReaderOptions,
-                    memoryContext,
-                    fileFormatDataSourceStats)
-
+        return withDataSource(inputFile, split) { source, memoryContext ->
             // Feed DuckLake's footer_size hint to Trino's Parquet reader. For typical
             // footers (<48 KB), this trims the blind tail read down to the exact bytes;
             // for oversized footers, it replaces the fallback two-round-trip path with a
             // single-shot read. See FooterPrefetchingParquetDataSource.
-            if (cachedMetadata == null) {
-                dataSource = FooterPrefetchingParquetDataSource.wrapIfHintUsable(
-                        dataSource, split.footerSize, parquetReaderOptions.maxFooterReadSize.toBytes())
-            }
+            val dataSource = if (cachedMetadata == null) FooterPrefetchingParquetDataSource.wrapIfHintUsable(
+                source, split.footerSize, parquetReaderOptions.maxFooterReadSize.toBytes()) else source
 
             val parquetMetadata: ParquetMetadata = cachedMetadata ?: MetadataReader.readFooter(
                     dataSource,
@@ -176,13 +166,41 @@ internal class DucklakeParquetPageSourceFactory(
             log.debug("Created Parquet page source for %d columns from file: %s",
                     columns.size, split.dataFilePath)
 
-            return pageSource
+            pageSource
         }
-        catch (e: IOException) {
-            throw closeAfterFailure(dataSource, split.dataFilePath, e)
-        }
-        catch (e: RuntimeException) {
-            throw closeAfterFailure(dataSource, split.dataFilePath, e)
+    }
+
+    private fun withDataSource(input: TrinoInputFile, split: DucklakeSplit,
+        build: (ParquetDataSource, AggregatedMemoryContext) -> ConnectorPageSource): ConnectorPageSource {
+        val memory = newSimpleAggregatedMemoryContext()
+        var source: ParquetDataSource? = null
+        var transferred = false
+        var failure: Exception? = null
+        try {
+            val error = try {
+                source = createDataSource(input, OptionalLong.of(split.fileSizeBytes), parquetReaderOptions, memory, fileFormatDataSourceStats)
+                return build(source, memory).also { transferred = true }
+            } catch (e: IOException) {
+                e
+            } catch (e: TrinoException) {
+                e
+            } catch (e: ParquetRuntimeException) {
+                e
+            } catch (e: IllegalArgumentException) {
+                e
+            } catch (e: IllegalStateException) {
+                e
+            } catch (e: ArithmeticException) {
+                e
+            }
+            failure = error
+            throw error as? TrinoException
+                ?: TrinoException(GENERIC_INTERNAL_ERROR, "Failed to create Parquet page source for file: ${split.dataFilePath}", error)
+        } finally {
+            if (!transferred) {
+                closeAfterFailure(source, failure)
+                memory.close()
+            }
         }
     }
 
@@ -402,20 +420,17 @@ internal class DucklakeParquetPageSourceFactory(
                     // reader must stream contiguously (no row-group pruning) for positions to align.
                     split.snapshotFilterMax != null
 
-        private fun closeAfterFailure(dataSource: ParquetDataSource?, path: String, failure: Exception): TrinoException
+        private fun closeAfterFailure(dataSource: ParquetDataSource?, failure: Exception?)
         {
             if (dataSource != null) {
                 try {
                     dataSource.close()
                 }
                 catch (closeFailure: IOException) {
-                    if (failure != closeFailure) {
-                        failure.addSuppressed(closeFailure)
-                    }
+                    if (failure != null && failure !== closeFailure) failure.addSuppressed(closeFailure)
+                    else log.warn(closeFailure, "Failed to close Parquet data source after construction failure")
                 }
             }
-            return failure as? TrinoException
-                ?: TrinoException(GENERIC_INTERNAL_ERROR, "Failed to create Parquet page source for file: $path", failure)
         }
 
         private fun toParquetTupleDomain(

@@ -353,6 +353,7 @@ class DucklakePageSink(
                     writer.abort()
                 }
                 catch (e: RuntimeException) {
+                    // A failed writer must not prevent aborting the remaining writers or deleting their output.
                     log.warn(e, "Failed to abort writer")
                 }
             }

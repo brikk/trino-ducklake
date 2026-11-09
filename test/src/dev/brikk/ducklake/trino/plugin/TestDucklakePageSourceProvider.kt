@@ -13,7 +13,6 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
-import com.google.common.collect.ImmutableList
 import dev.brikk.ducklake.catalog.DucklakeCatalog
 import dev.brikk.ducklake.catalog.DucklakeSchema
 import dev.brikk.ducklake.catalog.DucklakeTable
@@ -24,9 +23,7 @@ import io.trino.plugin.base.metrics.FileFormatDataSourceStats
 import io.trino.plugin.hive.parquet.ParquetReaderConfig
 import io.trino.spi.connector.ColumnHandle
 import io.trino.spi.connector.ConnectorSplit
-import io.trino.spi.connector.Constraint
 import io.trino.spi.connector.DynamicFilter
-import io.trino.spi.connector.DynamicFilterSnapshot
 import io.trino.spi.predicate.Domain
 import io.trino.spi.predicate.Range
 import io.trino.spi.predicate.TupleDomain
@@ -267,7 +264,7 @@ class TestDucklakePageSourceProvider {
 
         var rows = 0L
         pageSourceProvider.createPageSource(
-            null, SESSION, split, tableHandle, Optional.empty(), ImmutableList.of<ColumnHandle>(priceColumn), exclusiveFilter).use { pageSource ->
+            null, SESSION, split, tableHandle, Optional.empty(), listOf<ColumnHandle>(priceColumn), exclusiveFilter).use { pageSource ->
             while (!pageSource.isFinished) {
                 val page = pageSource.nextSourcePage
                 if (page != null) {
@@ -297,7 +294,7 @@ class TestDucklakePageSourceProvider {
 
         var filteredRows = 0L
         pageSourceProvider.createPageSource(
-            null, SESSION, split, tableHandle, Optional.empty(), ImmutableList.of<ColumnHandle>(priceColumn), wideFilter).use { pageSource ->
+            null, SESSION, split, tableHandle, Optional.empty(), listOf<ColumnHandle>(priceColumn), wideFilter).use { pageSource ->
             while (!pageSource.isFinished) {
                 val page = pageSource.nextSourcePage
                 if (page != null) {
@@ -322,7 +319,7 @@ class TestDucklakePageSourceProvider {
         assertThat(rows).isEqualTo(split.recordCount)
 
         pageSourceProvider.createPageSource(
-            null, SESSION, split, tableHandle, Optional.empty(), ImmutableList.of<ColumnHandle>(missingColumn), DynamicFilter.EMPTY).use { pageSource ->
+            null, SESSION, split, tableHandle, Optional.empty(), listOf<ColumnHandle>(missingColumn), DynamicFilter.EMPTY).use { pageSource ->
             while (!pageSource.isFinished) {
                 val page = pageSource.nextSourcePage
                 if (page != null) {
@@ -347,7 +344,7 @@ class TestDucklakePageSourceProvider {
 
         val split = getSplits(tableHandle).first()
 
-        val mixedColumns: List<ColumnHandle> = ImmutableList.of(priceColumn, missingColumn)
+        val mixedColumns: List<ColumnHandle> = listOf(priceColumn, missingColumn)
         var rows = 0L
         pageSourceProvider.createPageSource(
             null, SESSION, split, tableHandle, Optional.empty(), mixedColumns, DynamicFilter.EMPTY).use { pageSource ->
@@ -386,7 +383,7 @@ class TestDucklakePageSourceProvider {
 
         var rows = 0L
         pageSourceProvider.createPageSource(
-            null, SESSION, split, tableHandle, Optional.empty(), ImmutableList.of<ColumnHandle>(idColumn, nameColumn, valueColumn),
+            null, SESSION, split, tableHandle, Optional.empty(), listOf<ColumnHandle>(idColumn, nameColumn, valueColumn),
             DynamicFilter.EMPTY).use { pageSource ->
             while (!pageSource.isFinished) {
                 val page = pageSource.nextSourcePage
@@ -413,7 +410,7 @@ class TestDucklakePageSourceProvider {
 
         var rows = 0L
         pageSourceProvider.createPageSource(
-            null, SESSION, split, tableHandle, Optional.empty(), ImmutableList.of<ColumnHandle>(nameColumn), DynamicFilter.EMPTY).use { pageSource ->
+            null, SESSION, split, tableHandle, Optional.empty(), listOf<ColumnHandle>(nameColumn), DynamicFilter.EMPTY).use { pageSource ->
             while (!pageSource.isFinished) {
                 val page = pageSource.nextSourcePage
                 if (page != null) {
@@ -434,7 +431,7 @@ class TestDucklakePageSourceProvider {
             split,
             tableHandle,
             Optional.empty(),
-            ImmutableList.of<ColumnHandle>(column),
+            listOf<ColumnHandle>(column),
             DynamicFilter.EMPTY).use { pageSource ->
             while (!pageSource.isFinished) {
                 val page = pageSource.nextSourcePage
@@ -448,48 +445,28 @@ class TestDucklakePageSourceProvider {
 
     @Throws(Exception::class)
     private fun getSplits(tableHandle: DucklakeTableHandle): List<DucklakeSplit> {
-        return getAnySplits(tableHandle).stream()
-            .map { DucklakeSplit::class.java.cast(it) }
-            .collect(com.google.common.collect.ImmutableList.toImmutableList())
+        return allSplits(splitManager, tableHandle)
     }
 
     @Throws(Exception::class)
     private fun getAnySplits(tableHandle: DucklakeTableHandle): List<ConnectorSplit> {
-        splitManager.getSplits(
-            null,
-            SESSION,
-            tableHandle,
-            mutableSetOf(),
-            Constraint.alwaysTrue()).use { splitSource ->
-            val splits = ImmutableList.builder<ConnectorSplit>()
-            while (!splitSource.isFinished) {
-                splits.addAll(splitSource.getNextBatch(1000, DynamicFilterSnapshot.EMPTY).get())
-            }
-            return splits.build()
-        }
+        return allConnectorSplits(splitManager, tableHandle)
     }
 
     private fun getSchema(schemaName: String, snapshotId: Long): DucklakeSchema {
-        return catalog!!.listSchemas(snapshotId).stream()
-            .filter { schema -> schema.schemaName == schemaName }
-            .findFirst()
-            .orElseThrow { AssertionError("Missing schema: $schemaName") }
+        return catalog!!.listSchemas(snapshotId).firstOrNull { it.schemaName == schemaName }
+            ?: throw AssertionError("Missing schema: $schemaName")
     }
 
     private fun getTable(schemaName: String, tableName: String, snapshotId: Long): DucklakeTable {
         val schema = getSchema(schemaName, snapshotId)
-        return catalog!!.listTables(schema.schemaId, snapshotId).stream()
-            .filter { table -> table.tableName == tableName }
-            .findFirst()
-            .orElseThrow { AssertionError("Missing table: $schemaName.$tableName") }
+        return catalog!!.listTables(schema.schemaId, snapshotId).firstOrNull { it.tableName == tableName }
+            ?: throw AssertionError("Missing table: $schemaName.$tableName")
     }
 
     private fun getColumnId(tableId: Long, snapshotId: Long, columnName: String): Long {
-        return catalog!!.getTableColumns(tableId, snapshotId).stream()
-            .filter { column -> column.columnName == columnName }
-            .findFirst()
-            .orElseThrow { AssertionError("Missing column: $columnName") }
-            .columnId
+        return (catalog!!.getTableColumns(tableId, snapshotId).firstOrNull { it.columnName == columnName }
+            ?: throw AssertionError("Missing column: $columnName")).columnId
     }
 
     companion object {

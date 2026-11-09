@@ -52,6 +52,8 @@ class TestDucklakeTransactionRollback {
     private lateinit var transactions: DucklakeTransactionManager
     private var commitInsertFailure: RuntimeException? = null
     private var viewWriteFailure: DucklakeException? = null
+    private val dropFailures = mutableMapOf<String, RuntimeException>()
+    private val dropCalls = mutableListOf<String>()
     private val viewCalls = mutableListOf<String>()
     private val writeCodec = JsonCodec.jsonCodec(DucklakeWriteFragment::class.java)
     private val ctas = SchemaTableName("test_schema", "ctas")
@@ -63,6 +65,11 @@ class TestDucklakeTransactionRollback {
         rawCatalog = JdbcDucklakeCatalog(config.toCatalogConfig())
         rawCatalog.createSchema("test_schema")
         val catalog = object : DucklakeCatalog by rawCatalog {
+            override fun dropTable(schemaName: String, tableName: String) {
+                dropCalls.add(tableName)
+                dropFailures[tableName]?.let { throw it }
+                rawCatalog.dropTable(schemaName, tableName)
+            }
             override fun commitInsert(tableId: Long, fragments: List<DucklakeWriteFragment>) {
                 commitInsertFailure?.let { throw it }
                 rawCatalog.commitInsert(tableId, fragments)
@@ -112,6 +119,31 @@ class TestDucklakeTransactionRollback {
         transactions.rollback(transaction)
 
         assertThat(tableExists()).isFalse()
+    }
+
+    @Test
+    fun rollbackAttemptsEveryTableAndKeepsPrimaryAndSuppressedClassifications() {
+        val transaction = DucklakeTransactionHandle()
+        transactions.begin(transaction)
+        val metadata = transactions.getMetadata(transaction)
+        for (name in listOf("first", "second", "third")) {
+            metadata.beginCreateTable(SESSION,
+                ConnectorTableMetadata(SchemaTableName("test_schema", name), listOf(ColumnMetadata("id", BIGINT))),
+                Optional.empty(), RetryMode.NO_RETRIES, false)
+        }
+        val first = object : RuntimeException("unexpected driver failure") {}
+        val second = TrinoException(io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR, "second drop failed")
+        dropFailures["first"] = first
+        dropFailures["second"] = second
+
+        assertThatThrownBy { transactions.rollback(transaction) }.isSameAs(first)
+
+        assertThat(first.suppressed).containsExactly(second)
+        assertThat(second.errorCode).isEqualTo(io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR.toErrorCode())
+        assertThat(dropCalls).containsExactly("first", "second", "third")
+        assertThat(rawCatalog.getTable("test_schema", "third", rawCatalog.currentSnapshotId)).isNull()
+        assertThat(rawCatalog.getTable("test_schema", "first", rawCatalog.currentSnapshotId)).isNotNull()
+        assertThatThrownBy { transactions.getMetadata(transaction) }.isInstanceOf(IllegalArgumentException::class.java)
     }
 
     @Test

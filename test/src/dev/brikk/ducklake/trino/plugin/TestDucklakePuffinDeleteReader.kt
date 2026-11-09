@@ -32,7 +32,7 @@ import java.util.zip.CRC32
  *
  * Each test builds a blob using the same byte layout as DuckLake's
  * `DuckLakeDeletionVectorData::ToBlob` (see
- * `vendor/ducklake/src/storage/ducklake_deletion_vector.cpp`) so the decoder
+ * `ducklake/src/storage/ducklake_deletion_vector.cpp`) so the decoder
  * exercises the exact wire format rather than a Java-friendly reformat.
  */
 class TestDucklakePuffinDeleteReader {
@@ -44,7 +44,6 @@ class TestDucklakePuffinDeleteReader {
 
     @Test
     fun testSingleLowGroupRoundTrips() {
-        // All positions in low 32 bits (high=0). Bit 0 + 5 + 1000 + 65535.
         val bitmaps = HashMap<Int, LongArray>()
         bitmaps[0] = longArrayOf(0L, 5L, 1000L, 65535L)
 
@@ -55,7 +54,6 @@ class TestDucklakePuffinDeleteReader {
 
     @Test
     fun testMultipleHighGroupsRoundTrip() {
-        // Two bitmaps, distinct high keys. Tests the high-bits reconstruction.
         val bitmaps = HashMap<Int, LongArray>()
         bitmaps[0] = longArrayOf(1L, 2L)
         bitmaps[1] = longArrayOf((1L shl 32) or 7L, (1L shl 32) or 99L)
@@ -161,22 +159,15 @@ class TestDucklakePuffinDeleteReader {
             .hasMessageContaining("vector_size")
     }
 
-    // ---- PFA1 container (consolidated / "partial" puffin delete file) ----
-
     @Test
     fun containerWithSnapshotTaggedBlobsFiltersByReadSnapshot() {
-        // Two cumulative deletion-vector blobs: snapshot 10 deletes {1}, snapshot 20 deletes {1,2}.
         val container = buildContainer(listOf(
             10L to mapOf(0 to longArrayOf(1L)),
             20L to mapOf(0 to longArrayOf(1L, 2L))))
 
-        // Read AS OF 10 → only the first blob's deletions.
         assertThat(DucklakePuffinDeleteReader.decodeFile(container, "test.puffin", 10L)).containsExactlyInAnyOrder(1L)
-        // Read AS OF 15 → still only snapshot-10 deletions (snapshot 20 > 15 is excluded).
         assertThat(DucklakePuffinDeleteReader.decodeFile(container, "test.puffin", 15L)).containsExactlyInAnyOrder(1L)
-        // Read AS OF 20 → both.
         assertThat(DucklakePuffinDeleteReader.decodeFile(container, "test.puffin", 20L)).containsExactlyInAnyOrder(1L, 2L)
-        // Unfiltered (latest) → the full union.
         assertThat(DucklakePuffinDeleteReader.decodeFile(container, "test.puffin", null)).containsExactlyInAnyOrder(1L, 2L)
     }
 
@@ -185,7 +176,6 @@ class TestDucklakePuffinDeleteReader {
         val container = buildContainer(listOf(
             10L to mapOf(0 to longArrayOf(1L)),
             20L to mapOf(0 to longArrayOf(1L, 2L))))
-        // Read AS OF 9 — before any consolidated deletion → empty.
         assertThat(DucklakePuffinDeleteReader.decodeFile(container, "test.puffin", 9L)).isEmpty()
     }
 
@@ -245,8 +235,6 @@ class TestDucklakePuffinDeleteReader {
         assertThat(DucklakePuffinDeleteReader.decodeFile(bare, "bare.puffin", 3L)).containsExactlyInAnyOrder(7L, 8L)
         assertThat(DucklakePuffinDeleteReader.decodeFile(bare, "bare.puffin", null)).containsExactlyInAnyOrder(7L, 8L)
     }
-
-    // ---- Writer round trip (DucklakePuffinDeleteWriter encode → reader decode) ----
 
     @Test
     fun writerEncodeRoundTripsThroughReader() {
@@ -377,7 +365,6 @@ class TestDucklakePuffinDeleteReader {
                 buf.put(value)
             }
 
-            // CRC over the checksummed region.
             val crc = CRC32()
             crc.update(buf.array(), checksummedStart, buf.position() - checksummedStart)
             val crcValue = crc.value

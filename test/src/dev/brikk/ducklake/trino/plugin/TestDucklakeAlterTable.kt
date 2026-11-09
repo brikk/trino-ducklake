@@ -38,17 +38,14 @@ open class TestDucklakeAlterTable : AbstractDucklakeIntegrationTest() {
 
             computeActual("ALTER TABLE test_schema.alter_add ADD COLUMN age INTEGER")
 
-            // DESCRIBE should show 3 columns
             val describe = computeActual("DESCRIBE test_schema.alter_add")
             assertThat(describe.rowCount).isEqualTo(3)
 
-            // Existing rows should have NULL for the new column
             var result = computeActual("SELECT id, name, age FROM test_schema.alter_add ORDER BY id")
             assertThat(result.rowCount).isEqualTo(2)
             assertThat(result.materializedRows[0].getField(2)).isNull()
             assertThat(result.materializedRows[1].getField(2)).isNull()
 
-            // Insert a row with the new column
             computeActual("INSERT INTO test_schema.alter_add VALUES (3, 'Charlie', 30)")
 
             result = computeActual("SELECT id, name, age FROM test_schema.alter_add ORDER BY id")
@@ -72,7 +69,6 @@ open class TestDucklakeAlterTable : AbstractDucklakeIntegrationTest() {
             val describe = computeActual("DESCRIBE test_schema.alter_add_multi")
             assertThat(describe.rowCount).isEqualTo(3)
 
-            // Verify all columns work with INSERT
             computeActual("INSERT INTO test_schema.alter_add_multi VALUES (1, 'Alice', 95.5)")
             val result = computeActual("SELECT * FROM test_schema.alter_add_multi")
             assertThat(result.rowCount).isEqualTo(1)
@@ -93,17 +89,14 @@ open class TestDucklakeAlterTable : AbstractDucklakeIntegrationTest() {
 
             computeActual("ALTER TABLE test_schema.alter_drop DROP COLUMN amount")
 
-            // DESCRIBE should show 2 columns
             val describe = computeActual("DESCRIBE test_schema.alter_drop")
             assertThat(describe.rowCount).isEqualTo(2)
 
-            // Data should be readable without the dropped column
             val result = computeActual("SELECT id, name FROM test_schema.alter_drop ORDER BY id")
             assertThat(result.rowCount).isEqualTo(2)
             assertThat(result.materializedRows[0].getField(1)).isEqualTo("Alice")
             assertThat(result.materializedRows[1].getField(1)).isEqualTo("Bob")
 
-            // Insert with remaining columns
             computeActual("INSERT INTO test_schema.alter_drop VALUES (3, 'Charlie')")
             assertThat(computeScalar("SELECT count(*) FROM test_schema.alter_drop")).isEqualTo(3L)
         }
@@ -120,18 +113,15 @@ open class TestDucklakeAlterTable : AbstractDucklakeIntegrationTest() {
 
             computeActual("ALTER TABLE test_schema.alter_rename RENAME COLUMN full_name TO name")
 
-            // DESCRIBE should show new column name
             val describe = computeActual("DESCRIBE test_schema.alter_rename")
             val columnNames = describe.materializedRows.map { it.getField(0) as String }
             assertThat(columnNames).contains("name")
             assertThat(columnNames).doesNotContain("full_name")
 
-            // Data should be accessible via the new name
             val result = computeActual("SELECT id, name FROM test_schema.alter_rename ORDER BY id")
             assertThat(result.rowCount).isEqualTo(2)
             assertThat(result.materializedRows[0].getField(1)).isEqualTo("Alice")
 
-            // Insert with new column name
             computeActual("INSERT INTO test_schema.alter_rename VALUES (3, 'Charlie')")
             assertThat(computeScalar("SELECT count(*) FROM test_schema.alter_rename")).isEqualTo(3L)
         }
@@ -142,12 +132,8 @@ open class TestDucklakeAlterTable : AbstractDucklakeIntegrationTest() {
 
     @Test
     fun renameNestedColumnsPreserveTheirValues() {
-        // NOW-3 / datafusion-ducklake #148 regression guard. After renaming a top-level nested
-        // (ARRAY / ROW / MAP) column, the existing parquet file keeps the OLD column name, so the
-        // read misses on name and falls back to field-id matching. A field-id matcher that keyed
-        // off the parquet *leaf* instead of the *top-level* (group) field — the datafusion bug —
-        // would read the whole nested column back as all-NULL. We index field-ids off the top-level
-        // field, so the nested contents must survive the rename. Value-assert them (not just count).
+        // Renamed nested columns keep their physical names. Field IDs must resolve the top-level
+        // group, not a leaf, or the whole column reads as NULL (datafusion-ducklake #148).
         val table = "test_schema.alter_rename_nested"
         try {
             computeActual("CREATE TABLE $table (" +
@@ -187,7 +173,6 @@ open class TestDucklakeAlterTable : AbstractDucklakeIntegrationTest() {
             computeActual("CREATE TABLE test_schema.alter_del (id INTEGER, name VARCHAR)")
             computeActual("INSERT INTO test_schema.alter_del VALUES (1, 'Alice'), (2, 'Bob')")
 
-            // Add column, then delete from the table
             computeActual("ALTER TABLE test_schema.alter_del ADD COLUMN status VARCHAR")
             computeActual("INSERT INTO test_schema.alter_del VALUES (3, 'Charlie', 'active')")
 
@@ -213,7 +198,6 @@ open class TestDucklakeAlterTable : AbstractDucklakeIntegrationTest() {
 
             computeActual("ALTER TABLE test_schema.alter_upd ADD COLUMN score INTEGER")
 
-            // Update an old row to set the new column
             computeActual("UPDATE test_schema.alter_upd SET score = 100 WHERE id = 1")
 
             val result = computeActual("SELECT id, name, score FROM test_schema.alter_upd ORDER BY id")
@@ -237,7 +221,6 @@ open class TestDucklakeAlterTable : AbstractDucklakeIntegrationTest() {
 
             val result = computeActual("SELECT * FROM test_schema.alter_drop_ins ORDER BY id")
             assertThat(result.rowCount).isEqualTo(2)
-            // Both rows should have exactly 2 columns
             assertThat(result.materializedRows[0].fieldCount).isEqualTo(2)
             assertThat(result.materializedRows[1].fieldCount).isEqualTo(2)
         }
@@ -254,7 +237,6 @@ open class TestDucklakeAlterTable : AbstractDucklakeIntegrationTest() {
 
             computeActual("ALTER TABLE test_schema.rename_data RENAME COLUMN value TO score")
 
-            // Data should be intact under new name
             val result = computeActual("SELECT sum(score) FROM test_schema.rename_data")
             assertThat(result.materializedRows[0].getField(0)).isEqualTo(142.4)
         }

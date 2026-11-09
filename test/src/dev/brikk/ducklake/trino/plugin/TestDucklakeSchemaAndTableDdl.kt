@@ -38,8 +38,6 @@ open class TestDucklakeSchemaAndTableDdl : AbstractDucklakeIntegrationTest() {
         return "ddl-schema-and-table"
     }
 
-    // ==================== Schema DDL ====================
-
     @Test
     fun testCreateAndDropSchema() {
         computeActual("CREATE SCHEMA new_schema")
@@ -71,22 +69,17 @@ open class TestDucklakeSchemaAndTableDdl : AbstractDucklakeIntegrationTest() {
         }
     }
 
-    // ==================== Table DDL (simple) ====================
-
     @Test
     fun testCreateAndDropSimpleTable() {
         computeActual("CREATE TABLE test_schema.simple_write_test (id INTEGER, name VARCHAR, price DOUBLE, active BOOLEAN)")
         try {
-            // Verify table appears in SHOW TABLES
             val tables = computeActual("SHOW TABLES FROM test_schema").materializedRows.map { it.getField(0).toString() }
             assertThat(tables).contains("simple_write_test")
 
-            // Verify column metadata
             val columns = computeActual("DESCRIBE test_schema.simple_write_test")
             val columnNames = columns.materializedRows.map { it.getField(0).toString() }
             assertThat(columnNames).containsExactly("id", "name", "price", "active")
 
-            // Verify it's an empty table
             val data = computeActual("SELECT count(*) FROM test_schema.simple_write_test")
             assertThat(data.materializedRows[0].getField(0)).isEqualTo(0L)
         }
@@ -99,25 +92,20 @@ open class TestDucklakeSchemaAndTableDdl : AbstractDucklakeIntegrationTest() {
     fun testDropTableMakesItInvisible() {
         computeActual("CREATE TABLE test_schema.drop_test (id INTEGER)")
 
-        // Get snapshot before drop
         val snapshot = computeActual("SELECT max(snapshot_id) FROM \"simple_table\$snapshots\"")
         val snapshotBeforeDrop = snapshot.materializedRows[0].getField(0) as Long
 
         computeActual("DROP TABLE test_schema.drop_test")
 
-        // Table gone at current snapshot
         val tables = computeActual("SHOW TABLES FROM test_schema").materializedRows.map { it.getField(0).toString() }
         assertThat(tables).doesNotContain("drop_test")
 
-        // Table still visible at old snapshot via time travel
         val oldSnapshot = Session.builder(session)
             .setCatalogSessionProperty("ducklake", READ_SNAPSHOT_ID, snapshotBeforeDrop.toString())
             .build()
         val oldTables = computeActual(oldSnapshot, "SHOW TABLES FROM test_schema").materializedRows.map { it.getField(0).toString() }
         assertThat(oldTables).contains("drop_test")
     }
-
-    // ==================== Table DDL (nested types) ====================
 
     @Test
     fun testCreateTableWithArrayType() {
@@ -127,7 +115,6 @@ open class TestDucklakeSchemaAndTableDdl : AbstractDucklakeIntegrationTest() {
             val columnNames = columns.materializedRows.map { it.getField(0).toString() }
             assertThat(columnNames).containsExactly("id", "tags")
 
-            // Check the type is correct
             val tagsType = columns.materializedRows[1].getField(1).toString()
             assertThat(tagsType).isEqualTo("array(varchar)")
         }
@@ -168,18 +155,14 @@ open class TestDucklakeSchemaAndTableDdl : AbstractDucklakeIntegrationTest() {
         }
     }
 
-    // ==================== Table DDL (partitioned) ====================
-
     @Test
     fun testCreateTableWithIdentityPartition() {
         computeActual("CREATE TABLE test_schema.partitioned_write_test (id INTEGER, region VARCHAR, amount DOUBLE) " +
                 "WITH (partitioned_by = ARRAY['region'])")
         try {
-            // Verify table exists
             val tables = computeActual("SHOW TABLES FROM test_schema").materializedRows.map { it.getField(0).toString() }
             assertThat(tables).contains("partitioned_write_test")
 
-            // Verify columns
             val columns = computeActual("DESCRIBE test_schema.partitioned_write_test")
             val columnNames = columns.materializedRows.map { it.getField(0).toString() }
             assertThat(columnNames).containsExactly("id", "region", "amount")
@@ -205,8 +188,6 @@ open class TestDucklakeSchemaAndTableDdl : AbstractDucklakeIntegrationTest() {
             tryDropTable("test_schema.temporal_part_test")
         }
     }
-
-    // ==================== Wide types ====================
 
     @Test
     fun testCreateTableWithWideTypes() {

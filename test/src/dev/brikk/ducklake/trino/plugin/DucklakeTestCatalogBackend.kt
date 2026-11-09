@@ -23,7 +23,7 @@ import java.util.Locale
  * and [DucklakeQueryRunner.Builder] (which JDBC URL shape to feed the
  * connector). PostgreSQL remains the default — Quack-backed DuckDB-as-catalog
  * is opt-in until upstream Quack matures past the multi-scan and other FIXME
- * limitations tracked in `vendor/ducklake/test/configs/quack.json`.
+ * limitations tracked in `ducklake/test/configs/quack.json`.
  *
  *
  * Selected via the JVM system property `ducklake.test.catalog-backend`
@@ -31,10 +31,10 @@ import java.util.Locale
  *
  * ```
  * # default — PostgreSQL via Testcontainers
- * ./gradlew :trino-ducklake:test
+ * ./gradlew test
  *
  * # DuckDB-as-catalog over Quack RPC, via a containerized DuckDB sidecar
- * ./gradlew :trino-ducklake:test -Dducklake.test.catalog-backend=DUCKDB_QUACK
+ * ./gradlew test -Dducklake.test.catalog-backend=DUCKDB_QUACK
  * ```
  */
 enum class DucklakeTestCatalogBackend {
@@ -46,7 +46,6 @@ enum class DucklakeTestCatalogBackend {
      * `JdbcDucklakeCatalog`'s SQL and type handling are DuckDB-compatible
      * — the dialect, the `renderSchema(false)` setting, and the type
      * round-trips — independent of the Quack RPC layer's current limitations.
-     * When upstream Quack matures, the Quack backend reuses the same evidence.
      */
     DUCKDB_LOCAL,
     DUCKDB_QUACK;

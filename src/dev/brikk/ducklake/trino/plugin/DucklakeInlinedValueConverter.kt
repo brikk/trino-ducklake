@@ -42,12 +42,11 @@ import java.sql.SQLException
 import java.time.LocalDate
 
 /**
- * Converts JDBC values from SQLite inlined data tables to Trino-native values
- * compatible with InMemoryRecordSet.
+ * Converts JDBC values from inlined data tables to Trino-native values.
  */
 object DucklakeInlinedValueConverter {
     /**
-     * Convert a JDBC value to the representation expected by InMemoryRecordSet for the given Trino type.
+     * Convert a JDBC value to the native representation of the given Trino type.
      * Returns null for null input.
      */
     @JvmOverloads
@@ -70,8 +69,7 @@ object DucklakeInlinedValueConverter {
             // catalog backends (PG/SQLite): structs in SQL form `{'k': v}`
             // (ducklake_util.cpp::ToSQLString), maps in DuckDB text form
             // `{k=v}` (Value::ToString). Parse recursively into real
-            // SqlRow/SqlMap — InMemoryRecordSet writes them via
-            // RowType/MapType.writeObject, which reject anything else.
+            // SqlRow/SqlMap — RowType/MapType.writeObject reject anything else.
             // [mapping] carries identity-based field translation for rows
             // inlined under an older schema version (rename/reuse safety).
             return NestedTextParser(toStringValue(jdbcValue)).parseTopLevel(trinoType, mapping)
@@ -117,7 +115,6 @@ object DucklakeInlinedValueConverter {
             return toDecimal(jdbcValue, trinoType)
         }
 
-        // Fallback: try as string for any remaining types
         return Slices.utf8Slice(toStringValue(jdbcValue))
     }
 
@@ -143,8 +140,7 @@ object DucklakeInlinedValueConverter {
             return builder.build()
         }
         if (elementType is ArrayType || elementType is MapType || elementType is RowType) {
-            // Nested element types only ever arrive as DuckDB text (non-native
-            // backends store the whole list as VARCHAR) — parse recursively.
+            // Non-native backends store the whole nested list as DuckDB text.
             if (jdbcValue is String || jdbcValue is ByteArray) {
                 return NestedTextParser(toStringValue(jdbcValue)).parseTopLevel(arrayType, mapping) as Block
             }
@@ -388,7 +384,6 @@ object DucklakeInlinedValueConverter {
         if (value is Number) {
             return value.toLong()
         }
-        // SQLite may store dates as ISO strings
         return LocalDate.parse(toStringValue(value)).toEpochDay()
     }
 

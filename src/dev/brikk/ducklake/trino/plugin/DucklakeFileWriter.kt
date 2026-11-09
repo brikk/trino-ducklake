@@ -19,9 +19,7 @@ import io.trino.spi.Page
 import java.io.IOException
 
 /**
- * One open data-file writer for the Ducklake page sink. Each implementation owns its
- * underlying file-format machinery (ParquetWriter / DuckDB ATTACH+Appender / future
- * formats) and is responsible for producing a self-describing
+ * One open data-file writer for the Ducklake page sink, producing a self-describing
  * [DucklakeWriteFragment] on close.
  */
 interface DucklakeFileWriter

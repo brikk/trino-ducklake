@@ -53,8 +53,6 @@ open class TestDucklakeCrossEngineCatalogMetadata
         return "cross-engine-catalog-metadata"
     }
 
-    // ==================== ducklake_snapshot_changes.changes_made round-trip ====================
-
     /**
      * Verifies DuckDB's `ducklake_snapshots()` table function — which parses every snapshot's
      * `changes_made` column via `ParseChangesList` + `ParseCatalogEntry` +
@@ -66,7 +64,7 @@ open class TestDucklakeCrossEngineCatalogMetadata
      * emit from Trino write paths: `created_schema`, `created_table`,
      * `inserted_into_table`, `deleted_from_table`, `altered_table`,
      * `dropped_table`, `dropped_schema`. See `dev-docs/archive/COMPARE-pg_ducklake.md` B1
-     * and `third_party/ducklake/src/storage/ducklake_transaction_changes.cpp`.
+      * and `ducklake/src/storage/ducklake_transaction_changes.cpp`.
      */
     @Test
     @Throws(Exception::class)
@@ -96,9 +94,6 @@ open class TestDucklakeCrossEngineCatalogMetadata
             assertThat(changesTexts.any { it.contains("tables_altered") }).`as`("DuckDB parsed a `altered_table` entry").isTrue()
             assertThat(changesTexts.any { it.contains("tables_deleted_from") }).`as`("DuckDB parsed a `deleted_from_table` entry").isTrue()
 
-            // Drop table + schema to cover the `dropped_*` emissions too. Those are numeric and
-            // already spec-conformant; asserting the parse still succeeds guards against future
-            // regressions to the quoting helpers.
             computeActual("DROP TABLE $fullTrino")
             computeActual("DROP SCHEMA $schemaName")
 
@@ -152,14 +147,11 @@ open class TestDucklakeCrossEngineCatalogMetadata
         }
     }
 
-    // ==================== default_value_dialect round-trip ====================
-
     /**
      * Pins the default-value column shape the catalog writes for a no-user-default column:
      * `default_value = 'NULL'` (the spec sentinel), `default_value_type = 'literal'` and
      * `default_value_dialect = 'duckdb'` — the same row upstream's `ColumnToSQLRecursive`
-     * (`ducklake_metadata_manager.cpp:2396-2398`) writes. (Earlier revisions wrote SQL NULL for
-     * the dialect; ducklake-catalog `21ca360` aligned it with upstream.) DuckDB must read such a
+      * (`ducklake_metadata_manager.cpp:2396-2398`; ducklake-catalog `21ca360`) writes. DuckDB must read such a
      * table via both a normal `SELECT` and `DESCRIBE` (the type-and-default-aware path).
      */
     @Test
@@ -174,7 +166,6 @@ open class TestDucklakeCrossEngineCatalogMetadata
             computeActual("CREATE TABLE $fullTrino (id INTEGER, name VARCHAR, amount DOUBLE)")
             computeActual("INSERT INTO $fullTrino VALUES (1, 'alice', 1.5), (2, 'bob', 2.5)")
 
-            // Confirm the upstream-shaped default triple on every column row.
             val catalog = getIsolatedCatalog()
             DriverManager.getConnection(
                     catalog.jdbcUrl, catalog.user, catalog.password).use { pgConn ->
@@ -201,7 +192,6 @@ open class TestDucklakeCrossEngineCatalogMetadata
                 }
             }
 
-            // Normal read.
             queryDuckdb("SELECT id, name, amount FROM $fullDuckdb ORDER BY id") { rs ->
                 assertThat(rs.next()).isTrue()
                 assertThat(rs.getInt("id")).isEqualTo(1)
@@ -223,18 +213,12 @@ open class TestDucklakeCrossEngineCatalogMetadata
         }
     }
 
-    // ==================== View/schema DDL cross-engine parse + schema_version bump ====================
-
     /**
      * Upstream's `ParseChangeType` (in
-     * `third_party/ducklake/src/storage/ducklake_transaction_changes.cpp`) enumerates
+      * `ducklake/src/storage/ducklake_transaction_changes.cpp`) enumerates
      * `created_view` / `altered_view` / `dropped_view` but no
-     * `RENAMED_*`. An earlier revision of this connector emitted
-     * `renamed_view:<viewId>` on `ALTER VIEW ... RENAME`, which made any later
-     * call to DuckDB's `ducklake_snapshots()` throw
-     * `InvalidInputException: Unsupported change type renamed_view` for any snapshot
-     * that ever renamed a view. A rename is semantically a schema/name change, so the
-     * current code emits `altered_view` and bumps `schema_version` (upstream
+      * `RENAMED_*`. A rename is a schema/name change, so it emits `altered_view`
+      * and bumps `schema_version` (upstream
      * `SchemaChangesMade()` flips on dropped/new view entries). This test exercises
      * the full view-DDL surface (create, rename, replace, drop) plus schema DDL
      * (create/drop) and confirms DuckDB parses every snapshot cleanly.
@@ -286,18 +270,6 @@ open class TestDucklakeCrossEngineCatalogMetadata
      * entries and on new/dropped schema entries — the same trigger used for table DDL.
      * A DuckDB reader that caches catalog state keyed on `schema_version` must see
      * a bump when Trino creates/drops/replaces/renames a view or creates/drops a schema.
-     * Before this was wired up, a Trino-only sequence of view + schema DDL would leave
-     * `ducklake_snapshot.schema_version` frozen — DuckDB's next query would hit
-     * stale cache and miss those objects. This test walks the full DDL surface and asserts
-     * the counter advances on every step.
-     *
-     * Surface covered:
-     *  * `CREATE SCHEMA` → `createSchema`
-     *  * `CREATE VIEW` → `createView`
-     *  * `COMMENT ON VIEW` → `replaceViewMetadata`
-     *  * `ALTER VIEW ... RENAME TO` → `renameView`
-     *  * `DROP VIEW` → `dropView`
-     *  * `DROP SCHEMA` → `dropSchema`
      */
     @Test
     @Throws(Exception::class)
@@ -324,8 +296,6 @@ open class TestDucklakeCrossEngineCatalogMetadata
             val afterRename = readCurrentSchemaVersion(catalog)
             assertThat(afterRename).`as`("ALTER VIEW ... RENAME bumps schema_version").isGreaterThan(afterCreateView)
 
-            // COMMENT ON VIEW dispatches to replaceViewMetadata, as CREATE OR REPLACE VIEW does
-            // for an existing view.
             computeActual("COMMENT ON VIEW $schemaName.v2 IS 'a view with a comment'")
             val afterComment = readCurrentSchemaVersion(catalog)
             assertThat(afterComment).`as`("COMMENT ON VIEW (replaceViewMetadata) bumps schema_version").isGreaterThan(afterRename)
@@ -370,11 +340,9 @@ open class TestDucklakeCrossEngineCatalogMetadata
      * A Trino-created view must not brick the catalog for DuckDB. Upstream parses
      * `ducklake_view.column_aliases` with `DuckLakeUtil::ParseQuotedList` at catalog load
      * (`ducklake_metadata_manager.cpp` view query) and throws on anything that isn't a quoted
-     * list — an earlier revision of this connector stored the serialized
-     * `ConnectorViewDefinition` JSON there, which made EVERY DuckDB query against the catalog
-     * fail (`Failed to parse quoted value - expected a quote`) while the view existed.
+      * list, so engine-specific payloads must not occupy that slot.
      *
-     * Now the aliases are the real column names, the dialect is plain `trino`, and Trino's
+      * The aliases are the real column names, the dialect is plain `trino`, and Trino's
      * extra metadata rides on `ducklake_tag` rows keyed by `view_id`, which upstream loads
      * opaquely (`ducklake_catalog.cpp` view entries: `comment` → view comment, other keys →
      * tags). This test pins, with the view still ACTIVE:
@@ -401,7 +369,6 @@ open class TestDucklakeCrossEngineCatalogMetadata
             assertThat(computeActual("SHOW CREATE VIEW test_schema.$viewName").onlyValue.toString())
                     .`as`("Trino reads the comment DuckDB wrote to the shared `comment` tag")
                     .contains("COMMENT 'from duckdb'")
-            // Still executable by Trino after DuckDB touched it (trino.* tags intact).
             assertThat(computeActual("SELECT count(*) FROM test_schema.$viewName").onlyValue as Long).isGreaterThan(0)
             assertThat(computeActual("SELECT comment FROM information_schema.columns " +
                     "WHERE table_schema = 'test_schema' AND table_name = '$viewName' AND column_name = 'the_id'").onlyValue)
@@ -451,12 +418,10 @@ open class TestDucklakeCrossEngineCatalogMetadata
                     ".*View test_schema.$viewName cannot be executed by this connector: the 'trino.column_types' tag .* is missing.*CREATE OR REPLACE VIEW.*")
             assertQueryFails("COMMENT ON VIEW test_schema.$viewName IS 'x'",
                     ".*cannot be executed by this connector.*")
-            // Remedy 1: replace it from this connector.
             computeActual("CREATE OR REPLACE VIEW test_schema.$viewName AS SELECT id FROM test_schema.simple_table")
             assertThat(computeActual("SELECT count(*) FROM test_schema.$viewName").onlyValue as Long).isGreaterThan(0)
         }
         finally {
-            // Remedy 2: drop it.
             try {
                 computeActual("DROP VIEW test_schema.$viewName")
             }
@@ -465,11 +430,9 @@ open class TestDucklakeCrossEngineCatalogMetadata
         }
     }
 
-    /** DuckDB side of [testDuckdbLoadsCatalogWithActiveTrinoViewAndSharesComment]. */
     @Throws(Exception::class)
     private fun assertDuckdbSeesTrinoViewAndCommentsOnIt(stmt: java.sql.Statement, viewName: String)
     {
-        // Catalog load + table scan while the Trino view is active.
         stmt.executeQuery("SELECT count(*) FROM ducklake_db.test_schema.simple_table").use { rs ->
             assertThat(rs.next()).isTrue()
             assertThat(rs.getLong(1)).isGreaterThan(0)
@@ -481,7 +444,6 @@ open class TestDucklakeCrossEngineCatalogMetadata
             assertThat(rs.getString(2)).`as`("column aliases surfaced to DuckDB")
                     .contains("the_id").contains("\"the,name\"")
         }
-        // Raw catalog shape: quoted-list aliases, plain dialect, tags, no JSON.
         stmt.executeQuery(
                 "SELECT dialect, column_aliases FROM __ducklake_metadata_ducklake_db.ducklake_view " +
                         "WHERE view_name = '$viewName' AND end_snapshot IS NULL").use { rs ->

@@ -128,8 +128,7 @@ open class DucklakeTypeConverter @Inject constructor(private val typeManager: Ty
         // no second/milli/nano variants like plain TIMESTAMP). The stored type is always
         // micros regardless of the declared precision; a column declared at another precision
         // silently widens to micros on read — tolerated here (unlike TIMESTAMP/TIME) because
-        // there is no narrower tstz storage. The CTAS short-block mismatch this used to cause
-        // is fixed in beginCreateTable, not by rejecting the type.
+         // there is no narrower tstz storage.
         is TimestampWithTimeZoneType -> "timestamptz"
         // DuckLake time / timetz are microsecond-only. Reject any other declared precision rather
         // than silently coercing to micros (which would read back as TIME(6) / a changed precision).
@@ -177,7 +176,6 @@ open class DucklakeTypeConverter @Inject constructor(private val typeManager: Ty
         private val SCALAR_TRINO_TYPES: Map<String, Type> = buildMap {
             put("boolean", BooleanType.BOOLEAN)
 
-            // Signed integers
             put("int8", TinyintType.TINYINT)
             put("int16", SmallintType.SMALLINT)
             put("int32", IntegerType.INTEGER)
@@ -198,11 +196,9 @@ open class DucklakeTypeConverter @Inject constructor(private val typeManager: Ty
             put("int128", DecimalType.createDecimalType(38, 0))
             put("uint128", VarcharType.VARCHAR)
 
-            // Floating point
             put("float32", RealType.REAL)
             put("float64", DoubleType.DOUBLE)
 
-            // Temporal types
             put("date", DateType.DATE)
             put("time", TimeType.TIME_MICROS)  // Ducklake uses microsecond precision
             put("timetz", TimeWithTimeZoneType.TIME_TZ_MICROS)
@@ -212,16 +208,10 @@ open class DucklakeTypeConverter @Inject constructor(private val typeManager: Ty
             put("timestamp_ms", TimestampType.createTimestampType(3))  // millisecond precision
             put("timestamp_ns", TimestampType.createTimestampType(9))  // nanosecond precision
 
-            // String types
             put("varchar", VarcharType.VARCHAR)
             put("blob", VarbinaryType.VARBINARY)
             put("uuid", UuidType.UUID)
 
-            // ⚠️ DEGRADED SEMANTICS - MVP PLACEHOLDERS ONLY
-            // These mappings allow basic data access but DO NOT provide full type support:
-            // - No type-specific operators or functions
-            // - No validation or type safety
-            // - Data is accessible but with reduced functionality
             put("variant", VarcharType.VARCHAR)  // DEGRADED: No variant support, needs shredding implementation
             put("interval", VarcharType.VARCHAR)  // DEGRADED: Interval not supported in Trino, stored as string
 

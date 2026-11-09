@@ -41,11 +41,9 @@ class TestDucklakePartitionedWrite : AbstractDucklakeIntegrationTest() {
             computeActual("INSERT INTO test_schema.part_identity VALUES " +
                     "(1, 'US', 10.0), (2, 'EU', 20.0), (3, 'US', 30.0), (4, 'APAC', 40.0)")
 
-            // Verify all data is readable
             val result = computeActual("SELECT count(*) FROM test_schema.part_identity")
             assertThat(result.materializedRows[0].getField(0)).isEqualTo(4L)
 
-            // Verify partition filtering works
             val usData = computeActual(
                     "SELECT id, amount FROM test_schema.part_identity WHERE region = 'US' ORDER BY id")
             assertThat(usData.rowCount).isEqualTo(2)
@@ -74,7 +72,6 @@ class TestDucklakePartitionedWrite : AbstractDucklakeIntegrationTest() {
             val all = computeActual("SELECT count(*) FROM test_schema.part_year")
             assertThat(all.materializedRows[0].getField(0)).isEqualTo(3L)
 
-            // Verify year-based partition filtering
             val y2023 = computeActual(
                     "SELECT count(*) FROM test_schema.part_year WHERE event_date >= DATE '2023-01-01' AND event_date < DATE '2024-01-01'")
             assertThat(y2023.materializedRows[0].getField(0)).isEqualTo(2L)
@@ -98,7 +95,6 @@ class TestDucklakePartitionedWrite : AbstractDucklakeIntegrationTest() {
             val all = computeActual("SELECT count(*) FROM test_schema.part_ym")
             assertThat(all.materializedRows[0].getField(0)).isEqualTo(4L)
 
-            // Verify values are correct
             val ordered = computeActual(
                     "SELECT id, amount FROM test_schema.part_ym ORDER BY id")
             assertThat(ordered.rowCount).isEqualTo(4)
@@ -149,7 +145,6 @@ class TestDucklakePartitionedWrite : AbstractDucklakeIntegrationTest() {
             val perRegion = computeActual(
                     "SELECT region, count(*) as cnt FROM test_schema.part_multi GROUP BY region ORDER BY region")
             assertThat(perRegion.rowCount).isEqualTo(3)
-            // APAC=1, EU=2, US=2
             val rows: List<MaterializedRow> = perRegion.materializedRows
             assertThat(rows[0].getField(0)).isEqualTo("APAC")
             assertThat(rows[0].getField(1)).isEqualTo(1L)
@@ -189,7 +184,7 @@ class TestDucklakePartitionedWrite : AbstractDucklakeIntegrationTest() {
         // Upstream hive-path key names (DuckLakePartitionUtils::GetPartitionKeyName):
         // bucket → `bucket=`, temporal → `year=`, identity → column name; repeated
         // transforms cascade to `<prefix>_<column>` (then `_2`, `_3`…). Without the
-        // cascade, bucket(4, id) + bucket(8, id) both emitted `id=` — ambiguous paths.
+        // cascade, repeated bucket transforms would emit ambiguous path keys.
         computeActual("CREATE TABLE test_schema.part_naming (id INTEGER, ts DATE, region VARCHAR) " +
                 "WITH (partitioned_by = ARRAY['region', 'bucket(4, id)', 'bucket(8, id)', 'year(ts)'])")
         try {
@@ -208,7 +203,6 @@ class TestDucklakePartitionedWrite : AbstractDucklakeIntegrationTest() {
                         .doesNotContain("/id=")
             }
 
-            // Values still round-trip through the catalog regardless of path names.
             val total = computeActual("SELECT count(*) FROM test_schema.part_naming")
             assertThat(total.materializedRows[0].getField(0)).isEqualTo(2L)
         }
@@ -236,8 +230,6 @@ class TestDucklakePartitionedWrite : AbstractDucklakeIntegrationTest() {
             assertThat(computeActual("SELECT count(*) FROM test_schema.part_special")
                     .materializedRows[0].getField(0)).isEqualTo(5L)
 
-            // Each special value round-trips: the exact string comes back and is addressable
-            // by an equality predicate (partition pruning parses the raw catalog value).
             for ((id, region) in listOf(1 to "a/b", 2 to "50% off", 3 to "two words", 4 to "café")) {
                 val r = computeActual(
                         "SELECT id FROM test_schema.part_special WHERE region = '" +
@@ -248,7 +240,6 @@ class TestDucklakePartitionedWrite : AbstractDucklakeIntegrationTest() {
             assertThat(computeActual("SELECT id FROM test_schema.part_special WHERE region IS NULL")
                     .materializedRows[0].getField(0)).isEqualTo(5)
 
-            // On-disk path segments are percent-encoded exactly like DuckDB/DuckLake.
             val paths = computeActual("SELECT id, \"\$path\" FROM test_schema.part_special ORDER BY id")
                     .materializedRows.associate { it.getField(0) as Int to it.getField(1) as String }
             assertThat(paths[1]).`as`("slash encoded, no extra dir").contains("/region=a%2Fb/")
@@ -264,10 +255,6 @@ class TestDucklakePartitionedWrite : AbstractDucklakeIntegrationTest() {
 
     @Test
     fun testIdentityPartitionOnTimestampAndDecimal() {
-        // Regression: identity partitioning on TIMESTAMP/DECIMAL used to crash the first INSERT
-        // (computeIdentityValue fell to Type.getSlice() -> UnsupportedOperationException). Verify
-        // the full write+read round-trip, predicate pruning, and the canonical on-disk path (which
-        // also exercises the hive-path encoder composing on top of the identity encoder).
         computeActual("CREATE TABLE test_schema.part_ts_dec (id INTEGER, ts TIMESTAMP(6), amt DECIMAL(10,2)) " +
                 "WITH (partitioned_by = ARRAY['ts', 'amt'])")
         try {
@@ -278,7 +265,6 @@ class TestDucklakePartitionedWrite : AbstractDucklakeIntegrationTest() {
             assertThat(computeActual("SELECT count(*) FROM test_schema.part_ts_dec")
                     .materializedRows[0].getField(0)).isEqualTo(2L)
 
-            // Values round-trip and equality pruning on the exact partition values finds the row.
             val r = computeActual("SELECT id FROM test_schema.part_ts_dec " +
                     "WHERE ts = TIMESTAMP '2024-01-03 10:30:15' AND amt = DECIMAL '123.45'")
             assertThat(r.rowCount).isEqualTo(1)
@@ -304,7 +290,6 @@ class TestDucklakePartitionedWrite : AbstractDucklakeIntegrationTest() {
             computeActual("CREATE TABLE test_schema.part_bad_type (id INTEGER, b VARBINARY) " +
                     "WITH (partitioned_by = ARRAY['b'])")
         }.hasMessageContaining("Identity partitioning is not supported")
-        // The table must not have been created.
         assertThat(computeScalar(
                 "SELECT count(*) FROM information_schema.tables " +
                         "WHERE table_schema = 'test_schema' AND table_name = 'part_bad_type'"))
@@ -313,7 +298,6 @@ class TestDucklakePartitionedWrite : AbstractDucklakeIntegrationTest() {
 
     @Test
     fun testBucketPartitionedInsertAndRead() {
-        // Round-trip: create bucket-partitioned table, insert, read all rows back.
         computeActual("CREATE TABLE test_schema.part_bucket (id INTEGER, name VARCHAR, amount DOUBLE) " +
                 "WITH (partitioned_by = ARRAY['bucket(4, name)'])")
         try {
@@ -321,7 +305,6 @@ class TestDucklakePartitionedWrite : AbstractDucklakeIntegrationTest() {
                     "(1, 'alice', 10.0), (2, 'bob', 20.0), (3, 'charlie', 30.0), " +
                     "(4, 'dave', 40.0), (5, 'eve', 50.0), (6, 'frank', 60.0)")
 
-            // All rows readable (the bucket transform shouldn't drop data).
             val total = computeActual("SELECT count(*) FROM test_schema.part_bucket")
             assertThat(total.materializedRows[0].getField(0)).isEqualTo(6L)
 
@@ -338,8 +321,6 @@ class TestDucklakePartitionedWrite : AbstractDucklakeIntegrationTest() {
 
     @Test
     fun testBucketPartitionEqualityPredicatePruning() {
-        // Equality predicate should still return the correct row (and exercise the
-        // bucket pruning code path in DucklakeBucketPartitionMatcher).
         computeActual("CREATE TABLE test_schema.part_bucket_prune (id INTEGER, name VARCHAR) " +
                 "WITH (partitioned_by = ARRAY['bucket(4, name)'])")
         try {
@@ -384,8 +365,6 @@ class TestDucklakePartitionedWrite : AbstractDucklakeIntegrationTest() {
 
     @Test
     fun testBucketPartitionStoresZeroBasedBucketIndices() {
-        // The catalog stores the bucket index (0..N-1) as the partition value. Verify
-        // that all values fall in range and that we observe at least one distinct bucket.
         computeActual("CREATE TABLE test_schema.part_bucket_meta (id INTEGER, name VARCHAR) " +
                 "WITH (partitioned_by = ARRAY['bucket(4, name)'])")
         try {
@@ -393,8 +372,6 @@ class TestDucklakePartitionedWrite : AbstractDucklakeIntegrationTest() {
                     "(1, 'alice'), (2, 'bob'), (3, 'charlie'), (4, 'dave'), " +
                     "(5, 'eve'), (6, 'frank'), (7, 'grace'), (8, 'heidi')")
 
-            // The $files metadata table exposes the underlying parquet files; each one
-            // belongs to a single bucket. Just verify we can read all 8 rows back.
             val total = computeActual("SELECT count(*) FROM test_schema.part_bucket_meta")
             assertThat(total.materializedRows[0].getField(0)).isEqualTo(8L)
         }

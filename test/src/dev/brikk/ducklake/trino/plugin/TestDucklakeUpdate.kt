@@ -19,13 +19,6 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.parallel.Execution
 import org.junit.jupiter.api.parallel.ExecutionMode
 
-/**
- * Trino UPDATE coverage. UPDATE flows through the same merge-on-read primitive as DELETE
- * but takes a separate test surface because the SQL shape and the assertions are
- * different (assert mutated values, not absent rows). Walks single-column updates,
- * multi-row predicates, expression targets (`price = price * 2`), no-match
- * updates, and post-update aggregation correctness.
- */
 @Execution(ExecutionMode.SAME_THREAD)
 class TestDucklakeUpdate : AbstractDucklakeIntegrationTest() {
     override fun isolatedCatalogName(): String {
@@ -64,11 +57,9 @@ class TestDucklakeUpdate : AbstractDucklakeIntegrationTest() {
 
             assertThat(computeScalar("SELECT count(*) FROM test_schema.update_multi")).isEqualTo(4L)
 
-            // All former 'pending' rows should now be 'processed'
             assertThat(computeScalar("SELECT count(*) FROM test_schema.update_multi WHERE status = 'processed'")).isEqualTo(3L)
             assertThat(computeScalar("SELECT count(*) FROM test_schema.update_multi WHERE status = 'complete'")).isEqualTo(1L)
 
-            // Scores should be unchanged
             assertThat(computeScalar("SELECT sum(score) FROM test_schema.update_multi")).isEqualTo(270L)
         }
         finally {
@@ -82,7 +73,6 @@ class TestDucklakeUpdate : AbstractDucklakeIntegrationTest() {
             computeActual("CREATE TABLE test_schema.update_expr (id INTEGER, price DOUBLE)")
             computeActual("INSERT INTO test_schema.update_expr VALUES (1, 10.0), (2, 20.0), (3, 30.0)")
 
-            // Double the price for all items
             computeActual("UPDATE test_schema.update_expr SET price = price * 2")
 
             val result: MaterializedResult = computeActual("SELECT id, price FROM test_schema.update_expr ORDER BY id")
@@ -104,7 +94,6 @@ class TestDucklakeUpdate : AbstractDucklakeIntegrationTest() {
 
             computeActual("UPDATE test_schema.update_nomatch SET name = 'Unknown' WHERE id > 100")
 
-            // No rows should have changed
             val result: MaterializedResult = computeActual("SELECT name FROM test_schema.update_nomatch ORDER BY id")
             assertThat(result.materializedRows[0].getField(0)).isEqualTo("Alice")
             assertThat(result.materializedRows[1].getField(0)).isEqualTo("Bob")
@@ -121,7 +110,6 @@ class TestDucklakeUpdate : AbstractDucklakeIntegrationTest() {
             computeActual("INSERT INTO test_schema.update_select VALUES " +
                     "(1, 'A', 10), (2, 'B', 20), (3, 'A', 30), (4, 'B', 40)")
 
-            // Update category A values
             computeActual("UPDATE test_schema.update_select SET value = value + 100 WHERE category = 'A'")
 
             val result: MaterializedResult = computeActual(

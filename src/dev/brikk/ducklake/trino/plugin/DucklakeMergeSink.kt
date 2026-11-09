@@ -64,7 +64,6 @@ open class DucklakeMergeSink(
         // When true, tombstones are written as DuckLake puffin deletion-vector (.puffin) files
         // instead of parquet (file_path, pos) delete files (session write_deletion_vectors).
         private val writeDeletionVectors: Boolean,
-        // Insert sink for handling UPDATE inserts
         private val insertSink: ConnectorPageSink,
         /**
          * Lineage-preserving mode (session `write_row_lineage`, parquet-only):
@@ -82,7 +81,6 @@ open class DucklakeMergeSink(
 {
     private val dataColumnCount: Int = mergeHandle.insertHandle.columns.size
 
-    // Accumulated physical delete positions grouped by data file ID.
     private val deletesByDataFile: MutableMap<Long, MutableList<Long>> = mutableMapOf()
 
     // Logical row IDs can be non-contiguous or overlap across versions. Mutation ownership is
@@ -214,7 +212,6 @@ open class DucklakeMergeSink(
     override fun finish(): CompletableFuture<Collection<Slice>> {
         val fragments: MutableList<Slice> = mutableListOf()
 
-        // Write delete Parquet files
         for (entry in deletesByDataFile.entries) {
             val dataFileId = entry.key
             val rowIds: List<Long> = entry.value
@@ -264,9 +261,7 @@ open class DucklakeMergeSink(
             "No data file range for data file $dataFileId"
         }
         // Upstream's delete writer uses std::set, and its reader rejects positions that are not
-        // strictly increasing. A LinkedHashSet preserved "prior file, then new arrival order", so
-        // deleting a lower position in a later statement produced e.g. [4, 1] and made DuckDB
-        // refuse the table. TreeSet also deduplicates pathological input while enforcing the wire
+        // strictly increasing. TreeSet also deduplicates pathological input while enforcing the wire
         // invariant for both Parquet and Puffin writers.
         val unionPositions: TreeSet<Long> = TreeSet()
         for (existingPath in range.existingDeleteFilePaths) {

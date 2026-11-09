@@ -19,16 +19,12 @@ import org.junit.jupiter.api.Test
 /**
  * Special read paths that don't go through a plain Parquet scan:
  *
- *
- *  *
  * **Delete-file (merge-on-read)** — `deleted_rows_table` has DuckDB-written
  * delete files; the connector must subtract them from the active row set on read.
- *  *
  * **Inlined data** — rows kept in the `ducklake_inlined_data_*` catalog
  * tables instead of Parquet, exercised through `DucklakeInlinedValueConverter`
  * and the inlined split source. `mixed_inline_table` additionally probes the
  * case where a single table mixes inlined + Parquet rows.
- *  *
  * **Trino DELETE** — sanity check that DELETE is wired up as a supported write,
  * using a no-match WHERE clause to avoid mutating the shared fixtures.
  *
@@ -39,18 +35,14 @@ class TestDucklakeInlinedAndDeleteReads
         return "integration-inlined-delete"
     }
 
-    // ==================== Delete file handling (merge-on-read) ====================
-
     @Test
     fun testDeletedRowsTableCount() {
-        // Table had 6 rows, 3 were deleted by DuckDB — only 3 should survive
         val result = computeActual("SELECT count(*) FROM deleted_rows_table")
         assertThat(result.materializedRows[0].getField(0)).isEqualTo(3L)
     }
 
     @Test
     fun testDeletedRowsTableOnlyKeepRows() {
-        // Only rows with name='keep' should survive the delete
         val result = computeActual("SELECT id, name, value FROM deleted_rows_table ORDER BY id")
         assertThat(result.rowCount).isEqualTo(3)
         val rows = result.materializedRows
@@ -62,30 +54,23 @@ class TestDucklakeInlinedAndDeleteReads
 
     @Test
     fun testDeletedRowsNoDeletedValues() {
-        // No rows with name='delete' should be visible
         val result = computeActual("SELECT count(*) FROM deleted_rows_table WHERE name = 'delete'")
         assertThat(result.materializedRows[0].getField(0)).isEqualTo(0L)
     }
 
     @Test
     fun testDeletedRowsAggregation() {
-        // SUM should only include surviving rows: 10 + 30 + 50 = 90
         val result = computeActual("SELECT SUM(value) FROM deleted_rows_table")
         assertThat(result.materializedRows[0].getField(0)).isEqualTo(90.0)
     }
 
-    // ==================== Trino DELETE wired up ====================
-
     @Test
     fun testDeleteSupported() {
-        // DELETE is now supported — verify it doesn't throw "not supported"
         // Uses a WHERE clause that matches no rows to avoid mutating shared test data
         computeActual("DELETE FROM simple_table WHERE id = -999")
         val count = computeScalar("SELECT count(*) FROM simple_table") as Long
         assertThat(count).isGreaterThan(0)
     }
-
-    // ==================== Inlined Data Tests ====================
 
     @Test
     fun testInlinedTableSelect() {
@@ -140,7 +125,6 @@ class TestDucklakeInlinedAndDeleteReads
         assertThat(result.rowCount).isEqualTo(3)
 
         val rows = result.materializedRows
-        // Row with all NULLs sorts first
         assertThat(rows[0].getField(0)).isNull()
         assertThat(rows[0].getField(1)).isNull()
         assertThat(rows[0].getField(2)).isNull()

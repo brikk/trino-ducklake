@@ -38,8 +38,6 @@ open class TestDucklakeViewIntegration : AbstractTestQueryFramework() {
                 .build()
     }
 
-    // ==================== DuckDB-created views are hidden ====================
-
     @Test
     fun testDuckdbViewsNotVisible() {
         // DuckDB-created views (simple_view, aliased_view, duckdb_specific_view)
@@ -50,8 +48,6 @@ open class TestDucklakeViewIntegration : AbstractTestQueryFramework() {
                 .toList()
         assertThat(viewNames).doesNotContain("simple_view", "aliased_view", "duckdb_specific_view")
     }
-
-    // ==================== Trino-created views (CREATE VIEW / DROP VIEW) ====================
 
     @Test
     fun testCreateAndQueryView() {
@@ -213,14 +209,11 @@ open class TestDucklakeViewIntegration : AbstractTestQueryFramework() {
         }
     }
 
-    // ==================== Snapshot isolation ====================
-
     @Test
     fun testViewSnapshotIsolation() {
         try {
             computeActual("CREATE VIEW test_schema.snapshot_test_view AS SELECT id FROM simple_table")
 
-            // View should be visible at current snapshot
             val current = computeActual("SELECT count(*) FROM test_schema.snapshot_test_view")
             assertThat(current.materializedRows[0].getField(0)).isEqualTo(5L)
 
@@ -238,8 +231,6 @@ open class TestDucklakeViewIntegration : AbstractTestQueryFramework() {
         }
     }
 
-    // ==================== Complex view queries ====================
-
     @Test
     fun testViewWithJoin() {
         try {
@@ -253,7 +244,6 @@ open class TestDucklakeViewIntegration : AbstractTestQueryFramework() {
             val result = computeActual("SELECT id, name, region FROM test_schema.join_view ORDER BY id")
             assertThat(result.rowCount).isGreaterThan(0)
 
-            // Verify column types are correct
             val desc = computeActual("DESCRIBE test_schema.join_view")
             val colNames = desc.materializedRows.stream()
                     .map { row -> row.getField(0).toString() }
@@ -310,8 +300,6 @@ open class TestDucklakeViewIntegration : AbstractTestQueryFramework() {
         }
     }
 
-    // ==================== Nested views ====================
-
     @Test
     fun testViewOfView() {
         try {
@@ -350,7 +338,6 @@ open class TestDucklakeViewIntegration : AbstractTestQueryFramework() {
             assertThat(result.materializedRows[0].getField(1)).isEqualTo("Product B")
             assertThat(result.materializedRows[1].getField(1)).isEqualTo("Product D")
 
-            // Verify aliased column names and types propagate
             val desc = computeActual("DESCRIBE test_schema.aliased_nested")
             val cols = desc.materializedRows.stream()
                     .map { row -> listOf<Any>(row.getField(0), row.getField(1)) }
@@ -366,11 +353,8 @@ open class TestDucklakeViewIntegration : AbstractTestQueryFramework() {
         }
     }
 
-    // ==================== Edge cases ====================
-
     @Test
     fun testViewWithSameNameAsTable() {
-        // Should fail — can't create a view with the same name as an existing table
         assertThatThrownBy { computeActual("CREATE VIEW test_schema.simple_table AS SELECT 1 AS x") }
                 .hasMessageContaining("simple_table")
     }
@@ -383,7 +367,6 @@ open class TestDucklakeViewIntegration : AbstractTestQueryFramework() {
             val result = computeActual("SELECT * FROM test_schema.empty_view")
             assertThat(result.rowCount).isEqualTo(0)
 
-            // Column metadata should still be available
             val desc = computeActual("DESCRIBE test_schema.empty_view")
             assertThat(desc.rowCount).isEqualTo(2)
         }
@@ -412,14 +395,11 @@ open class TestDucklakeViewIntegration : AbstractTestQueryFramework() {
         }
     }
 
-    // ==================== Helpers ====================
-
     private fun tryDropView(viewName: String) {
         try {
             computeActual("DROP VIEW IF EXISTS " + viewName)
         }
         catch (_: Exception) {
-            // Ignore cleanup failures
         }
     }
 }

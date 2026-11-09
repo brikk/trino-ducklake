@@ -115,7 +115,6 @@ internal class TestDucklakeStatsExtractor {
 
     @Test
     fun testConvertDateStats() {
-        // 2024-01-15 = epoch day 19737
         val epochDay = java.time.LocalDate.of(2024, 1, 15).toEpochDay().toInt()
         val bytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(epochDay).array()
         assertThat(DucklakeStatsExtractor.convertStatValue(bytes, DATE)).isEqualTo("2024-01-15")
@@ -124,7 +123,7 @@ internal class TestDucklakeStatsExtractor {
     @Test
     fun testConvertShortDecimalInt32IsLittleEndian() {
         // decimal(5,2) value 123.45 -> unscaled 12345, stored by parquet as a
-        // little-endian INT32. Decoding it big-endian (the old bug) yields garbage.
+        // little-endian INT32. Decoding it big-endian yields garbage.
         val type = DecimalType.createDecimalType(5, 2)
         val bytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(12345).array()
         assertThat(DucklakeStatsExtractor.convertStatValue(bytes, type, org.apache.parquet.format.Type.INT32))
@@ -167,18 +166,8 @@ internal class TestDucklakeStatsExtractor {
         assertThat(DucklakeStatsExtractor.convertStatValue(null, INTEGER)).isNull()
     }
 
-    // ==================== extractStats — nested-leaf coverage ====================
-    //
-    // Synthesizes a thrift FileMetaData with N row-group columns at known indices,
-    // then asserts extractStats emits one DucklakeFileColumnStats per LeafStatsTarget
-    // keyed by the target's fieldId. The leaf walk and the parquet writer's leaf
-    // emission order are tested separately (see TestDucklakeStatsLeafProjector); this
-    // suite pins the alignment contract — `parquetColumnIndex` indexes
-    // `RowGroup.columns` directly.
-
     @Test
     fun extractStatsKeysOutputByLeafFieldId() {
-        // Two flat columns in row group.
         val file = fileMetaData(
                 rowGroup(100L,
                         column(INT_TYPE, intBytes(1), intBytes(5), 0L),
@@ -257,8 +246,6 @@ internal class TestDucklakeStatsExtractor {
 
     @Test
     fun extractStatsMergesStatisticsAcrossRowGroups() {
-        // Two row groups with overlapping ranges; min should be the file-wide
-        // minimum (1) and max the file-wide maximum (12). null counts accumulate.
         val file = fileMetaData(
                 rowGroup(10L, column(INT_TYPE, intBytes(3), intBytes(8), 1L)),
                 rowGroup(10L, column(INT_TYPE, intBytes(1), intBytes(12), 2L)))
@@ -271,17 +258,14 @@ internal class TestDucklakeStatsExtractor {
         // respectively, so (10-1) + (10-2) = 17. null counts accumulate to 3.
         assertThat(stats[0].valueCount).isEqualTo(17L)
         assertThat(stats[0].nullCount).isEqualTo(3L)
-        // INTEGER stats merge numerically across row groups: file-wide min=1, max=12.
-        // Guards the old regression where string compare picked "8" as max ("8" > "12"
-        // lexically) even though DuckLake stores min/max as text.
+        // Stats stored as text must merge numerically: lexically "8" > "12".
         assertThat(stats[0].minValue).contains("1")
         assertThat(stats[0].maxValue).contains("12")
     }
 
     @Test
     fun extractStatsValueCountExcludesNulls() {
-        // Regression for the value_count-includes-nulls bug: a single row group of 100 values
-        // with 30 nulls must report value_count=70 (non-null), not 100. The invariant the
+        // A single row group of 100 values with 30 nulls must report value_count=70, not 100. The invariant the
         // DucklakeMetadata consumer relies on is value_count + null_count == row count, matching
         // the DuckDB writer path (COUNT(col) for value_count) and the DuckLake spec
         // (value_count = num_values - null_count). Emitting num_values (100) would inflate the
@@ -295,7 +279,6 @@ internal class TestDucklakeStatsExtractor {
         assertThat(stats).hasSize(1)
         assertThat(stats[0].valueCount).isEqualTo(70L)
         assertThat(stats[0].nullCount).isEqualTo(30L)
-        // The contract downstream code depends on: non-null value_count + null_count == row count.
         assertThat(stats[0].valueCount!! + stats[0].nullCount!!).isEqualTo(100L)
     }
 
@@ -326,8 +309,6 @@ internal class TestDucklakeStatsExtractor {
         assertThat(stats.maxValue).isNull()
     }
 
-    // ==================== Thrift FileMetaData builders ====================
-
     companion object {
         private val INT_TYPE: Type = Type.INT32
         private val BYTE_ARRAY_TYPE: Type = Type.BYTE_ARRAY
@@ -348,7 +329,6 @@ internal class TestDucklakeStatsExtractor {
             // num_values from each column chunk, not row count.
             rg.setNum_rows(valueCountPerColumn)
             rg.setTotal_byte_size(0L)
-            // overwrite per-column num_values to the requested value
             for (chunk in columns) {
                 chunk.getMeta_data().setNum_values(valueCountPerColumn)
             }

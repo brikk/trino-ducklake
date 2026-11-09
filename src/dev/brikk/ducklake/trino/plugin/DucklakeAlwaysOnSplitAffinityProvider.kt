@@ -19,10 +19,7 @@ import java.util.Optional
 /**
  * Returns a per-file affinity key unconditionally, so the engine routes splits for the
  * same file to the same worker across queries regardless of whether the filesystem
- * cache is enabled. DuckLake's DuckDB-format reads go through the sidecar's own httpfs
- * and bypass `TrinoFileSystem`, so they get no benefit from `fs.cache.*` but
- * still benefit from node pinning (keeps the DuckDB sidecar's buffer pool warm for the
- * same files).
+ * cache is enabled.
  *
  * Key shape matches `CacheSplitAffinityProvider` so behavior is identical when
  * `fs.cache.enabled=true` — that binding takes over via `setBinding()`.

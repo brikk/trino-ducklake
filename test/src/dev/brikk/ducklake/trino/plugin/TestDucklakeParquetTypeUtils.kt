@@ -34,9 +34,7 @@ import org.junit.jupiter.api.Test
 /**
  * Unit tests for [DucklakeParquetTypeUtils.constructField], focused on the parquet LIST
  * backward-compatibility encodings that `add_files` may encounter in files written by other
- * engines (Spark, legacy Hive). The 2-level encoding — a repeated *primitive* with no
- * intermediate group — used to crash with a ClassCastException from an unconditional cast to
- * GroupColumnIO; it must now be handled like Trino's own ParquetTypeUtils does.
+ * engines (Spark, legacy Hive).
  */
 class TestDucklakeParquetTypeUtils {
     private val arrayOfInt = ArrayType(IntegerType.INTEGER)
@@ -59,7 +57,6 @@ class TestDucklakeParquetTypeUtils {
 
     @Test
     fun testThreeLevelListStillBuildsGroupField() {
-        // Standard 3-level list — must keep working unchanged (regression guard for the fix).
         val columnIO = columnIO(
                 "message m { optional group my_list (LIST) { repeated group list { optional int32 element; } } }")
 

@@ -21,17 +21,11 @@ import java.nio.file.Files
 import java.nio.file.Path
 
 /**
- * Protection test (TODO-uhoh: "cross-engine-cleanup-survival"): stock DuckDB's orphan sweep
- * (`ducklake_delete_orphaned_files`) must NOT delete this connector's non-parquet data files —
- * the `duckdb` (`.db`), `vortex` (`.vortex`), and `lance` (dataset *directory*) formats that stock
- * DuckLake doesn't produce. Upstream's sweep lists/deletes `.parquet` + `.puffin` orphans as of
- * DuckLake 1.5.5 (it added `.puffin` in ducklake main `1e2e74ee`; before that it was `.parquet`-only)
- * — neither of which is a format we uniquely own, so our `.db`/`.vortex`/`.lance` residue is still
- * spared. This test PINS that assumption so an upstream filter change (e.g. when they add another
- * official format, or broaden the glob) can't silently start deleting our data.
+ * Stock DuckDB's orphan sweep must spare legacy `.db`/`.vortex`/`.lance` residue. Its
+ * extension filter includes `.parquet` and `.puffin` (ducklake commit `1e2e74ee`).
  *
  * The test plants ORPHAN files of each format (untracked by the catalog) under the DuckLake data
- * path, then runs stock DuckDB's catalog-wide orphan sweep and asserts our non-parquet orphans
+ * path, then runs stock DuckDB's catalog-wide orphan sweep and asserts the legacy orphans
  * survive. A parquet orphan is planted too as a live control: DuckDB is expected to remove it,
  * confirming the sweep actually ran (so non-parquet survival is protection, not a no-op).
  *
@@ -55,7 +49,7 @@ class TestDucklakeCrossEngineCleanupSurvival : AbstractDucklakeCrossEngineTest()
             // A real parquet table so the catalog + data path exist and DuckDB can attach.
             computeActual("CREATE TABLE $table AS SELECT 1 AS id")
 
-            // Plant orphan files (untracked by the catalog) of each of our formats. Put them beside
+            // Put legacy orphan files beside
             // real data — inside the table's data directory — so the sweep definitely scans them.
             val dataDir = getIsolatedCatalog().dataDir
             val tableDir: Path = Files.walk(dataDir).use { w ->
@@ -70,15 +64,12 @@ class TestDucklakeCrossEngineCleanupSurvival : AbstractDucklakeCrossEngineTest()
             val lanceMember = plant(lanceOrphanDir.resolve("data").resolve("part-0.lance"))
             plant(lanceOrphanDir.resolve("_versions").resolve("1.manifest"))
 
-            // Stock DuckDB's catalog-wide orphan sweep, no age filter.
             createDuckdbConnection().use { conn ->
                 conn.createStatement().use { stmt ->
                     stmt.execute("CALL ducklake_delete_orphaned_files('ducklake_db', cleanup_all => true)")
                 }
             }
 
-            // The protection: our non-parquet/-puffin orphans must survive DuckDB's sweep
-            // (upstream lists .parquet + .puffin as of 1.5.5; .db/.vortex/.lance are ours alone).
             assertThat(Files.exists(duckdbOrphan)).`as`("duckdb (.db) orphan survives stock sweep").isTrue()
             assertThat(Files.exists(vortexOrphan)).`as`("vortex (.vortex) orphan survives stock sweep").isTrue()
             assertThat(Files.exists(lanceMember)).`as`("lance dataset-directory member survives stock sweep").isTrue()
@@ -87,7 +78,6 @@ class TestDucklakeCrossEngineCleanupSurvival : AbstractDucklakeCrossEngineTest()
             // and WOULD have deleted the others were it not for the extension filter.
             assertThat(Files.exists(parquetOrphan)).`as`("stock sweep removed the parquet orphan (sweep active)").isFalse()
 
-            // And the real table still reads through both engines.
             assertThat(computeActual("SELECT id FROM $table").materializedRows.map { it.getField(0) as Int })
                     .containsExactly(1)
         }

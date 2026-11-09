@@ -24,17 +24,13 @@ import org.junit.jupiter.api.parallel.ExecutionMode
 /**
  * Pins the contract between DDL/DML and the catalog's snapshot lineage:
  *
- *
- *  *
  * `ducklake_snapshot_changes` captures every DDL operation in spec form
  * (`created_table:"schema"."name"`). DuckDB's `ParseCatalogEntry` relies
  * on the quoted, dotted form — see dev-docs/archive/COMPARE-pg_ducklake.md B1.
- *  *
  * `ducklake_schema_versions` advances on every schema-changing DDL and stays
  * fixed across pure-DML INSERT/UPDATE/DELETE/MERGE. `schema_version` is
  * table-scoped to `table_id`; the same row appears in
  * `ducklake_snapshot.schema_version`.
- *
  *
  * Exercises directly against the catalog DB (via [openCatalogConnection]) because
  * these tables aren't projected through `information_schema`.
@@ -48,18 +44,15 @@ class TestDucklakeSnapshotAndSchemaVersion
 
     @Test
     fun testSnapshotChangesTracked() {
-        // Get baseline snapshot count
         val before = computeActual("SELECT max(snapshot_id) FROM \"simple_table\$snapshots\"")
         val baselineSnapshot = before.materializedRows[0].getField(0) as Long
 
         computeActual("CREATE TABLE test_schema.snapshot_test (id INTEGER)")
         try {
-            // Should have created a new snapshot
             val after = computeActual("SELECT max(snapshot_id) FROM \"simple_table\$snapshots\"")
             val newSnapshot = after.materializedRows[0].getField(0) as Long
             assertThat(newSnapshot).isGreaterThan(baselineSnapshot)
 
-            // Check changes contain the table creation
             val changes = computeActual(
                     "SELECT changes_made FROM \"simple_table\$snapshot_changes\" WHERE snapshot_id = $newSnapshot")
             assertThat(changes.rowCount).isGreaterThan(0)
@@ -124,7 +117,7 @@ class TestDucklakeSnapshotAndSchemaVersion
 
             // DROP TABLE bumps ducklake_snapshot.schema_version but writes NO ducklake_schema_versions
             // row: upstream InsertNewSchema only records created/altered tables (a dropped table has
-            // no schema to version). ducklake-catalog 21ca360 aligned the library with that.
+            // no schema to version; ducklake-catalog commit 21ca360).
             val schemaVersionBeforeDrop = getCurrentSchemaVersion()
             computeActual("DROP TABLE $qualifiedTableName")
             assertThat(getCurrentSchemaVersion()).isGreaterThan(schemaVersionBeforeDrop)

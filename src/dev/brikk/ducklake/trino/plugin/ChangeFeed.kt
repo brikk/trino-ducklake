@@ -17,8 +17,7 @@ import io.trino.spi.type.BigintType.BIGINT
 import io.trino.spi.type.VarcharType.VARCHAR
 
 /**
- * The three DuckLake change-feed table functions exposed under `<catalog>.system.*`
- * (F9 — the data change feed; see vendor/ducklake-web .../data_change_feed.md):
+ * The three DuckLake change-feed table functions exposed under `<catalog>.system.*`:
  *
  *  - `table_insertions(schema, table, ...)` — rows INSERTED in the window;
  *  - `table_deletions(schema, table, ...)`  — rows DELETED in the window;

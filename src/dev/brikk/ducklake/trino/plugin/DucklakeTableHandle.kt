@@ -22,9 +22,7 @@ import io.trino.spi.predicate.TupleDomain
 /**
  * Handle for a Ducklake table, including snapshot context and pushed-down predicates.
  *
- * Pushdown is TupleDomain-only (projection + domain predicates + partition-transform
- * classification). Function-shape expression pushdown was removed with the DuckDB-engine
- * read path (see PLAN-duckdb-parity-moveout.md §4.2); parquet is the only data-file format.
+ * Predicate pushdown is TupleDomain-only, with partition-transform classification.
  */
 @JvmRecord
 data class DucklakeTableHandle @JsonCreator constructor(

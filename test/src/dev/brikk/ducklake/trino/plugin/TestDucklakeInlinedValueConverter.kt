@@ -31,8 +31,7 @@ import java.time.Instant
 
 /**
  * Unit tests for `DucklakeInlinedValueConverter.decodeBlobText` — the inverse of
- * DuckDB's `Blob::ToString`. The end-to-end inlined-list round trip is covered by
- * `TestDucklakeCrossEngineTypeAudit.testDuckdbListBlobReadsInTrino`.
+ * DuckDB's `Blob::ToString`.
  */
 class TestDucklakeInlinedValueConverter {
     @Test
@@ -67,7 +66,6 @@ class TestDucklakeInlinedValueConverter {
 
     @Test
     fun testMixedPrintableAndEscapedBytes() {
-        // BLOB '\x00Foo\xFF' — 'F','o','o' are regular ASCII; 0x00 and 0xFF aren't.
         assertThat(DucklakeInlinedValueConverter.decodeBlobText("\\x00Foo\\xFF"))
                 .containsExactly(0x00.toByte(), 0x46.toByte(), 0x6F.toByte(), 0x6F.toByte(), 0xFF.toByte())
     }
@@ -117,8 +115,6 @@ class TestDucklakeInlinedValueConverter {
                 .isInstanceOf(IllegalArgumentException::class.java)
     }
 
-    // ---- non-finite floats / doubles in inlined list text (id=lowtail-inlinedlist-null-token-collision) ----
-
     @Test
     fun testNonFiniteDoublesInListText() {
         // DuckDB renders non-finite list<double> elements as bare inf/-inf/nan tokens; Java's
@@ -140,8 +136,6 @@ class TestDucklakeInlinedValueConverter {
         assertThat(java.lang.Float.intBitsToFloat(REAL.getInt(block, 2))).isNaN()
     }
 
-    // ---- unquoted NULL token (id=lowtail-inlinedlist-null-token-collision) ----
-
     @Test
     fun testListNullTokenReadsAsNull() {
         // The bare NULL token is a SQL null. A blob whose bytes spell "NULL" serializes
@@ -155,25 +149,19 @@ class TestDucklakeInlinedValueConverter {
         assertThat(bigintBlock.isNull(0)).isTrue()
     }
 
-    // ---- decimal rescale (id=lowtail-decimal-halfup-silent-rescale) ----
-
     @Test
     fun testDecimalAtColumnScaleConverts() {
-        // Value already at the column scale: a no-op rescale, returns the unscaled long.
         val value = DucklakeInlinedValueConverter.convertJdbcValue(BigDecimal("1.23"), DecimalType.createDecimalType(10, 2))
         assertThat(value).isEqualTo(123L)
     }
 
     @Test
     fun testDecimalScaleMismatchThrowsLoudlyInsteadOfRounding() {
-        // More fractional digits than the column scale used to be silently HALF_UP-rounded
-        // (1.23), diverging from a Parquet read. Now it throws like Trino's Decimals SPI does.
         assertThatThrownBy {
             DucklakeInlinedValueConverter.convertJdbcValue(BigDecimal("1.234"), DecimalType.createDecimalType(10, 2))
         }.isInstanceOf(ArithmeticException::class.java)
     }
 
-    // ==================== nested struct/map/list text parsing ====================
     // DuckDB serializes nested inlined values as VARCHAR text on non-native
     // catalog backends: struct `{'k': v}` (ToSQLString — strings quoted with ''
     // doubling), map `{k=v}` (Value::ToString), list `[a, b]`.
@@ -243,7 +231,6 @@ class TestDucklakeInlinedValueConverter {
                                 io.trino.spi.type.RowType.field("j", io.trino.spi.type.IntegerType.INTEGER)),
                         io.trino.spi.type.TypeOperators())) as io.trino.spi.block.SqlMap
         assertThat(map.size).isEqualTo(2)
-        // suppress unused variable warning for the first construction
         assertThat(mapType).isNotNull()
     }
 

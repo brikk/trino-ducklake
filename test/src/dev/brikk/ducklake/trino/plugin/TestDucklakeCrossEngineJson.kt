@@ -22,29 +22,17 @@ import org.junit.jupiter.api.parallel.Execution
 import org.junit.jupiter.api.parallel.ExecutionMode
 
 /**
- * Native Trino JSON-type support (F8): DuckLake `json` maps to Trino's `io.trino.type.JsonType`
- * (physically a UTF-8 string in parquet / DuckDB `JSON`). Covers the four engine directions on
- * all three write formats:
+ * Native Trino JSON-type support: DuckLake `json` maps to Trino's `io.trino.type.JsonType`
+ * (physically a UTF-8 string in parquet / DuckDB `JSON`).
  *
- *   - Trino writes JSON → Trino reads it back (parquet + duckdb-format appender + arrow-stream).
+ *   - Trino writes JSON → Trino reads it back.
  *   - Trino writes JSON parquet → DuckDB reads it (cross-engine, via the shared PG-backed catalog).
  *   - DuckDB writes JSON → Trino reads it.
  *
- * The external-DuckDB read is asserted only for the PARQUET write. Upstream DuckLake never reads
- * the DATA-file `file_format` column at all — its scan select-list
- * (`DuckLakeMetadataManager::GetFileSelectList`) is only path/size/footer/encryption, and it hands
- * every data file straight to `parquet_scan` (`ducklake_scan.cpp` binds it). (Contrast
- * `GetDeleteFileSelectList`, which DOES read `.format` and dispatches parquet-vs-puffin — so the
- * machinery exists, it's just not wired to data files.) Consequently a connector-written
- * duckdb-format `.db` data file — a perfectly valid standalone DuckDB database, which is exactly
- * how our own read path ATTACHes it — is mis-routed into upstream's parquet reader and fails with
- * "No magic bytes", for ANY column type. Verified independent of the `trino/duckdb` catalog
- * namespacing (a bare `duckdb` format string fails identically) and of JSON (plain VARCHAR fails
- * the same way). Reported upstream: https://github.com/duckdb/ducklake/issues/1289. The
- * connector's duckdb data format is a Trino/Doris-internal storage optimization; parquet is the
- * cross-engine interchange format. So the duckdb-format cases assert the Trino round-trip only.
+ * Upstream routes data files to `parquet_scan` (`ducklake_scan.cpp`), matching the Parquet
+ * data-file path exercised here.
  *
- * Also pins that the catalog column type is `json` (not the old VARCHAR degradation).
+ * Also pins that the catalog column type is `json`.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @Execution(ExecutionMode.SAME_THREAD)
@@ -83,14 +71,12 @@ internal class TestDucklakeCrossEngineJson : AbstractDucklakeCrossEngineTest() {
             assertThat(computeScalar("SELECT DISTINCT file_format FROM \"$table\$files\"") as String)
                     .isEqualTo(expectedFormat)
 
-            // Trino reads back what it wrote (JSON renders as its canonical text).
             val rows = computeActual("SELECT id, json_format(doc) FROM $fullTrinoTable ORDER BY id")
                     .materializedRows
             assertThat(rows.map { it.getField(0) as Int to it.getField(1) as String? })
                     .containsExactly(1 to doc1, 2 to doc2, 3 to null)
 
             if (crossEngineDuckdbRead) {
-                // DuckDB reads the same catalog: the JSON column comes back as text.
                 assertThat(duckdbReadDocRows(fullTrinoTable))
                         .containsExactly(1 to doc1, 2 to doc2, 3 to null)
             }
@@ -118,7 +104,6 @@ internal class TestDucklakeCrossEngineJson : AbstractDucklakeCrossEngineTest() {
 
     @Test
     fun trinoWritesJsonParquet() {
-        // Parquet is the cross-engine format — assert DuckDB reads the JSON column back too.
         writeReadRoundTrip(parquetSession(), "json_parquet", "parquet", crossEngineDuckdbRead = true)
     }
 
@@ -142,7 +127,6 @@ internal class TestDucklakeCrossEngineJson : AbstractDucklakeCrossEngineTest() {
             assertThat(rows.map { it.getField(0) as Int to it.getField(1) as String? })
                     .containsExactly(1 to doc1, 2 to doc2, 3 to null)
 
-            // JSON is queryable as a native type: a JSON-path extraction over the column works.
             assertThat(computeScalar("SELECT json_extract_scalar(doc, '\$.s') FROM $fullTrinoTable WHERE id = 2") as String?)
                     .isEqualTo("hi")
         }

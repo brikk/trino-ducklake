@@ -49,7 +49,7 @@ open class DucklakeConnectorFactory
                     JsonModule(),
                     DucklakeModule(config),
                     MBeanServerModule(),
-                    FileSystemModule(catalogName, context, false), // no metadata cache initially
+                    FileSystemModule(catalogName, context, false),
                     ConnectorContextModule(catalogName, context),
                 { binder -> binder.bind(ClassLoader::class.java).toInstance(classLoader) })
 

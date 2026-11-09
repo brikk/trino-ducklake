@@ -123,7 +123,6 @@ class TestDucklakeCatalog {
                 .filter { column -> column.columnName == "complex_struct" }
                 .findFirst()
                 .orElseThrow()
-        // struct<name:varchar,scores:list<int32>,attrs:map<varchar,varchar>>
         assertThat(complexColumn.columnType)
                 .startsWith("struct<")
                 .contains("name:varchar")
@@ -145,10 +144,8 @@ class TestDucklakeCatalog {
         val stats = metadata.getTableStatistics(
                 io.trino.testing.connector.TestingConnectorSession.SESSION, tableHandle)
 
-        // Row count should be 5
         assertThat(stats.rowCount.value).isEqualTo(5.0)
 
-        // Should have column statistics
         assertThat(stats.columnStatistics).isNotEmpty()
     }
 
@@ -165,7 +162,6 @@ class TestDucklakeCatalog {
         val stats = metadata.getTableStatistics(
                 io.trino.testing.connector.TestingConnectorSession.SESSION, tableHandle)
 
-        // nullable_table has 4 rows
         assertThat(stats.rowCount.value).isEqualTo(4.0)
 
         val handles = metadata.getColumnHandles(
@@ -179,7 +175,6 @@ class TestDucklakeCatalog {
         assertThat(nameStats!!.nullsFraction.value).isEqualTo(0.5)
         assertThat(priceStats!!.nullsFraction.value).isEqualTo(0.5)
 
-        // non-null prices are 10.0 and 20.0
         val priceRange = priceStats.range.orElseThrow()
         assertThat(priceRange.min).isEqualTo(10.0)
         assertThat(priceRange.max).isEqualTo(20.0)

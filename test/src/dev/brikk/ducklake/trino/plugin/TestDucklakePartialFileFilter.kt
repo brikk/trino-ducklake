@@ -33,8 +33,7 @@ import java.sql.DriverManager
  * snapshot id exceeds S (the connector filters them via [DucklakeSplit.snapshotFilterMax]).
  *
  * Setup drives DuckDB directly (local DuckLake catalog) to produce the partial file, then Trino
- * reads it through the native Parquet path. Verified earlier that this DuckDB version produces a
- * partial file with the physical column under this exact recipe.
+ * reads it through the native Parquet path.
  *
  * SAME_THREAD: single shared local catalog.
  */
@@ -65,8 +64,6 @@ class TestDucklakePartialFileFilter : AbstractTestQueryFramework() {
                 st.execute("CALL merge_adjacent_files()")
             }
         }
-        // Read back the partial file's begin_snapshot / partial_max (the connector reads the
-        // ducklake_* tables straight out of lake.db on the DUCKDB_LOCAL path).
         DriverManager.getConnection("jdbc:duckdb:$lakeDb").use { conn ->
             conn.createStatement().use { st ->
                 st.executeQuery("SELECT begin_snapshot, partial_max FROM ducklake_data_file "
@@ -104,7 +101,6 @@ class TestDucklakePartialFileFilter : AbstractTestQueryFramework() {
         assertThat(computeScalar("SELECT count(*) FROM t FOR VERSION AS OF $beginSnapshot"))
                 .`as`("only the first insert's rows survive the partial-file filter")
                 .isEqualTo(100L)
-        // And they are exactly the first-insert rows.
         assertThat(computeActual("SELECT DISTINCT data FROM t FOR VERSION AS OF $beginSnapshot").materializedRows
                 .map { it.getField(0) as String })
                 .containsExactly("s1")

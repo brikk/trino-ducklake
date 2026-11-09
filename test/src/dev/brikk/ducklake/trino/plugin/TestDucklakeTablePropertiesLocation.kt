@@ -117,11 +117,9 @@ class TestDucklakeTablePropertiesLocation {
         assertThatThrownBy { meta.decode("s3://bucket/../escape/") }
                 .isInstanceOf(TrinoException::class.java)
                 .hasMessageContaining("..")
-        // Embedded ".." in the middle of a path is rejected too.
         assertThatThrownBy { meta.decode("a/../b/") }
                 .isInstanceOf(TrinoException::class.java)
                 .hasMessageContaining("..")
-        // Windows-style traversal also rejected.
         assertThatThrownBy { meta.decode("a\\..\\b\\") }
                 .isInstanceOf(TrinoException::class.java)
                 .hasMessageContaining("..")

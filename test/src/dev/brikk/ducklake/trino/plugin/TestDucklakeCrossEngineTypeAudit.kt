@@ -45,8 +45,6 @@ internal class TestDucklakeCrossEngineTypeAudit : AbstractDucklakeCrossEngineTes
         return "cross-engine-type-audit"
     }
 
-    // ==================== Inlined ALTER TABLE ADD COLUMN flows ====================
-
     @Test
     @Throws(Exception::class)
     fun testDuckdbInlineAlterThenInlineMatchesTrino() {
@@ -99,7 +97,6 @@ internal class TestDucklakeCrossEngineTypeAudit : AbstractDucklakeCrossEngineTes
                         .mapToLong { it }
                         .sum()
 
-                // With 4 + 4 rows and limit 10, DuckDB should keep rows in metadata inlined tables.
                 assertThat(CatalogQueries.activeDataFileCount(dsl, tableId))
                         .`as`("DuckDB active Parquet data files after inline->alter->inline")
                         .isZero()
@@ -171,7 +168,6 @@ internal class TestDucklakeCrossEngineTypeAudit : AbstractDucklakeCrossEngineTes
                         .mapToLong { it }
                         .sum()
 
-                // Even with 9 + 9 rows around ALTER, DuckDB keeps rows in inlined metadata tables.
                 assertThat(CatalogQueries.activeDataFileCount(dsl, tableId))
                         .`as`("DuckDB active Parquet data files after inline9->alter->inline9")
                         .isZero()
@@ -194,14 +190,6 @@ internal class TestDucklakeCrossEngineTypeAudit : AbstractDucklakeCrossEngineTes
             tryDropTable(fullTrinoTable)
         }
     }
-
-    // ==================== list<T> read audit ====================
-    //
-    // Each test below runs through `runListRoundTrip` which writes DuckDB rows twice — once kept
-    // in the inlined metadata table (`data_inlining_row_limit=100`) and once flushed to Parquet
-    // (default `data_inlining_row_limit=0`) — and reads both back through Trino with the same
-    // assertions. That covers both the inlined PG-text parser in `DucklakeInlinedValueConverter`
-    // and Trino's Parquet array reader on DuckDB-written files.
 
     @Test
     @Throws(Exception::class)
@@ -405,13 +393,6 @@ internal class TestDucklakeCrossEngineTypeAudit : AbstractDucklakeCrossEngineTes
                 })
     }
 
-    // ==================== list<blob> ====================
-    //
-    // `list<blob>` reads end-to-end now — the inlined-path `\xNN` text-escape decode landed
-    // 2026-05-20 (see TODO-READ-MODE § Inlined-Read Type Gaps, `decodeBlobText`). This is a live,
-    // passing `@Test` running BOTH the inlined and Parquet paths via `runListRoundTrip` (the
-    // earlier "still fails / kept @Disabled" note was stale).
-
     @Test
     @Throws(Exception::class)
     fun testDuckdbListBlobReadsInTrino() {
@@ -446,8 +427,6 @@ internal class TestDucklakeCrossEngineTypeAudit : AbstractDucklakeCrossEngineTes
                     assertThat(ids[1]).isNull()
                 })
     }
-
-    // ==================== Inlined scalar reads ====================
 
     @Test
     @Throws(Exception::class)
@@ -556,9 +535,7 @@ internal class TestDucklakeCrossEngineTypeAudit : AbstractDucklakeCrossEngineTes
     fun testDuckdbInlinedVarcharWithEmbeddedNullByteReadsInTrino() {
         // pg_ducklake docs/data_types.md explicitly calls out that DuckDB VARCHAR can carry
         // embedded null bytes and that PG TEXT/VARCHAR cannot, which is why upstream stores
-        // inlined VARCHAR as BYTEA. This test probes whether our read path survives a null byte
-        // — if this fails with "null character not permitted", we likely need the BYTEA-aware
-        // read path that pg_ducklake documents.
+        // inlined VARCHAR as BYTEA.
         val tableName = "xengine_inlined_varchar_nullbyte"
         val fullDuckdb = "ducklake_db.test_schema.$tableName"
         val fullTrino = "test_schema.$tableName"
@@ -573,8 +550,6 @@ internal class TestDucklakeCrossEngineTypeAudit : AbstractDucklakeCrossEngineTes
             }
             assertRowsStayedInlined(tableName, 1)
 
-            // Current expectation: this may throw — that's informative. If it returns a value,
-            // verify the null byte survived. Either way, don't make the test falsely pass.
             val result = computeActual("SELECT id, length(s), s FROM $fullTrino")
             assertThat(result.materializedRows).hasSize(1)
             assertThat(result.materializedRows[0].getField(1))
@@ -585,8 +560,6 @@ internal class TestDucklakeCrossEngineTypeAudit : AbstractDucklakeCrossEngineTes
             tryDropTable(fullTrino)
         }
     }
-
-    // ==================== hugeint / uhugeint ====================
 
     @Test
     @Throws(Exception::class)
@@ -599,7 +572,6 @@ internal class TestDucklakeCrossEngineTypeAudit : AbstractDucklakeCrossEngineTes
                 duck.createStatement().use { stmt ->
                     stmt.execute("DROP TABLE IF EXISTS $fullDuckdb")
                     stmt.execute("CREATE TABLE $fullDuckdb (id INTEGER, big HUGEINT)")
-                    // A value that fits in DECIMAL(38, 0). Values past ~1.7e38 would overflow.
                     stmt.execute("INSERT INTO $fullDuckdb VALUES (1, 99999999999999999999999999999999999999)")
                 }
             }
@@ -641,8 +613,6 @@ internal class TestDucklakeCrossEngineTypeAudit : AbstractDucklakeCrossEngineTes
             tryDropTable(fullTrino)
         }
     }
-
-    // ==================== Helpers ====================
 
     /**
      * Runs a single-column `list<T>` round-trip test (DuckDB writer → Trino reader) twice:

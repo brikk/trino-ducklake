@@ -27,8 +27,6 @@ open class TestDucklakePlannerAndJoins : AbstractDucklakeIntegrationTest() {
         return "integration-planner-joins"
     }
 
-    // ==================== EXPLAIN and planning ====================
-
     @Test
     fun testExplainSimpleSelect() {
         val result = computeActual("EXPLAIN SELECT * FROM simple_table")
@@ -99,11 +97,9 @@ open class TestDucklakePlannerAndJoins : AbstractDucklakeIntegrationTest() {
             "EXPLAIN ANALYZE SELECT * FROM partitioned_table WHERE region = 'US'")
         val plan = result.materializedRows[0].getField(0).toString()
         // Identity partition pruning narrows files, but the residual remains for files without a
-        // usable partition value (R-C1), so Trino reports the combined node as ScanFilter.
+        // usable partition value, so Trino reports the combined node as ScanFilter.
         assertThat(plan).contains("ScanFilter").contains("region = varchar 'US'")
     }
-
-    // ==================== Joins (exercises dynamic filter path) ====================
 
     @Test
     fun testSelfJoin() {
@@ -154,8 +150,6 @@ open class TestDucklakePlannerAndJoins : AbstractDucklakeIntegrationTest() {
 
     @Test
     fun testDynamicFilterJoinSmallBuildSide() {
-        // Small build-side table (nested_table, 3 rows) joined to larger probe-side
-        // This exercises the dynamic filter code path
         val result = computeActual(
             "SELECT a.id, a.amount FROM aggregation_table a " +
                     "JOIN nested_table n ON a.id = n.id")
@@ -177,8 +171,6 @@ open class TestDucklakePlannerAndJoins : AbstractDucklakeIntegrationTest() {
                     "SELECT count(*) FROM aggregation_table a JOIN nested_table n ON a.id = n.id",
             "VALUES 3")
     }
-
-    // ==================== Set operations ====================
 
     @Test
     fun testUnionAll() {

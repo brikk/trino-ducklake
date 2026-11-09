@@ -89,7 +89,6 @@ class TestChangeFeedPageSource {
     @Test
     fun insertUnitStampsSnapshotRowidAndInsertType() {
         val columns = changeColumns()
-        // rowIdStart=0, positions 0..1 -> positional rowids 0,1 (no lineage).
         val unit = ChangeFeedUnit(
                 baseSource = basePage(arrayOf("a", "b"), longArrayOf(0L, 1L)),
                 snapshotId = 7L,
@@ -163,7 +162,6 @@ class TestChangeFeedPageSource {
 
     @Test
     fun projectionSelectsRequestedColumnsOnly() {
-        // table_deletions layout without change_type, projecting only rowid + val.
         val columns = listOf(ChangeFeedColumns.ROWID, valColumn)
         val unit = ChangeFeedUnit(
                 baseSource = basePage(arrayOf("x", "y"), longArrayOf(0L, 1L)),

@@ -35,7 +35,6 @@ import java.util.Optional
 
 /**
  * Utility class for converting between Ducklake/Trino types and Parquet Field objects.
- * Supports all types: primitives, arrays, maps, structs/rows, and arbitrary nesting.
  */
 object DucklakeParquetTypeUtils {
     /**
@@ -220,8 +219,8 @@ object DucklakeParquetTypeUtils {
                 }
                 return null
             }
-            // Catalog 0.7.2 returns only top-level name-map rows. Preserve the old nested-name
-            // fallback until it exposes nested target ids; callers track that remaining gap.
+            // Nested source names may be absent from the map. Legacy reads fall back to names;
+            // final-1.1 evolution requires authoritative nested stable IDs.
             if (missingField != null) throw TrinoException(NOT_SUPPORTED,
                 "Final-1.1 nested name-map file evolution requires authoritative nested stable IDs")
             return group.getChild(child.columnName)

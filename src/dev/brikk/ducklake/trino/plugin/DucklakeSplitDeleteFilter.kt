@@ -35,13 +35,6 @@ internal class DucklakeSplitDeleteFilter(
             return dataSource
         }
 
-        // Two delete vocabularies, kept apart: GLOBAL row ids (Trino-written `row_id` delete
-        // files, value = rowIdStart + file position) and FILE-LOCAL offsets (DuckLake-spec
-        // `(file_path, pos)` delete files, puffin deletion vectors, and inlined deletes from
-        // ducklake_inlined_delete_<tableId>). Each value must be matched under exactly ONE
-        // interpretation: merging into a single both-ways-checked set phantom-deletes rows
-        // whenever the file's rowIdStart < recordCount, because global ids then numerically
-        // alias local offsets (caught by AbstractDucklakeRowLevelFormatTest's spread-delete).
         val localOffsets = DucklakeLongSet.copyOf(split.inlinedDeletedRowPositions)
         val globalRowIds = DucklakeLongSet()
         // Partial (cross-snapshot compacted) data file: drop file-local positions whose

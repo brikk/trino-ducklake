@@ -77,7 +77,6 @@ internal class TestDucklakeParquetSchemaBuilder {
         val columns: List<DucklakeColumnHandle> = listOf(
                 DucklakeColumnHandle(100, "metadata", rowType, true))
 
-        // Nested columns: parentColumn=100
         val allColumns: List<DucklakeColumn> = listOf(
                 DucklakeColumn(100, 1, null, 1, 1, "metadata", "STRUCT(key VARCHAR, value INTEGER)", true, null),
                 DucklakeColumn(101, 1, null, 1, 2, "key", "VARCHAR", true, 100L),
@@ -90,9 +89,7 @@ internal class TestDucklakeParquetSchemaBuilder {
 
         val result: MessageType = DucklakeParquetSchemaBuilder.buildMessageType(columns, allColumns, converter.messageType)
 
-        // Top-level field has ID 100
         assertThat(result.getType("metadata").id.intValue()).isEqualTo(100)
-        // Nested fields have their own IDs
         val group: org.apache.parquet.schema.GroupType = result.getType("metadata").asGroupType()
         assertThat(group.getType("key").id.intValue()).isEqualTo(101)
         assertThat(group.getType("value").id.intValue()).isEqualTo(102)
@@ -112,7 +109,6 @@ internal class TestDucklakeParquetSchemaBuilder {
 
         val result: MessageType = DucklakeParquetSchemaBuilder.buildMessageType(columns, converter.messageType)
 
-        // Top-level array field has ID
         assertThat(result.getType("tags").id.intValue()).isEqualTo(50)
     }
 
@@ -130,7 +126,6 @@ internal class TestDucklakeParquetSchemaBuilder {
 
         val result: MessageType = DucklakeParquetSchemaBuilder.buildMessageType(columns, converter.messageType)
 
-        // Top-level map field has ID
         assertThat(result.getType("properties").id.intValue()).isEqualTo(75)
     }
 
@@ -148,12 +143,9 @@ internal class TestDucklakeParquetSchemaBuilder {
         val original: MessageType = converter.messageType
         val annotated: MessageType = DucklakeParquetSchemaBuilder.buildMessageType(columns, original)
 
-        // Field count preserved
         assertThat(annotated.fieldCount).isEqualTo(original.fieldCount)
-        // Field names preserved
         assertThat(annotated.getType("id").name).isEqualTo("id")
         assertThat(annotated.getType("name").name).isEqualTo("name")
-        // Primitive types preserved
         assertThat(annotated.getType("id").asPrimitiveType().primitiveTypeName)
                 .isEqualTo(original.getType("id").asPrimitiveType().primitiveTypeName)
     }

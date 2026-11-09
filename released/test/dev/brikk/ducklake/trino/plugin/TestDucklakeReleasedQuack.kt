@@ -24,7 +24,7 @@ import java.sql.DriverManager
 import java.util.Properties
 import java.util.function.Supplier
 
-/** Release-driver qualification, separate from the historical R07 producer pins. */
+/** Release-driver qualification for evolved reads and worker mutations. */
 class TestDucklakeReleasedQuack {
     @TempDir
     lateinit var data: Path

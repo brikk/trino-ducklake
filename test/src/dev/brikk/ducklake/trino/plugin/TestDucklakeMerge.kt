@@ -19,19 +19,6 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.parallel.Execution
 import org.junit.jupiter.api.parallel.ExecutionMode
 
-/**
- * Trino MERGE coverage. Each shape gets its own test so a regression points at the
- * specific MERGE arm that broke:
- *
- *
- *  * MERGE with only `WHEN NOT MATCHED THEN INSERT` (insert-only).
- *  * MERGE with only `WHEN MATCHED THEN DELETE` (delete-only).
- *  * MERGE with only `WHEN MATCHED THEN UPDATE` (update-only).
- *  * MERGE with both update-on-match and insert-when-not-matched (the canonical
- *       upsert).
- *  * MERGE with delete-on-match and insert-when-not-matched (replace-by-identity).
- *
- */
 @Execution(ExecutionMode.SAME_THREAD)
 class TestDucklakeMerge : AbstractDucklakeIntegrationTest() {
     override fun isolatedCatalogName(): String {
@@ -44,7 +31,6 @@ class TestDucklakeMerge : AbstractDucklakeIntegrationTest() {
             computeActual("CREATE TABLE test_schema.merge_target (id INTEGER, name VARCHAR, value INTEGER)")
             computeActual("INSERT INTO test_schema.merge_target VALUES (1, 'Alice', 100), (2, 'Bob', 200)")
 
-            // MERGE that only inserts (no matches)
             computeActual("MERGE INTO test_schema.merge_target t " +
                     "USING (VALUES (3, 'Charlie', 300), (4, 'Diana', 400)) AS s(id, name, value) " +
                     "ON t.id = s.id " +
@@ -68,7 +54,6 @@ class TestDucklakeMerge : AbstractDucklakeIntegrationTest() {
             computeActual("CREATE TABLE test_schema.merge_del (id INTEGER, name VARCHAR)")
             computeActual("INSERT INTO test_schema.merge_del VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')")
 
-            // MERGE that only deletes
             computeActual("MERGE INTO test_schema.merge_del t " +
                     "USING (VALUES 1, 3) AS s(id) " +
                     "ON t.id = s.id " +
@@ -88,7 +73,6 @@ class TestDucklakeMerge : AbstractDucklakeIntegrationTest() {
             computeActual("CREATE TABLE test_schema.merge_upd (id INTEGER, name VARCHAR, amount DOUBLE)")
             computeActual("INSERT INTO test_schema.merge_upd VALUES (1, 'Alice', 100.0), (2, 'Bob', 200.0), (3, 'Charlie', 300.0)")
 
-            // MERGE that updates matching rows
             computeActual("MERGE INTO test_schema.merge_upd t " +
                     "USING (VALUES (2, 999.0)) AS s(id, amount) " +
                     "ON t.id = s.id " +
@@ -112,7 +96,6 @@ class TestDucklakeMerge : AbstractDucklakeIntegrationTest() {
             computeActual("CREATE TABLE test_schema.merge_upsert (id INTEGER, name VARCHAR, value INTEGER)")
             computeActual("INSERT INTO test_schema.merge_upsert VALUES (1, 'Alice', 100), (2, 'Bob', 200)")
 
-            // Classic upsert: update existing, insert new
             computeActual("MERGE INTO test_schema.merge_upsert t " +
                     "USING (VALUES (2, 'Bob_updated', 999), (3, 'Charlie', 300)) AS s(id, name, value) " +
                     "ON t.id = s.id " +
@@ -140,7 +123,6 @@ class TestDucklakeMerge : AbstractDucklakeIntegrationTest() {
             computeActual("CREATE TABLE test_schema.merge_delinst (id INTEGER, name VARCHAR)")
             computeActual("INSERT INTO test_schema.merge_delinst VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')")
 
-            // MERGE: delete matches, insert non-matches
             computeActual("MERGE INTO test_schema.merge_delinst t " +
                     "USING (VALUES (2, 'Bob_replaced'), (4, 'Diana')) AS s(id, name) " +
                     "ON t.id = s.id " +

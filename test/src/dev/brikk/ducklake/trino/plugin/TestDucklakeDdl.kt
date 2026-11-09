@@ -20,8 +20,8 @@ import org.junit.jupiter.api.parallel.Execution
 import org.junit.jupiter.api.parallel.ExecutionMode
 
 /**
- * The small catalog DDL operations (driving-list F1): `ALTER TABLE RENAME TO` (same-schema
- * and cross-schema), `ALTER SCHEMA RENAME TO`, and `COMMENT ON TABLE/COLUMN`. All are
+ * The small catalog DDL operations: `ALTER TABLE RENAME TO`, `ALTER SCHEMA RENAME TO`,
+ * and `COMMENT ON TABLE/COLUMN`. Supported mutations are
  * versioned-row catalog mutations — data files never move, so every rename test re-reads the
  * data afterwards to prove the table's path/id wiring survived. Comments are stored in
  * `ducklake_tag` / `ducklake_column_tag` with the same `comment` key upstream COMMENT ON
@@ -41,15 +41,12 @@ class TestDucklakeDdl : AbstractDucklakeIntegrationTest() {
 
             computeActual("ALTER TABLE test_schema.rename_src RENAME TO test_schema.rename_dst")
 
-            // Data must survive the rename (the table id and data path are unchanged).
             assertThat(computeActual("SELECT name FROM test_schema.rename_dst ORDER BY id").materializedRows
                     .map { it.getField(0) as String })
                     .containsExactly("alice", "bob")
-            // The old name is gone.
             assertThatThrownBy { computeActual("SELECT * FROM test_schema.rename_src") }
                     .hasMessageContaining("does not exist")
 
-            // The renamed table stays writable and deletable (id-keyed paths still resolve).
             computeActual("INSERT INTO test_schema.rename_dst VALUES (3, 'carol')")
             computeActual("DELETE FROM test_schema.rename_dst WHERE id = 1")
             assertThat(computeActual("SELECT name FROM test_schema.rename_dst ORDER BY id").materializedRows
@@ -108,7 +105,6 @@ class TestDucklakeDdl : AbstractDucklakeIntegrationTest() {
 
             computeActual("ALTER SCHEMA ddl_rename_me RENAME TO ddl_renamed")
 
-            // Tables follow the schema id, and their data stays readable and writable.
             assertThat(computeScalar("SELECT id FROM ddl_renamed.t")).isEqualTo(7)
             computeActual("INSERT INTO ddl_renamed.t VALUES (8)")
             assertThat(computeScalar("SELECT count(*) FROM ddl_renamed.t")).isEqualTo(2L)
@@ -147,7 +143,6 @@ class TestDucklakeDdl : AbstractDucklakeIntegrationTest() {
                     "WHERE catalog_name = 'ducklake' AND schema_name = 'test_schema' AND table_name = 'comment_table'"))
                     .isEqualTo("fact table")
 
-            // Comments are replaceable and clearable.
             computeActual("COMMENT ON TABLE test_schema.comment_table IS 'dimension table'")
             assertThat(computeScalar(
                     "SELECT comment FROM system.metadata.table_comments " +
@@ -178,7 +173,6 @@ class TestDucklakeDdl : AbstractDucklakeIntegrationTest() {
             assertThat(rows["name"]).isEqualTo("customer name")
             assertThat(rows["id"]).isEmpty()
 
-            // Clearing restores the empty comment.
             computeActual("COMMENT ON COLUMN test_schema.comment_col.name IS NULL")
             val cleared = computeActual("SHOW COLUMNS FROM test_schema.comment_col").materializedRows
                     .associate { it.getField(0) as String to it.getField(3) as String }

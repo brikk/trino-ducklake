@@ -18,18 +18,6 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.parallel.Execution
 import org.junit.jupiter.api.parallel.ExecutionMode
 
-/**
- * Trino DELETE coverage over the merge-on-read pattern: Trino writes Parquet delete files
- * and subsequent reads filter the deleted rows. Walks the predicate space (full table,
- * WHERE, single row, NULL filter, multi-file scans, partitioned tables, subquery
- * predicates), the data-shape space (single row, all primitive types, no-match), and the
- * lifecycle interactions (delete-then-insert, multi-delete on same table, snapshot
- * tracking, multi-table isolation, post-delete aggregation).
- *
- * UPDATE and MERGE are in [TestDucklakeUpdate] and [TestDucklakeMerge]
- * respectively — both flow through the same merge-on-read primitive but with their own
- * SQL surface and assertions.
- */
 @Execution(ExecutionMode.SAME_THREAD)
 open class TestDucklakeDelete : AbstractDucklakeIntegrationTest() {
     override fun isolatedCatalogName(): String {
@@ -61,12 +49,10 @@ open class TestDucklakeDelete : AbstractDucklakeIntegrationTest() {
 
             assertThat(computeScalar("SELECT count(*) FROM test_schema.delete_where")).isEqualTo(5L)
 
-            // Delete rows with amount > 150
             computeActual("DELETE FROM test_schema.delete_where WHERE amount > 150.0")
 
             assertThat(computeScalar("SELECT count(*) FROM test_schema.delete_where")).isEqualTo(3L)
 
-            // Verify correct rows remain
             val result = computeActual("SELECT id, name FROM test_schema.delete_where ORDER BY id")
             assertThat(result.rowCount).isEqualTo(3)
             assertThat(result.materializedRows[0].getField(1)).isEqualTo("Alice")
@@ -104,11 +90,9 @@ open class TestDucklakeDelete : AbstractDucklakeIntegrationTest() {
             computeActual("CREATE TABLE test_schema.delete_insert (id INTEGER, name VARCHAR)")
             computeActual("INSERT INTO test_schema.delete_insert VALUES (1, 'Alice'), (2, 'Bob')")
 
-            // Delete Bob
             computeActual("DELETE FROM test_schema.delete_insert WHERE id = 2")
             assertThat(computeScalar("SELECT count(*) FROM test_schema.delete_insert")).isEqualTo(1L)
 
-            // Insert new rows
             computeActual("INSERT INTO test_schema.delete_insert VALUES (3, 'Charlie'), (4, 'Diana')")
             assertThat(computeScalar("SELECT count(*) FROM test_schema.delete_insert")).isEqualTo(3L)
 
@@ -129,7 +113,6 @@ open class TestDucklakeDelete : AbstractDucklakeIntegrationTest() {
             computeActual("CREATE TABLE test_schema.delete_nulls (id INTEGER, name VARCHAR)")
             computeActual("INSERT INTO test_schema.delete_nulls VALUES (1, 'Alice'), (2, NULL), (3, 'Charlie'), (4, NULL)")
 
-            // Delete rows where name is null
             computeActual("DELETE FROM test_schema.delete_nulls WHERE name IS NULL")
 
             assertThat(computeScalar("SELECT count(*) FROM test_schema.delete_nulls")).isEqualTo(2L)
@@ -155,7 +138,6 @@ open class TestDucklakeDelete : AbstractDucklakeIntegrationTest() {
 
             assertThat(computeScalar("SELECT count(*) FROM test_schema.delete_multi")).isEqualTo(6L)
 
-            // Delete across multiple data files
             computeActual("DELETE FROM test_schema.delete_multi WHERE id IN (2, 4, 6)")
 
             assertThat(computeScalar("SELECT count(*) FROM test_schema.delete_multi")).isEqualTo(3L)
@@ -177,10 +159,8 @@ open class TestDucklakeDelete : AbstractDucklakeIntegrationTest() {
             computeActual("CREATE TABLE test_schema.delete_nomatch (id INTEGER, name VARCHAR)")
             computeActual("INSERT INTO test_schema.delete_nomatch VALUES (1, 'Alice'), (2, 'Bob')")
 
-            // Delete with condition that matches nothing
             computeActual("DELETE FROM test_schema.delete_nomatch WHERE id > 100")
 
-            // All rows should still be there
             assertThat(computeScalar("SELECT count(*) FROM test_schema.delete_nomatch")).isEqualTo(2L)
         }
         finally {
@@ -195,10 +175,8 @@ open class TestDucklakeDelete : AbstractDucklakeIntegrationTest() {
             computeActual("INSERT INTO test_schema.delete_agg VALUES " +
                     "('A', 10.0), ('A', 20.0), ('B', 30.0), ('B', 40.0), ('C', 50.0)")
 
-            // Delete all category B
             computeActual("DELETE FROM test_schema.delete_agg WHERE category = 'B'")
 
-            // Verify aggregation works correctly after delete
             assertThat(computeScalar("SELECT sum(amount) FROM test_schema.delete_agg")).isEqualTo(80.0)
 
             val result = computeActual(
@@ -220,18 +198,15 @@ open class TestDucklakeDelete : AbstractDucklakeIntegrationTest() {
             computeActual("CREATE TABLE test_schema.delete_snap (id INTEGER, name VARCHAR)")
             computeActual("INSERT INTO test_schema.delete_snap VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')")
 
-            // Get snapshot before delete
             val snapshotBefore = computeScalar(
                     "SELECT max(snapshot_id) FROM \"delete_snap\$snapshots\"") as Long
 
             computeActual("DELETE FROM test_schema.delete_snap WHERE id = 2")
 
-            // A new snapshot should have been created
             val snapshotAfter = computeScalar(
                     "SELECT max(snapshot_id) FROM \"delete_snap\$snapshots\"") as Long
             assertThat(snapshotAfter).isGreaterThan(snapshotBefore)
 
-            // Verify the snapshot change is tracked
             val changes = computeActual(
                     "SELECT changes_made FROM \"delete_snap\$snapshot_changes\" WHERE snapshot_id = " + snapshotAfter)
             assertThat(changes.rowCount).isGreaterThanOrEqualTo(1)
@@ -258,7 +233,6 @@ open class TestDucklakeDelete : AbstractDucklakeIntegrationTest() {
 
             assertThat(computeScalar("SELECT count(*) FROM test_schema.delete_types")).isEqualTo(2L)
 
-            // Verify all column types are intact after delete
             val result = computeActual("SELECT * FROM test_schema.delete_types ORDER BY id")
             assertThat(result.rowCount).isEqualTo(2)
             assertThat(result.materializedRows[0].getField(0)).isEqualTo(1)
@@ -279,11 +253,9 @@ open class TestDucklakeDelete : AbstractDucklakeIntegrationTest() {
             computeActual("INSERT INTO test_schema.multi_delete VALUES " +
                     "(1, 'active'), (2, 'inactive'), (3, 'active'), (4, 'pending'), (5, 'inactive')")
 
-            // First delete
             computeActual("DELETE FROM test_schema.multi_delete WHERE status = 'inactive'")
             assertThat(computeScalar("SELECT count(*) FROM test_schema.multi_delete")).isEqualTo(3L)
 
-            // Second delete
             computeActual("DELETE FROM test_schema.multi_delete WHERE status = 'pending'")
             assertThat(computeScalar("SELECT count(*) FROM test_schema.multi_delete")).isEqualTo(2L)
 
@@ -305,7 +277,6 @@ open class TestDucklakeDelete : AbstractDucklakeIntegrationTest() {
             computeActual("INSERT INTO test_schema.delete_part VALUES " +
                     "(1, 'US', 100.0), (2, 'EU', 200.0), (3, 'US', 150.0), (4, 'EU', 250.0), (5, 'APAC', 300.0)")
 
-            // Delete all EU rows
             computeActual("DELETE FROM test_schema.delete_part WHERE region = 'EU'")
 
             assertThat(computeScalar("SELECT count(*) FROM test_schema.delete_part")).isEqualTo(3L)
@@ -328,10 +299,8 @@ open class TestDucklakeDelete : AbstractDucklakeIntegrationTest() {
             computeActual("INSERT INTO test_schema.delete_subq VALUES " +
                     "(1, 'Alice', 90), (2, 'Bob', 60), (3, 'Charlie', 85), (4, 'Diana', 45), (5, 'Eve', 75)")
 
-            // Delete rows with below-average scores
             computeActual("DELETE FROM test_schema.delete_subq WHERE score < (SELECT avg(score) FROM test_schema.delete_subq)")
 
-            // Average of (90,60,85,45,75) = 71, so rows with score < 71 are deleted (Bob=60, Diana=45)
             assertThat(computeScalar("SELECT count(*) FROM test_schema.delete_subq")).isEqualTo(3L)
 
             val result = computeActual("SELECT name FROM test_schema.delete_subq ORDER BY name")
@@ -353,12 +322,9 @@ open class TestDucklakeDelete : AbstractDucklakeIntegrationTest() {
             computeActual("INSERT INTO test_schema.delete_t1 VALUES (1, 'Alice'), (2, 'Bob')")
             computeActual("INSERT INTO test_schema.delete_t2 VALUES (1, 'Charlie'), (2, 'Diana')")
 
-            // Delete from t1 only
             computeActual("DELETE FROM test_schema.delete_t1 WHERE id = 1")
 
-            // t1 should have 1 row
             assertThat(computeScalar("SELECT count(*) FROM test_schema.delete_t1")).isEqualTo(1L)
-            // t2 should be unaffected
             assertThat(computeScalar("SELECT count(*) FROM test_schema.delete_t2")).isEqualTo(2L)
         }
         finally {

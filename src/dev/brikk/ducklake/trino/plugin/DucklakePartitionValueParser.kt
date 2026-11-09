@@ -64,8 +64,6 @@ object DucklakePartitionValueParser
         }
     }
 
-    // DECIMAL and the temporal types, split out to keep parseIdentity's dispatch under the
-    // cyclomatic-complexity gate.
     private fun parseWideType(type: Type, value: String): Any =
         when (type) {
             is DecimalType -> parseDecimal(type, value)

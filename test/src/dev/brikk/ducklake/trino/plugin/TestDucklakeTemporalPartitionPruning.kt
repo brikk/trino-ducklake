@@ -78,7 +78,6 @@ class TestDucklakeTemporalPartitionPruning {
         val values = catalog.getFilePartitionValues(temporalPartitionedTable.tableId, snapshotId)
 
         assertThat(values).hasSize(3)
-        // Each file should have 2 partition values (year + month)
         for (fileValues in values.values) {
             assertThat(fileValues).hasSize(2)
         }
@@ -101,7 +100,6 @@ class TestDucklakeTemporalPartitionPruning {
             eventDateColumnId, "event_date", DateType.DATE, true
         )
 
-        // Apply filter with event_date = DATE '2023-06-10'
         val daysSinceEpoch = LocalDate.of(2023, 6, 10).toEpochDay()
         val constraint = Constraint(
             TupleDomain.withColumnDomains(
@@ -117,7 +115,6 @@ class TestDucklakeTemporalPartitionPruning {
         assertThat(result).isPresent
         val newHandle = result.get().handle as DucklakeTableHandle
 
-        // event_date has temporal partition transforms (year, month) -> should be enforced
         assertThat(newHandle.enforcedPredicate.isAll).isFalse()
         assertThat(newHandle.enforcedPredicate.domains.orElseThrow()).containsKey(eventDateColumn)
 
@@ -140,7 +137,6 @@ class TestDucklakeTemporalPartitionPruning {
             eventDateColumnId, "event_date", DateType.DATE, true
         )
 
-        // Predicate: event_date in January 2023 (days 19358..19388)
         val jan1 = LocalDate.of(2023, 1, 1).toEpochDay()
         val jan31 = LocalDate.of(2023, 1, 31).toEpochDay()
 
@@ -160,7 +156,6 @@ class TestDucklakeTemporalPartitionPruning {
             )
         )
 
-        // Get all splits (no predicate)
         val allSplits = getSplits(
             splitManager, DucklakeTableHandle(
                 "test_schema", "temporal_partitioned_table",
@@ -168,10 +163,8 @@ class TestDucklakeTemporalPartitionPruning {
             )
         )
 
-        // Get pruned splits (only Jan 2023)
         val prunedSplits = getSplits(splitManager, tableHandle)
 
-        // Should have 3 files total (Jan 2023, Jun 2023, Mar 2024) but only 1 after pruning
         assertThat(allSplits.size).isGreaterThan(prunedSplits.size)
         assertThat(prunedSplits).isNotEmpty
     }
@@ -299,7 +292,6 @@ class TestDucklakeTemporalPartitionPruning {
             eventDateColumnId, "event_date", DateType.DATE, true
         )
 
-        // Predicate: event_date in all of 2024
         val year2024Start = LocalDate.of(2024, 1, 1).toEpochDay()
         val year2024End = LocalDate.of(2024, 12, 31).toEpochDay()
 
@@ -328,7 +320,6 @@ class TestDucklakeTemporalPartitionPruning {
 
         val prunedSplits = getSplits(splitManager, tableHandle)
 
-        // 2023 files should be pruned, only 2024 files remain
         assertThat(allSplits.size).isGreaterThan(prunedSplits.size)
         assertThat(prunedSplits).isNotEmpty
     }
@@ -350,7 +341,6 @@ class TestDucklakeTemporalPartitionPruning {
         val values = catalog.getFilePartitionValues(dailyPartitionedTable.tableId, snapshotId)
 
         assertThat(values).hasSize(4)
-        // Each file should have 3 partition values (year + month + day)
         for (fileValues in values.values) {
             assertThat(fileValues).hasSize(3)
         }
@@ -370,7 +360,6 @@ class TestDucklakeTemporalPartitionPruning {
             eventDateColumnId, "event_date", DateType.DATE, true
         )
 
-        // Predicate: event_date = '2023-06-15' (should match only that day's file)
         val june15 = LocalDate.of(2023, 6, 15).toEpochDay()
 
         val tableHandle = DucklakeTableHandle(
@@ -393,7 +382,6 @@ class TestDucklakeTemporalPartitionPruning {
 
         val prunedSplits = getSplits(splitManager, tableHandle)
 
-        // 4 files total (Jun 15, Jun 20, Jul 1, Jan 10 2024), only Jun 15 should survive
         assertThat(allSplits).hasSize(4)
         assertThat(prunedSplits).hasSize(1)
     }
@@ -412,7 +400,6 @@ class TestDucklakeTemporalPartitionPruning {
             eventDateColumnId, "event_date", DateType.DATE, true
         )
 
-        // Predicate: event_date between Jun 14 and Jun 16 (should match only Jun 15, not Jun 20)
         val june14 = LocalDate.of(2023, 6, 14).toEpochDay()
         val june16 = LocalDate.of(2023, 6, 16).toEpochDay()
 
@@ -434,7 +421,6 @@ class TestDucklakeTemporalPartitionPruning {
 
         val prunedSplits = getSplits(splitManager, tableHandle)
 
-        // Jun 20, Jul 1, and Jan 2024 should all be pruned. Only Jun 15 survives.
         assertThat(prunedSplits).hasSize(1)
     }
 
@@ -452,7 +438,6 @@ class TestDucklakeTemporalPartitionPruning {
             eventDateColumnId, "event_date", DateType.DATE, true
         )
 
-        // Predicate: all of June 2023 (should match Jun 15 and Jun 20 but not Jul 1 or Jan 2024)
         val june1 = LocalDate.of(2023, 6, 1).toEpochDay()
         val june30 = LocalDate.of(2023, 6, 30).toEpochDay()
 
@@ -474,14 +459,8 @@ class TestDucklakeTemporalPartitionPruning {
 
         val prunedSplits = getSplits(splitManager, tableHandle)
 
-        // Jun 15 and Jun 20 survive; Jul 1 and Jan 2024 are pruned
         assertThat(prunedSplits).hasSize(2)
     }
-
-    // --- TIMESTAMP_TZ partition pruning tests ---
-    // These verify that temporal partition pruning works with TIMESTAMP WITH TIME ZONE columns,
-    // specifically with exclusive Range bounds that Trino does NOT normalize to inclusive
-    // (unlike DATE which is discrete and gets normalized).
 
     @Test
     fun testTimestampTzPartitionSpecHasThreeTransforms() {
@@ -499,7 +478,6 @@ class TestDucklakeTemporalPartitionPruning {
     fun testTimestampTzFilePartitionValuesPresent() {
         val values = catalog.getFilePartitionValues(timestampPartitionedTable.tableId, snapshotId)
 
-        // 3 files: March 7, March 8, June 15
         assertThat(values).hasSize(3)
         for (fileValues in values.values) {
             assertThat(fileValues).hasSize(3) // year + month + day
@@ -549,10 +527,8 @@ class TestDucklakeTemporalPartitionPruning {
         assertThat(result).isPresent
         val newHandle = result.get().handle as DucklakeTableHandle
 
-        // TIMESTAMP_TZ with temporal transforms should be partially enforced
         assertThat(newHandle.enforcedPredicate.isAll).isFalse()
         assertThat(newHandle.enforcedPredicate.domains.orElseThrow()).containsKey(insertedAtColumn)
-        // Partially enforced: engine still needs to verify
         assertThat(newHandle.unenforcedPredicate.isAll).isFalse()
     }
 
@@ -604,7 +580,6 @@ class TestDucklakeTemporalPartitionPruning {
 
         val prunedSplits = getSplits(splitManager, tableHandle)
 
-        // Three files total: partition metadata alone cannot exclude any without writer provenance.
         assertThat(allSplits).hasSize(3)
         // No per-file writer-zone provenance: UTC boundaries cannot exclude local partitions.
         assertThat(prunedSplits).hasSameSizeAs(allSplits)

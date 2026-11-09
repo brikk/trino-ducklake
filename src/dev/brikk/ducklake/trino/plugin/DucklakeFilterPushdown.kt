@@ -47,15 +47,12 @@ internal class DucklakeFilterPushdown(private val catalog: DucklakeCatalog)
         val newEnforced: TupleDomain<DucklakeColumnHandle>
         val newUnenforced: TupleDomain<DucklakeColumnHandle>
         if (summary.isAll) {
-            // No TupleDomain pushdown to do — but we still need to check the
-            // expression below for function-shape predicates.
             newEnforced = TupleDomain.all()
             newUnenforced = TupleDomain.all()
         }
         else {
             val newPredicate: TupleDomain<DucklakeColumnHandle> = extractDucklakePredicate(summary)
 
-            // Classify predicates as enforced (partition-prunable) or unenforced (best-effort)
             val partitionSpecs: List<DucklakePartitionSpec> = catalog.getPartitionSpecs(
                     table.tableId, table.snapshotId)
 
@@ -103,8 +100,6 @@ internal class DucklakeFilterPushdown(private val catalog: DucklakeCatalog)
                 combinedUnenforced,
                 combinedEnforced)
 
-        // Fully enforced predicates are omitted from remaining filter.
-        // Partially enforced predicates (e.g. temporal transforms) remain so engine verifies exact semantics.
         val remainingFilter: TupleDomain<ColumnHandle> = newUnenforced.transformKeys(ColumnHandle::class.java::cast)
 
         return Optional.of(ConstraintApplicationResult(

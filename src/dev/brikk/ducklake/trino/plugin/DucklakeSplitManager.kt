@@ -80,7 +80,6 @@ class DucklakeSplitManager @Inject constructor(
 
         log.debug("Getting splits for table %s at snapshot %d", tableHandle.tableName, tableHandle.snapshotId)
 
-        // Get all data files for this table at the snapshot
         val dataFiles: List<DucklakeDataFile> = catalog.getDataFiles(
                 tableHandle.tableId,
                 tableHandle.snapshotId)
@@ -196,8 +195,6 @@ class DucklakeSplitManager @Inject constructor(
         else
             emptyMap()
 
-        // Group by dataFileId to merge multiple delete files per data file
-        // (a data file can accumulate multiple delete files across snapshots)
         val groupedFiles: Map<Long, List<DucklakeDataFile>> = prunedFiles.groupBy { it.dataFileId }
         return groupedFiles.values
                 .map { group ->
@@ -220,7 +217,7 @@ class DucklakeSplitManager @Inject constructor(
     }
 
     /**
-     * Splits for table-function execution. The only remaining table function (the change feed) is
+     * Splits for table-function execution. The change feed is
      * always planned as a table scan via [DucklakeMetadata.applyTableFunction], so this path is
      * never taken; fail clearly if it ever is.
      */
@@ -376,9 +373,9 @@ class DucklakeSplitManager @Inject constructor(
      * or an IN-list). `$path` is not a partition column, so its domain lands in
      * [DucklakeTableHandle.unenforcedPredicate]; we evaluate each file's RESOLVED path (the same
      * value the `$path` virtual exposes) against that domain. Purely an optimization — the engine
-     * re-applies the predicate above the scan (it's unenforced), so a missed file is still correct.
+     * re-applies the predicate above the scan (it's unenforced), so retaining an extra file is safe.
      *
-     * Only parquet/duckdb data files are pruned here; inlined splits (whose `$path` is NULL) are
+     * Only data files are pruned here; inlined splits (whose `$path` is NULL) are
      * left to the engine's filter — they are small and few, so pruning them isn't worth the code.
      */
     private fun pruneByPath(
@@ -448,7 +445,6 @@ class DucklakeSplitManager @Inject constructor(
                     return@removeIf false // foreign/retired spec — can't map key indices, don't prune
                 }
                 val values: List<DucklakeFilePartitionValue> = filePartValues.getOrDefault(fileId, listOf())
-                // A file is pruned if ANY partition transform definitively excludes it
                 mappings.any { mapping -> transformExcludesFile(column, domain, mapping, values) }
             }
 
@@ -496,8 +492,7 @@ class DucklakeSplitManager @Inject constructor(
         // NULL to NULL), so a domain that excludes NULL definitively excludes the
         // file. This is the ENFORCED predicate — the engine adds no residual
         // filter — so merely "not pruning" would leak the file's NULL rows into
-        // `col = 'x'` results (caught by TestDucklakePartitionedWriteFormats'
-        // NULL-region INSERT). A null-allowing domain keeps the file.
+        // `col = 'x'` results. A null-allowing domain keeps the file.
         val partValue: String = partEntry.partitionValue ?: return !domain.isNullAllowed
         return !partitionValueMatchesDomain(column.columnType, partValue, domain, mapping.transform, mapping.arity)
     }
@@ -631,7 +626,7 @@ class DucklakeSplitManager @Inject constructor(
 
     /**
      * Defensive gate for a partial DELETE file in a format we cannot snapshot-filter. Partial DATA
-     * files and partial PARQUET + PUFFIN delete files are all filtered on read now (via
+      * files and partial PARQUET + PUFFIN delete files are filtered on read (via
      * [DucklakeSplit.snapshotFilterMax] / [DucklakeSplit.deleteFileSnapshotFilters]); this only
      * fires for an unknown delete-file format (which [validateDeleteFileFormats] also rejects). See
      * dev-docs/DESIGN-maintenance.md § 6.
@@ -680,12 +675,7 @@ class DucklakeSplitManager @Inject constructor(
         private val log: Logger = Logger.get(DucklakeSplitManager::class.java)
 
         /**
-         * Fail-loud guard (§7 of PLAN-duckdb-parity-moveout.md): this connector reads only parquet
-         * data files. A data file whose `file_format` (already decoded by `CatalogFileFormat.fromStored`
-         * in the catalog layer) is not parquet references the removed DuckDB/vortex/lance formats.
-         * Throw a named [NOT_SUPPORTED] error naming the table and the format found, rather than
-         * skipping the file — under-returning rows is the silent-wrong failure mode this repo's rules
-         * exist to prevent.
+         * Reject unsupported data-file formats rather than skip files and silently under-return rows.
          */
         private fun validateDataFileFormats(dataFiles: List<DucklakeDataFile>, tableHandle: DucklakeTableHandle) {
             for (dataFile in dataFiles) {
@@ -807,8 +797,7 @@ class DucklakeSplitManager @Inject constructor(
             // mapping its values through the active spec would constant-fill the wrong
             // column — so decline to fill rather than surface corrupt data. The page source
             // then reads the column from the file body (or yields NULL). A file with no
-            // partition_id (unpartitioned, or fixtures that don't record it) keeps the prior
-            // behavior of trusting the active spec — those carry no partition values anyway.
+            // partition_id trusts the active spec — unpartitioned files carry no partition values.
             if (filePartitionId != null && filePartitionId != spec.partitionId) {
                 return mapOf()
             }

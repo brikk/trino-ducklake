@@ -49,8 +49,6 @@ object TrinoCorpusDialect {
 
     @Suppress("ReturnCount")
     fun gate(duckdbSql: String): Gate {
-        // Statement-shape check, ORDER BY ALL handling, and the explicit-residual skips (which the
-        // transpiler can't self-detect) are done up front; a non-null Skip short-circuits here.
         val (pre, preSkip) = preprocess(duckdbSql)
         if (preSkip != null) return preSkip
         checkNotNull(pre)

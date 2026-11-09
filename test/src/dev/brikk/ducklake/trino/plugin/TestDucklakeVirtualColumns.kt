@@ -19,17 +19,15 @@ import org.junit.jupiter.api.parallel.Execution
 import org.junit.jupiter.api.parallel.ExecutionMode
 
 /**
- * Cross-engine tests for the Day-1 virtual (hidden) columns `$path` and `$snapshot_id`.
+ * Tests for the virtual (hidden) columns.
  *
  * Covers: hidden-ness (excluded from SELECT * / DESCRIBE, queryable by name), `$path`
  * resolution (ends in .parquet, one distinct value per data file), `$snapshot_id` equals
  * the writing snapshot, inlined-data behaviour ($path NULL, $snapshot_id non-null), the
  * mixed inlined+parquet table, and use of the virtuals in WHERE / GROUP BY.
  *
- * Also guards the pre-existing sentinel path: the virtuals must compose with merge-on-read
- * delete filtering (deleted_rows_table) and a DELETE must still remove the right rows now
- * that getColumnHandles exposes virtual handles — i.e. the MERGE row-id channel (-100) is
- * untouched. See DESIGN-virtual-columns.md.
+ * Virtuals must compose with merge-on-read delete filtering without confusing the MERGE
+ * row-id channel (-100) with a queryable virtual. See dev-docs/DESIGN-virtual-columns.md.
  *
  * SAME_THREAD: the suite's write tests (CTAS, DELETE) commit to the shared catalog; running
  * them concurrently would race the catalog's snapshot retry and exhaust it.
@@ -40,11 +38,8 @@ class TestDucklakeVirtualColumns : AbstractDucklakeIntegrationTest() {
         return "integration-virtual-columns"
     }
 
-    // ==================== Hidden-ness ====================
-
     @Test
     fun testSelectStarExcludesVirtuals() {
-        // SELECT * returns only the 5 user columns — hidden virtuals must not leak in.
         assertThat(computeActual("SELECT * FROM simple_table").types).hasSize(5)
     }
 
@@ -56,8 +51,6 @@ class TestDucklakeVirtualColumns : AbstractDucklakeIntegrationTest() {
         assertThat(columns).doesNotContain(PATH_NAME, SNAPSHOT_NAME, FRN_NAME, ROW_ID_NAME, FILE_SIZE_NAME)
     }
 
-    // ==================== $path ====================
-
     @Test
     fun testPathEndsWithParquet() {
         val path = computeScalar("SELECT $PATH FROM simple_table LIMIT 1") as String
@@ -66,7 +59,6 @@ class TestDucklakeVirtualColumns : AbstractDucklakeIntegrationTest() {
 
     @Test
     fun testPathIsConstantPerFile() {
-        // simple_table is a single data file → exactly one distinct path.
         assertThat(computeScalar("SELECT count(DISTINCT $PATH) FROM simple_table") as Long)
                 .isEqualTo(1L)
     }
@@ -82,12 +74,8 @@ class TestDucklakeVirtualColumns : AbstractDucklakeIntegrationTest() {
                 .isEqualTo(fileCount)
     }
 
-    // ==================== $file_size_bytes ====================
-
     @Test
     fun testFileSizeBytesMatchesFilesMetadata() {
-        // Constant per file, positive, and equal to the $files metadata's file_size_bytes.
-        // (simple_table is a single file, so DISTINCT yields one value.)
         val fromVirtual = computeScalar("SELECT DISTINCT $FILE_SIZE FROM simple_table") as Long
         val fromMetadata = computeScalar("SELECT file_size_bytes FROM \"simple_table\$files\" LIMIT 1") as Long
         assertThat(fromVirtual).isPositive().isEqualTo(fromMetadata)
@@ -97,8 +85,6 @@ class TestDucklakeVirtualColumns : AbstractDucklakeIntegrationTest() {
     fun testFileSizeBytesNullOnInlinedData() {
         assertThat(computeScalar("SELECT count(*) FROM inlined_table WHERE $FILE_SIZE IS NULL") as Long).isEqualTo(3L)
     }
-
-    // ==================== $snapshot_id ====================
 
     @Test
     fun testSnapshotIdIsTheTablesOwnSnapshot() {
@@ -121,11 +107,8 @@ class TestDucklakeVirtualColumns : AbstractDucklakeIntegrationTest() {
         }
     }
 
-    // ==================== Inlined data ====================
-
     @Test
     fun testInlinedRowsHaveNullPathAndNonNullSnapshot() {
-        // inlined_table has 3 rows stored in the metadata catalog (no backing file).
         assertThat(computeScalar("SELECT count(*) FROM inlined_table WHERE $PATH IS NULL") as Long)
                 .isEqualTo(3L)
         assertThat(computeScalar("SELECT count(*) FROM inlined_table WHERE $SNAPSHOT IS NOT NULL") as Long)
@@ -134,30 +117,23 @@ class TestDucklakeVirtualColumns : AbstractDucklakeIntegrationTest() {
 
     @Test
     fun testMixedInlineTableSplitsPathByStorage() {
-        // mixed_inline_table = 2 inlined rows (NULL $path) + 5 parquet rows (non-null $path).
         assertThat(computeScalar("SELECT count(*) FROM mixed_inline_table WHERE $PATH IS NULL") as Long)
                 .isEqualTo(2L)
         assertThat(computeScalar("SELECT count(*) FROM mixed_inline_table WHERE $PATH IS NOT NULL") as Long)
                 .isEqualTo(5L)
     }
 
-    // ==================== Planner integration: WHERE / GROUP BY ====================
-
     @Test
     fun testVirtualColumnsUsableInWhereAndGroupBy() {
         assertThat(computeScalar("SELECT count(*) FROM simple_table WHERE $PATH IS NOT NULL") as Long)
                 .isEqualTo(5L)
-        // GROUP BY $path yields one group per data file.
         val fileCount = computeScalar("SELECT count(*) FROM \"multi_file_table\$files\"") as Long
         assertThat(computeActual("SELECT $PATH, count(*) FROM multi_file_table GROUP BY $PATH").materializedRows)
                 .hasSize(fileCount.toInt())
     }
 
-    // ==================== $file_row_number / $row_id (row-varying) ====================
-
     @Test
     fun testFileRowNumberIsZeroBasedAndDense() {
-        // simple_table is a single data file with 5 rows and no deletes → file row numbers 0..4.
         val frns = computeActual("SELECT $FRN FROM simple_table ORDER BY $FRN").materializedRows
                 .map { (it.getField(0) as Number).toLong() }
         assertThat(frns).containsExactly(0L, 1L, 2L, 3L, 4L)
@@ -171,7 +147,6 @@ class TestDucklakeVirtualColumns : AbstractDucklakeIntegrationTest() {
                 "SELECT count(*) FROM simple_table " +
                 "WHERE $ROW_ID <> (SELECT row_id_start FROM \"simple_table\$files\" LIMIT 1) + $FRN") as Long
         assertThat(violations).isEqualTo(0L)
-        // Dense + unique across the table.
         assertThat(computeScalar("SELECT count(DISTINCT $ROW_ID) FROM simple_table") as Long).isEqualTo(5L)
     }
 
@@ -209,8 +184,6 @@ class TestDucklakeVirtualColumns : AbstractDucklakeIntegrationTest() {
         assertThat(violations).isEqualTo(0L)
     }
 
-    // ==================== $path predicate pushdown (split pruning) ====================
-
     @Test
     fun testPathEqualityReturnsOnlyThatFilesRows() {
         // simple_table is a single file → equality on its path returns all rows; a non-matching
@@ -234,14 +207,8 @@ class TestDucklakeVirtualColumns : AbstractDucklakeIntegrationTest() {
         assertThat(perFileTotal).isEqualTo(computeScalar("SELECT count(*) FROM multi_file_table") as Long)
     }
 
-    // ==================== Sentinel-path regression (merge row-id channel) ====================
-
     @Test
     fun testVirtualsComposeWithMergeOnReadDeletes() {
-        // deleted_rows_table: 3 of 6 rows removed via merge-on-read delete files. The virtual
-        // columns are injected by a wrapper around the delete-filtered page source, so they
-        // must reflect the LIVE rows only — exercising RowIdInjectingPageSource /
-        // DeleteRowFilterTransform alongside the new injection.
         assertThat(computeScalar("SELECT count(*) FROM deleted_rows_table") as Long).isEqualTo(3L)
         assertThat(computeScalar("SELECT count(*) FROM deleted_rows_table WHERE $PATH IS NOT NULL") as Long)
                 .isEqualTo(3L)
@@ -249,8 +216,6 @@ class TestDucklakeVirtualColumns : AbstractDucklakeIntegrationTest() {
 
     @Test
     fun testDeleteStillRemovesCorrectRowsWithVirtualsExposed() {
-        // Proves the MERGE row-id sentinel (-100) channel is intact now that getColumnHandles
-        // also returns virtual handles: a normal DELETE must still target the right rows.
         val table = "vc_delete_probe"
         try {
             computeActual("CREATE TABLE $table AS SELECT * FROM (VALUES 1, 2, 3, 4) AS t(id)")

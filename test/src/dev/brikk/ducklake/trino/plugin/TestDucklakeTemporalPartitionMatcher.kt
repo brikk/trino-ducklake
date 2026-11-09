@@ -320,7 +320,6 @@ class TestDucklakeTemporalPartitionMatcher {
             ValueSet.ofRanges(Range.range(TIMESTAMP_TZ_MICROS, low, true, high, false)),
             false)
 
-        // Day 7 should match
         assertThat(DucklakeTemporalPartitionMatcher.partitionValueMatchesDomain(
             TIMESTAMP_TZ_MICROS, "7", domain, DucklakePartitionTransform.DAY, CALENDAR, false))
             .isTrue()
@@ -353,7 +352,6 @@ class TestDucklakeTemporalPartitionMatcher {
             ValueSet.ofRanges(Range.range(TIMESTAMP_TZ_MICROS, low, true, high, false)),
             false)
 
-        // Epoch day 7 should match
         assertThat(DucklakeTemporalPartitionMatcher.partitionValueMatchesDomain(
             TIMESTAMP_TZ_MICROS, epochDay7.toString(), domain, DucklakePartitionTransform.DAY, EPOCH, false))
             .isTrue()
@@ -376,7 +374,6 @@ class TestDucklakeTemporalPartitionMatcher {
             ValueSet.ofRanges(Range.range(TIMESTAMP_TZ_MICROS, low, true, high, false)),
             false)
 
-        // Day 7 should match
         assertThat(DucklakeTemporalPartitionMatcher.partitionValueMatchesDomain(
             TIMESTAMP_TZ_MICROS, "7", domain, DucklakePartitionTransform.DAY, CALENDAR, false))
             .isTrue()
@@ -399,7 +396,6 @@ class TestDucklakeTemporalPartitionMatcher {
             ValueSet.ofRanges(Range.range(TIMESTAMP_MICROS, lowMicros, true, highMicros, false)),
             false)
 
-        // Day 7 matches
         assertThat(DucklakeTemporalPartitionMatcher.partitionValueMatchesDomain(
             TIMESTAMP_MICROS, "7", domain, DucklakePartitionTransform.DAY, CALENDAR, false))
             .isTrue()
@@ -458,7 +454,6 @@ class TestDucklakeTemporalPartitionMatcher {
             ValueSet.ofRanges(Range.range(TIMESTAMP_TZ_MICROS, low, true, high, false)),
             false)
 
-        // Hour 14 matches
         assertThat(DucklakeTemporalPartitionMatcher.partitionValueMatchesDomain(
             TIMESTAMP_TZ_MICROS, "14", domain, DucklakePartitionTransform.HOUR, CALENDAR, false))
             .isTrue()
@@ -481,7 +476,6 @@ class TestDucklakeTemporalPartitionMatcher {
             ValueSet.ofRanges(Range.range(TIMESTAMP_TZ_MICROS, low, true, high, false)),
             false)
 
-        // Month 3 (March) matches
         assertThat(DucklakeTemporalPartitionMatcher.partitionValueMatchesDomain(
             TIMESTAMP_TZ_MICROS, "3", domain, DucklakePartitionTransform.MONTH, CALENDAR, false))
             .isTrue()
@@ -504,7 +498,6 @@ class TestDucklakeTemporalPartitionMatcher {
             ValueSet.ofRanges(Range.range(TIMESTAMP_TZ_MICROS, low, true, high, true)),
             false)
 
-        // Day 7 matches
         assertThat(DucklakeTemporalPartitionMatcher.partitionValueMatchesDomain(
             TIMESTAMP_TZ_MICROS, "7", domain, DucklakePartitionTransform.DAY, CALENDAR, false))
             .isTrue()
@@ -531,7 +524,6 @@ class TestDucklakeTemporalPartitionMatcher {
             .isFalse()
     }
 
-    // ==================== CALENDAR non-monotonic / open-range pruning (B4) ====================
     // Under CALENDAR encoding the sub-year transforms (MONTH/DAY/HOUR) are only monotonic
     // within one parent period. An open-ended or multi-period datetime range wraps the
     // transformed value, so range pruning must be skipped to avoid silently dropping files.
@@ -539,8 +531,8 @@ class TestDucklakeTemporalPartitionMatcher {
     @Test
     fun testCalendarHourUnboundedLowAtMidnightDoesNotPruneAll() {
         // `ts < 2026-03-08 00:00:00` with HOUR transform: the exclusive-high boundary
-        // adjustment decremented the transformed hour to -1, so every partition hour
-        // (0..23) was wrongly pruned. Hour 10 of an earlier day satisfies the predicate.
+        // adjustment to -1 would exclude every partition hour (0..23), even though
+        // hour 10 of an earlier day satisfies the predicate.
         val domain = Domain.create(
             ValueSet.ofRanges(Range.lessThan(TIMESTAMP_MICROS, tsMicros(2026, 3, 8, 0))),
             false)
@@ -551,8 +543,8 @@ class TestDucklakeTemporalPartitionMatcher {
 
     @Test
     fun testCalendarDayUnboundedLowAtMonthStartDoesNotPruneAll() {
-        // `ts < 2026-03-01 00:00:00` with DAY transform: exclusive high decremented the
-        // transformed day to 0, so every partition day (1..31) was wrongly pruned.
+        // `ts < 2026-03-01 00:00:00` with DAY transform: decrementing the transformed
+        // day to 0 would wrongly exclude every partition day (1..31).
         val domain = Domain.create(
             ValueSet.ofRanges(Range.lessThan(TIMESTAMP_MICROS, tsMicros(2026, 3, 1, 0))),
             false)

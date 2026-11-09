@@ -32,7 +32,6 @@ class TestDucklakeViewDialectFiltering : AbstractTestQueryFramework() {
 
     @Test
     fun testDuckdbViewsHidden() {
-        // All views in test catalog are DuckDB dialect — should be hidden
         val result = computeActual("SELECT table_name FROM information_schema.views WHERE table_schema = 'test_schema'")
         val viewNames: List<String> = result.materializedRows.stream()
                 .map { row -> row.getField(0).toString() }

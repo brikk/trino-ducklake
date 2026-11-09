@@ -40,8 +40,6 @@ import org.junit.jupiter.api.Test
 class TestDucklakeTypeConverter {
     private val converter = DucklakeTypeConverter(TESTING_TYPE_MANAGER)
 
-    // ==================== Primitives ====================
-
     @Test
     fun testPrimitiveTypes() {
         assertThat(converter.toTrinoType("boolean")).isEqualTo(BooleanType.BOOLEAN)
@@ -59,9 +57,6 @@ class TestDucklakeTypeConverter {
 
     @Test
     fun testUnsignedIntegersWiden() {
-        // Documents the read-side widening; write-side range validation lives in
-        // DucklakeUnsignedRangeChecker (covered by TestDucklakeUnsignedRangeChecker
-        // and TestDucklakeCrossEngineWriteGuards).
         assertThat(converter.toTrinoType("uint8")).isEqualTo(SmallintType.SMALLINT)
         assertThat(converter.toTrinoType("uint16")).isEqualTo(IntegerType.INTEGER)
         assertThat(converter.toTrinoType("uint32")).isEqualTo(BigintType.BIGINT)
@@ -82,21 +77,14 @@ class TestDucklakeTypeConverter {
         assertThat(converter.toTrinoType("BOOLEAN")).isEqualTo(BooleanType.BOOLEAN)
     }
 
-    // ==================== Decimals ====================
-
     @Test
     fun testDecimal() {
         assertThat(converter.toTrinoType("decimal(18,4)")).isEqualTo(DecimalType.createDecimalType(18, 4))
-        // Tolerant of whitespace around the comma.
         assertThat(converter.toTrinoType("decimal(38, 0)")).isEqualTo(DecimalType.createDecimalType(38, 0))
     }
 
-    // ==================== Geometry — linestring_z rename (DuckLake 1.0) ====================
-
     @Test
     fun testLinestringZUnderscoreIsVarbinary() {
-        // DuckLake 1.0 renamed "linestring z" to "linestring_z".
-        // Upstream now writes the underscore form; we must accept it.
         assertThat(converter.toTrinoType("linestring_z")).isEqualTo(VarbinaryType.VARBINARY)
     }
 
@@ -117,8 +105,6 @@ class TestDucklakeTypeConverter {
         }
     }
 
-    // ==================== Nested ====================
-
     @Test
     fun testListOfInt() {
         assertThat(converter.toTrinoType("list<int32>")).isEqualTo(ArrayType(IntegerType.INTEGER))
@@ -133,8 +119,6 @@ class TestDucklakeTypeConverter {
         assertThat(rowType.fields[1].name).contains("b")
         assertThat(rowType.fields[1].type).isEqualTo(VarcharType.VARCHAR)
     }
-
-    // ==================== 128-bit integers (int128 / uint128) ====================
 
     @Test
     fun testInt128MapsToDecimal38() {
@@ -151,12 +135,9 @@ class TestDucklakeTypeConverter {
         assertThat(converter.toTrinoType("uint128")).isEqualTo(VarcharType.VARCHAR)
     }
 
-    // ==================== JSON (native Trino JsonType) ====================
-
     @Test
     fun testJsonMapsToNativeJsonType() {
-        // DuckLake "json" maps to Trino's native JsonType (io.trino.type.JsonType), not the old
-        // VARCHAR degradation. Resolved via the TypeManager since JsonType is not on the SPI.
+        // Resolved via the TypeManager since JsonType is not on the SPI.
         assertThat(converter.toTrinoType("json")).isEqualTo(io.trino.type.JsonType.JSON)
     }
 
@@ -164,8 +145,6 @@ class TestDucklakeTypeConverter {
     fun testJsonTypeMapsBackToJson() {
         assertThat(converter.toDucklakeType(io.trino.type.JsonType.JSON)).isEqualTo("json")
     }
-
-    // ==================== Write-path precision (toDucklakeType) ====================
 
     @Test
     fun testTimestampWriteMapsSupportedPrecisions() {
@@ -208,16 +187,13 @@ class TestDucklakeTypeConverter {
     @Test
     fun testTimestampTzWriteIsMicros() {
         // DuckLake timestamptz is micros-only; every declared precision maps to the single
-        // micros storage type (the precision widens to 6 on read). The CTAS short-block
-        // mismatch this once caused is handled in beginCreateTable, not by rejecting the type.
+        // micros storage type (the precision widens to 6 on read).
         for (precision in intArrayOf(0, 3, 6, 9)) {
             assertThat(converter.toDucklakeType(TimestampWithTimeZoneType.createTimestampWithTimeZoneType(precision)))
                     .`as`("tstz precision %d", precision)
                     .isEqualTo("timestamptz")
         }
     }
-
-    // ==================== Unknown type still errors ====================
 
     @Test
     fun testUnknownTypeThrows() {

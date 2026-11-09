@@ -23,7 +23,7 @@ import io.trino.spi.connector.ConnectorSplit
  * data files to read, which positions were deleted at which snapshot, and the update-pairing set)
  * in one place — the page source — so this split carries only the table id for logging; every
  * other input rides on the [ChangeFeedTableHandle] the engine hands to the page source alongside
- * it. v1 is single-split (unpartitioned read); parallelism is a possible later enhancement.
+ * it.
  */
 @JvmRecord
 data class ChangeFeedSplit @JsonCreator constructor(

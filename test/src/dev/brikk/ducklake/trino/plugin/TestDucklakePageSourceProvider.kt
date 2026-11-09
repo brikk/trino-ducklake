@@ -262,7 +262,6 @@ class TestDucklakePageSourceProvider {
 
         val split = getSplits(tableHandle).first()
 
-        // Dynamic filter that excludes all data (price = 999999.0, no such value)
         val exclusiveFilter = createDynamicFilter(
             priceColumn, Domain.singleValue(DOUBLE, 999999.0))
 
@@ -276,7 +275,6 @@ class TestDucklakePageSourceProvider {
                 }
             }
         }
-        // The fileStatisticsDomain intersected with the dynamic filter should yield NONE
         assertThat(rows).isEqualTo(0)
     }
 
@@ -291,7 +289,6 @@ class TestDucklakePageSourceProvider {
 
         val split = getSplits(tableHandle).first()
 
-        // Dynamic filter with a wide range that includes all data
         val wideFilter = createDynamicFilter(
             priceColumn, Domain.create(ValueSet.ofRanges(
                 Range.range(DOUBLE, 0.0, true, 100.0, true)), false))
@@ -318,15 +315,12 @@ class TestDucklakePageSourceProvider {
         val table = getTable("test_schema", "simple_table", snapshotId)
         val tableHandle = DucklakeTableHandle("test_schema", "simple_table", table.tableId, snapshotId)
 
-        // Request a column that does not exist in the Parquet file
         val missingColumn = DucklakeColumnHandle(-1, "new_column", VARCHAR, true)
         val split = getSplits(tableHandle).first()
 
-        // Should return all rows, with null values for the missing column
         val rows = countRows(tableHandle, split, missingColumn)
         assertThat(rows).isEqualTo(split.recordCount)
 
-        // Verify all values are null
         pageSourceProvider.createPageSource(
             null, SESSION, split, tableHandle, Optional.empty(), ImmutableList.of<ColumnHandle>(missingColumn), DynamicFilter.EMPTY).use { pageSource ->
             while (!pageSource.isFinished) {
@@ -353,7 +347,6 @@ class TestDucklakePageSourceProvider {
 
         val split = getSplits(tableHandle).first()
 
-        // Read both existing and missing columns together
         val mixedColumns: List<ColumnHandle> = ImmutableList.of(priceColumn, missingColumn)
         var rows = 0L
         pageSourceProvider.createPageSource(
@@ -362,9 +355,7 @@ class TestDucklakePageSourceProvider {
                 val page = pageSource.nextSourcePage
                 if (page != null) {
                     rows += page.positionCount
-                    // price column (index 0) should have non-null values
                     val priceBlock = page.getBlock(0)
-                    // missing column (index 1) should be all nulls
                     val missingBlock = page.getBlock(1)
                     for (i in 0 until page.positionCount) {
                         assertThat(priceBlock.isNull(i)).isFalse()
@@ -383,7 +374,6 @@ class TestDucklakePageSourceProvider {
         val table = getTable("test_schema", "inlined_table", snapshotId)
         val tableHandle = DucklakeTableHandle("test_schema", "inlined_table", table.tableId, snapshotId)
 
-        // Get the inlined split
         val split = getAnySplits(tableHandle).first()
         assertThat(split).isInstanceOf(DucklakeInlinedSplit::class.java)
 
@@ -418,7 +408,6 @@ class TestDucklakePageSourceProvider {
         val split = getAnySplits(tableHandle).first()
         assertThat(split).isInstanceOf(DucklakeInlinedSplit::class.java)
 
-        // Request only the name column
         val nameColumnId = getColumnId(table.tableId, snapshotId, "name")
         val nameColumn = DucklakeColumnHandle(nameColumnId, "name", VARCHAR, true)
 
@@ -429,7 +418,6 @@ class TestDucklakePageSourceProvider {
                 val page = pageSource.nextSourcePage
                 if (page != null) {
                     rows += page.positionCount
-                    // Verify we only get one column
                     assertThat(page.channelCount).isEqualTo(1)
                 }
             }

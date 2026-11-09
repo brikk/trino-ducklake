@@ -42,11 +42,9 @@ internal class TestDucklakeCrossEngineRoundTrip : AbstractDucklakeCrossEngineTes
         try {
             computeActual("INSERT INTO test_schema.xengine_basic VALUES (1, 'alice'), (2, 'bob'), (3, 'charlie')")
 
-            // Verify Trino can read it
             val trinoResult = computeActual("SELECT count(*) FROM test_schema.xengine_basic")
             assertThat(trinoResult.materializedRows[0].getField(0)).isEqualTo(3L)
 
-            // Verify DuckDB can read it via DuckLake catalog — no sync needed with PostgreSQL
             createDuckdbConnection().use { conn ->
                 conn.createStatement().use { stmt ->
                     stmt.executeQuery("SELECT * FROM ducklake_db.test_schema.xengine_basic ORDER BY id").use { rs ->
@@ -251,11 +249,9 @@ internal class TestDucklakeCrossEngineRoundTrip : AbstractDucklakeCrossEngineTes
         computeActual("CREATE TABLE test_schema.diag_table (id INTEGER, name VARCHAR)")
         computeActual("INSERT INTO test_schema.diag_table VALUES (1, 'hello'), (2, 'world')")
 
-        // Verify Trino reads it
         assertThat(computeActual("SELECT count(*) FROM test_schema.diag_table")
                 .materializedRows[0].getField(0)).isEqualTo(2L)
 
-        // Dump catalog state for debugging via PostgreSQL JDBC
         val catalog: DucklakeCatalogGenerator.IsolatedCatalog = getIsolatedCatalog()
         try {
             DriverManager.getConnection(catalog.jdbcUrl, catalog.user, catalog.password).use { pgConn ->
@@ -287,7 +283,6 @@ internal class TestDucklakeCrossEngineRoundTrip : AbstractDucklakeCrossEngineTes
                         fileRecords = fileRs.getLong(5)
                     }
 
-                    // Now try DuckDB — verify count (column values have known interop issue)
                     createDuckdbConnection().use { duckConn ->
                         duckConn.createStatement().use { duckStmt ->
                             duckStmt.executeQuery("SELECT count(*) FROM ducklake_db.test_schema.diag_table").use { duckRs ->

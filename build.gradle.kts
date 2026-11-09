@@ -97,7 +97,6 @@ if (r07CatalogCandidate != null) {
     kotlin.sourceSets.test { kotlin.srcDir("released/test") }
 }
 
-// Use Trino BOM for all managed dependency versions
 dependencies {
     // BOM import — controls versions for io.trino, io.airlift, jackson, opentelemetry, etc.
     implementation(platform("io.trino:trino-root:$trinoVersion"))
@@ -107,7 +106,6 @@ dependencies {
         exclude(group = "org.junit.jupiter")
     }
 
-    // Core implementation dependencies (versions from BOM)
     implementation("com.google.guava:guava")
     implementation("com.google.inject:guice") {
         artifact {
@@ -144,14 +142,12 @@ dependencies {
     compileOnly("io.opentelemetry:opentelemetry-context")
     compileOnly("io.trino:trino-spi")
 
-    // Runtime-only dependencies
     runtimeOnly("io.airlift:log-manager")
     runtimeOnly("org.postgresql:postgresql")
     // MySQL 8+ catalog backend: the driver on the deployed connector's classpath lets a user
     // point ducklake.catalog.database-url at jdbc:mysql://... HikariCP resolves it from the URL.
     runtimeOnly(libs.mysql.jdbc)
 
-    // Test dependencies
     testImplementation("io.airlift:testing")
     testImplementation("io.trino:trino-hdfs")
     testImplementation("io.trino:trino-main")
@@ -165,9 +161,7 @@ dependencies {
     testImplementation(libs.testcontainers.postgresql)
     testImplementation(libs.testcontainers.mysql)
 
-    // External DuckDB JDBC driver — TEST-ONLY: cross-engine tests drive a standalone DuckDB
-    // process (jdbc:duckdb:) that writes/reads parquet DuckLake tables through the shared catalog,
-    // to prove Trino and DuckDB agree. The production connector no longer embeds DuckDB.
+    // TEST-ONLY: cross-engine tests use DuckDB against the same catalog and Parquet files.
     testImplementation(libs.duckdb.jdbc)
     testRuntimeOnly(libs.quack.jdbc)
 
@@ -208,7 +202,6 @@ tasks.withType<JavaCompile> {
 
 tasks.test {
     dependsOn(verifyCatalogRelease)
-    // The handoff's JVM-sensitive renderer checks assert the actual forked runtime, not log text.
     systemProperty("ducklake.test.java-version", providers.gradleProperty("testJavaVersion").getOrElse("25"))
     // Compile against the repository's JDK 25 toolchain, but allow CI to execute the resulting
     // Java 25 bytecode on a newer VM for compatibility/stability checks.
@@ -220,8 +213,6 @@ tasks.test {
 
     useJUnitPlatform {
         // Optional JUnit tag exclusion, e.g. `-PexcludeTags=some-tag,another-tag` (comma-separated).
-        // A generic escape hatch for skipping heavy/environment-specific integration tests on the
-        // PR gate while keeping them runnable locally. No tags are excluded by default or in CI.
         (project.findProperty("excludeTags") as String?)
             ?.split(",")
             ?.map { it.trim() }
@@ -251,7 +242,7 @@ tasks.test {
     }
 
     // Upstream DuckLake sqllogictest corpus (TestTrinoCorpusReplay): corpus location
-    // in the sibling module's pinned submodule + optional dir selection
+    // in the pinned submodule + optional dir selection
     // (-Dducklake.corpus.dirs=all for the full corpus).
     systemProperty(
         "ducklake.corpus.root",

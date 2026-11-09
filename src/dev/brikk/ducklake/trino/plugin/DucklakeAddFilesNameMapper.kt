@@ -79,15 +79,8 @@ internal class DucklakeAddFilesNameMapper(
         private val tableName: String,
 ) {
     private val resultEntries: MutableList<DucklakeNameMapEntry> = mutableListOf()
-    // Maps each top-level parquet column to a (Trino target type, DuckLake field id).
-    // Used to reorder columns when feeding the existing DucklakeStatsExtractor — its
-    // contract is "column N of the columns list maps to row-group column N of the file".
     private val topLevelMatches: MutableList<TopLevelMatch> = mutableListOf()
     private val partitionValues: MutableMap<Int, Any?> = linkedMapOf()
-    // One LeafStatsTarget per *mapped* parquet leaf — i.e., leaves that have a
-    // corresponding DuckLake catalog column. Skipped leaves (ignore_extra_columns
-    // children, hive-partition-wins overlap) still advance leafCounter so the
-    // emitted parquetColumnIndex stays aligned with the file's RowGroup.columns.
     private val leafStatsTargets: MutableList<LeafStatsTarget> = mutableListOf()
     private val leafCounter: IntArray = intArrayOf(0)
 
@@ -119,7 +112,6 @@ internal class DucklakeAddFilesNameMapper(
     )
 
     fun map(parquetSchema: MessageType, allColumns: List<DucklakeColumn>, topLevelColumns: List<DucklakeColumn>): Result {
-        // Build parent → name → child lookup
         val childrenByParent: MutableMap<Long, MutableMap<String, DucklakeColumn>> = hashMapOf()
         for (column in allColumns) {
             column.parentColumn?.let { parentId ->
@@ -173,8 +165,6 @@ internal class DucklakeAddFilesNameMapper(
             tableColumnsMatched[parquetNameLower] = i
         }
 
-        // Handle table columns not present in the parquet schema: either hive partition
-        // value, allow_missing, or error.
         for (column in topLevelColumns) {
             val columnNameLower = column.columnName.lowercase(Locale.ROOT)
             if (tableColumnsMatched.containsKey(columnNameLower)) {
@@ -182,7 +172,6 @@ internal class DucklakeAddFilesNameMapper(
             }
             if (hivePartitionValues.containsKey(column.columnName)
                     || hivePartitionKeyLower.containsKey(columnNameLower)) {
-                // Resolve the actual path-side key matching this column (case-insensitive).
                 var pathKey = column.columnName
                 if (!hivePartitionValues.containsKey(pathKey)) {
                     for (k in hivePartitionValues.keys) {
@@ -212,7 +201,6 @@ internal class DucklakeAddFilesNameMapper(
             }
         }
 
-        // Convert the (Integer fieldIndex → String) partition map to immutable.
         val partitionValuesOut: MutableMap<Int, String> = linkedMapOf()
         for (entry in partitionValues.entries) {
             partitionValuesOut[entry.key] = entry.value as String
@@ -232,7 +220,6 @@ internal class DucklakeAddFilesNameMapper(
             targetType: Type,
             childrenByParent: Map<Long, Map<String, DucklakeColumn>>,
     ): DucklakeNameMapEntry {
-        // Leaf primitive: type-check, no children.
         if (parquetField.isPrimitive) {
             if (targetType is RowType || targetType is ArrayType || targetType is MapType) {
                 throw DucklakeAddFilesException(String.format(
@@ -245,17 +232,13 @@ internal class DucklakeAddFilesNameMapper(
             // Record one leaf stats target per matched parquet primitive. Upstream's
             // MapColumnStats keys these by the catalog field_id (target.columnId()),
             // not by parquet path — and decodes min/max bytes using the *target*
-            // Trino type. The latter matches today's flat-column convention; values
-            // can be wrong if the parquet primitive's byte width disagrees with the
-            // catalog widening (e.g., INT32 file vs BIGINT catalog), which is a
-            // pre-existing limitation of the add_files stats path independent of
-            // nesting.
+            // Trino type. Values can be wrong if the parquet primitive's byte width
+            // disagrees with the catalog widening (e.g., INT32 file vs BIGINT catalog).
             leafStatsTargets.add(LeafStatsTarget(target.columnId, targetType, leafCounter[0]))
             leafCounter[0]++
             return DucklakeNameMapEntry(parquetName, target.columnId, false, listOf())
         }
 
-        // Group/nested: recurse based on target type kind.
         val group: GroupType = parquetField.asGroupType()
         return when (targetType) {
             is RowType -> mapStruct(group, parquetName, target, targetType, childrenByParent)
@@ -282,7 +265,6 @@ internal class DucklakeAddFilesNameMapper(
             val childTarget: DucklakeColumn? = children[fieldName.lowercase(Locale.ROOT)]
             if (childTarget == null) {
                 if (ignoreExtraColumns) {
-                    // Advance past the skipped struct child's parquet leaves.
                     leafCounter[0] += countParquetLeaves(field)
                     continue
                 }

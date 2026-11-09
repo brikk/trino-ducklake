@@ -227,9 +227,6 @@ class DucklakeAddFilesProcedure @Inject constructor(
             // min/max bytes against the leaf's Trino target type.)
             val thriftMetadata: org.apache.parquet.format.FileMetaData = toThriftFileMetaData(parquetMetadata)
 
-            // result.leafStatsTargets() lists one entry per matched parquet leaf in file
-            // order, with parquetColumnIndex tracking through ignored-extra-columns and
-            // hive-partition-overrides so the index stays aligned with RowGroup.columns.
             val stats: List<DucklakeFileColumnStats> = DucklakeStatsExtractor.extractStats(
                     thriftMetadata, result.leafStatsTargets, fileMetadata.schema)
 
@@ -258,7 +255,6 @@ class DucklakeAddFilesProcedure @Inject constructor(
                     dataSource.close()
                 }
                 catch (ignored: IOException) {
-                    // best-effort
                 }
             }
         }
@@ -432,12 +428,6 @@ class DucklakeAddFilesProcedure @Inject constructor(
             }
         }
 
-        /**
-         * Parse `key=value` segments out of a file path (hive-style layout).
-         * URL-decoded values are returned as their raw text — upstream casts to the
-         * partition column's type at read time; we forward strings, matching today's
-         * connector convention.
-         */
         private fun parseHivePartitions(path: String): Map<String, String> {
             val out: MutableMap<String, String> = linkedMapOf()
             val normalized = path.replace('\\', '/')

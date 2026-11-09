@@ -65,11 +65,9 @@ import java.util.UUID
  * are gated while a table has inlined rows ([DucklakeMetadata.beginMerge]). Flushing first makes
  * those operations work. Mirrors upstream DuckLake's `flush_inlined_data`.
  *
- * v1 scope: writes a single Parquet file (the table may hold other formats — mixed is fine) and
- * does NOT support partitioned tables (the inlined rows carry no partition assignment; gated with
- * a clear error). Schema evolution across inlined versions is handled — each version's rows are
- * read projected onto the current columns, NULL-filling columns added later (see
- * `DucklakeCatalog.readInlinedData`). The whole read-then-write is conflict-checked at commit
+ * Writes one Parquet file per inlined schema version using that version's historical schema.
+ * Partitioned inlined data is unsupported because its rows carry no partition assignment.
+ * The whole read-then-write is conflict-checked at commit
  * (`ConflictMatrix.checkFlushedInlinedData`), so a concurrent change to the table's inlined data
  * aborts rather than duplicating or dropping rows.
  */
@@ -397,7 +395,6 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
                 trinoVersion,
                 Optional.empty(),
                 Optional.empty())
-        // Single unpartitioned file (partitioned tables are gated above).
         val writer = ParquetFileWriter(parquetWriter, outputStream, fileSystem, filePath, fileName,
                 emptyMap(), null, columnHandles, allCatalogColumns, messageType)
 
@@ -417,7 +414,6 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
             fragment = writer.finishAndBuildFragment()
         }
         finally {
-            // A finally instead of a catch so abort never masks the original throwable.
             if (fragment == null) {
                 writer.abort()
             }

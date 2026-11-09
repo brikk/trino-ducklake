@@ -114,7 +114,7 @@ internal class DucklakeTableStatistics(private val catalog: DucklakeCatalog)
         if (colStats == null) {
             return null
         }
-        // Null counts also mean coverage cannot be established (catalog 0.9.0). Omit the
+        // Null counts also mean coverage cannot be established. Omit the
         // entire column entry, just as for known incomplete coverage after schema evolution.
         val totalValueCount = colStats.totalValueCount ?: return null
         val totalNullCount = colStats.totalNullCount ?: return null
@@ -137,8 +137,6 @@ internal class DucklakeTableStatistics(private val catalog: DucklakeCatalog)
     }
 
     private fun hasLiveInlinedRows(table: DucklakeTableHandle): Boolean =
-            // getInlinedDataInfos carries a per-descriptor live-rows flag (resolved in the same probe
-            // that lists it), so no second per-table hasInlinedRows round trip is needed here.
             catalog.getInlinedDataInfos(table.tableId, table.snapshotId).any { it.hasLiveRows }
 
     // ANALYZE — refresh DuckLake's cached table-level statistics. The catalog recomputes
@@ -188,7 +186,6 @@ internal class DucklakeTableStatistics(private val catalog: DucklakeCatalog)
                 }
             }
             catch (_: RuntimeException) {
-                // If parsing fails, skip range
             }
             return null
         }

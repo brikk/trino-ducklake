@@ -63,20 +63,17 @@ class TestDucklakeFlushInlinedData : AbstractDucklakeCrossEngineTest() {
             writeInlinedRows(bare, "(1, 'a')", "(2, 'b')", "(3, 'c')")
             assertRowsStayedInlined(bare, 3L)
 
-            // DELETE is gated while rows are inlined.
             assertThatThrownBy { computeActual("DELETE FROM $table WHERE id = 2") }
                     .hasMessageContaining("inlined rows")
 
             computeActual("CALL ducklake.system.flush_inlined_data(schema_name => 'test_schema', table_name => '$bare')")
 
-            // Rows are now in a Parquet file; count + values preserved.
             assertRowsWrittenToParquet(bare)
             assertThat(computeScalar("SELECT count(*) FROM $table")).isEqualTo(3L)
             assertThat(computeActual("SELECT name FROM $table ORDER BY id").materializedRows
                     .map { it.getField(0) as String })
                     .containsExactly("a", "b", "c")
 
-            // DELETE now works (the gate is lifted), and reads stay correct.
             computeActual("DELETE FROM $table WHERE id = 2")
             assertThat(computeActual("SELECT id FROM $table ORDER BY id").materializedRows
                     .map { (it.getField(0) as Number).toLong() })
@@ -87,7 +84,7 @@ class TestDucklakeFlushInlinedData : AbstractDucklakeCrossEngineTest() {
         }
     }
 
-    /** DuckLake global `rowid`s for a table, in id order, read through DuckDB. */
+    /** DuckLake global `rowid`s for a table, in rowid order, read through DuckDB. */
     private fun duckdbRowIds(fqTable: String): List<Long> {
         createDuckdbConnection().use { duck ->
             duck.createStatement().use { stmt ->
@@ -118,11 +115,10 @@ class TestDucklakeFlushInlinedData : AbstractDucklakeCrossEngineTest() {
     }
 
     /**
-     * Regression (terra P1): a flush is an identity-preserving storage MOVE. The materialized file
+     * A flush is an identity-preserving storage MOVE. The materialized file
      * must keep each row's original `rowid` (carried via the embedded `_ducklake_internal_row_id`)
      * and must NOT inflate `record_count` / `next_row_id` (the rows were already counted and their
-     * ids already allocated when inlined). Previously the flush re-inserted the file: new rowids +
-     * doubled record_count + advanced allocator.
+     * ids already allocated when inlined).
      */
     @Test
     fun flushPreservesRowIdentityAndDoesNotDoubleCount() {
@@ -141,14 +137,11 @@ class TestDucklakeFlushInlinedData : AbstractDucklakeCrossEngineTest() {
             computeActual("CALL ducklake.system.flush_inlined_data(schema_name => 'test_schema', table_name => '$bare')")
             assertRowsWrittenToParquet(bare)
 
-            // Identity preserved: same rowids for the same logical rows.
             assertThat(duckdbRowIds(table)).`as`("rowids unchanged by the flush move").isEqualTo(beforeRowIds)
-            // Count-neutral: a move must not inflate the live count or the allocator.
             val (afterCount, afterNextRowId) = tableStats(bare)
             assertThat(afterCount).`as`("record_count unchanged (no double-count)").isEqualTo(beforeCount)
             assertThat(afterNextRowId).`as`("next_row_id unchanged (no allocator gap)").isEqualTo(beforeNextRowId)
 
-            // Values still read correctly on both engines.
             assertThat(computeActual("SELECT id, name FROM $table ORDER BY id").materializedRows
                     .map { (it.getField(0) as Number).toLong() to (it.getField(1) as String) })
                     .containsExactly(1L to "a", 2L to "b")
@@ -343,11 +336,10 @@ class TestDucklakeFlushInlinedData : AbstractDucklakeCrossEngineTest() {
     }
 
     /**
-     * Regression (terra P1 follow-up): because the flush now preserves each row's rowid via the
+     * Because the flush preserves each row's rowid via the
      * embedded lineage column, a lineage-preserving UPDATE across the flush pairs into
      * update_preimage/update_postimage ON THE ORIGINAL rowid — the change feed sees a stable
-     * identity, not a delete+re-insert under a fresh id. Before the fix the flushed row got a new
-     * rowid, so the update would carry that new id instead of the pre-flush one.
+     * identity, not a delete+re-insert under a fresh id.
      */
     @Test
     fun updateAfterFlushPairsOnThePreservedRowId() {
@@ -374,7 +366,6 @@ class TestDucklakeFlushInlinedData : AbstractDucklakeCrossEngineTest() {
                     .containsExactly("update_postimage", "update_preimage")
             val pre = changes.first { it.getField(0) == "update_preimage" }
             val post = changes.first { it.getField(0) == "update_postimage" }
-            // Both images carry the ORIGINAL pre-flush rowid — lineage survived the flush.
             assertThat(pre.getField(1) as Long).`as`("pre-image on preserved rowid").isEqualTo(originalRowId)
             assertThat(post.getField(1) as Long).`as`("post-image on preserved rowid").isEqualTo(originalRowId)
             assertThat(pre.getField(3) as String).isEqualTo("b")
@@ -397,7 +388,6 @@ class TestDucklakeFlushInlinedData : AbstractDucklakeCrossEngineTest() {
             assertRowsStayedInlined(a, 2L)
             assertRowsStayedInlined(b, 1L)
 
-            // No schema_name / table_name => flush every table with inlined rows across the catalog.
             computeActual("CALL ducklake.system.flush_inlined_data()")
 
             assertRowsWrittenToParquet(a)
@@ -459,7 +449,6 @@ class TestDucklakeFlushInlinedData : AbstractDucklakeCrossEngineTest() {
 
             computeActual("CALL ducklake.system.flush_inlined_data(schema_name => 'test_schema', table_name => '$bare')")
 
-            // The flushed Parquet file must read back correctly in DuckDB too.
             createDuckdbConnection().use { duck ->
                 duck.createStatement().use { stmt ->
                     stmt.executeQuery("SELECT count(*) FROM ducklake_db.$table").use { rs ->
@@ -503,7 +492,6 @@ class TestDucklakeFlushInlinedData : AbstractDucklakeCrossEngineTest() {
     fun flushWithNoInlinedRowsIsNoop() {
         val table = "test_schema.flush_noop"
         try {
-            // A Trino-written table never has inlined rows; flush should be a clean no-op.
             computeActual("CREATE TABLE $table AS SELECT * FROM (VALUES (1, 'a')) AS t(id, name)")
             computeActual("CALL ducklake.system.flush_inlined_data(schema_name => 'test_schema', table_name => 'flush_noop')")
             assertThat(computeScalar("SELECT count(*) FROM $table")).isEqualTo(1L)

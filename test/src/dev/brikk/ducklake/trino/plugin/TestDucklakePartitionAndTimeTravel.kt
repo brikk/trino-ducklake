@@ -41,8 +41,6 @@ open class TestDucklakePartitionAndTimeTravel : AbstractDucklakeIntegrationTest(
         return "integration-partition-time-travel"
     }
 
-    // ==================== Partitioned tables ====================
-
     @Test
     fun testPartitionedTableFullScan() {
         assertQuery("SELECT count(*) FROM partitioned_table", "VALUES 5")
@@ -129,8 +127,6 @@ open class TestDucklakePartitionAndTimeTravel : AbstractDucklakeIntegrationTest(
                     "WHERE event_date >= DATE '2023-06-15' AND event_date <= DATE '2023-06-20'")
         assertThat(result.materializedRows[0].getField(0)).isEqualTo(3L)
     }
-
-    // ==================== Time travel ====================
 
     @Test
     fun testForVersionAsOfReadsHistoricalSnapshot() {
@@ -234,9 +230,6 @@ open class TestDucklakePartitionAndTimeTravel : AbstractDucklakeIntegrationTest(
     }
 
     private fun getSchemaEvolutionHistoricalSnapshot(): HistoricalSnapshot {
-        // Find the snapshot where schema_evolution_table had exactly 2 rows by scanning
-        // snapshots in descending order using FOR VERSION AS OF through the query runner.
-        // This uses the same catalog as the test (including isolated catalogs).
         val snapshots = computeActual(
             "SELECT snapshot_id, snapshot_time FROM \"schema_evolution_table\$snapshots\" ORDER BY snapshot_id DESC")
 
@@ -245,7 +238,6 @@ open class TestDucklakePartitionAndTimeTravel : AbstractDucklakeIntegrationTest(
             val count = (computeScalar(
                 "SELECT count(*) FROM schema_evolution_table FOR VERSION AS OF $snapshotId") as Number).toLong()
             if (count == 2L) {
-                // snapshot_time is a timestamp with time zone; extract as Instant
                 val snapshotTime = (row.getField(1) as ZonedDateTime).toInstant()
                 return HistoricalSnapshot(snapshotId, snapshotTime)
             }

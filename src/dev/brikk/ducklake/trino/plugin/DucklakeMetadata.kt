@@ -147,7 +147,6 @@ class DucklakeMetadata(
                     "DuckLake catalog is encrypted; this connector cannot read encrypted data files")
         }
 
-        // Reject unsupported declared formats before returning a usable table handle.
         validateDataFileFormatIsParquet(catalog.getTableDataFileFormat(table.tableId), baseTableName)
 
         if (metadataTable != null) {
@@ -281,7 +280,6 @@ class DucklakeMetadata(
         }
 
         if (tableHandle is ChangeFeedTableHandle) {
-            // PTF-scan handle: output columns (snapshot_id/rowid[/change_type] + table columns).
             return tableHandle.outputColumns().associateBy { it.columnName }
         }
 
@@ -307,11 +305,6 @@ class DucklakeMetadata(
                             // initial default, not NULL (upstream issue 1135 semantics).
                             column.initialDefault))
         }
-        // Append the hidden virtual columns ($path, $snapshot_id, $file_row_number, $row_id,
-        // $file_size_bytes). They DO appear in getTableMetadata too (each setHidden(true)) — the
-        // hidden flag, not absence, is what keeps them out of SELECT * / DESCRIBE while letting a
-        // column reference resolve. Keep this list in lockstep with getTableMetadata. See
-        // DESIGN-virtual-columns.md.
         for (kind in EXPOSED_VIRTUAL_COLUMNS) {
             columnHandles.put(kind.columnName, kind.columnHandle())
         }
@@ -427,10 +420,6 @@ class DucklakeMetadata(
         return columns.buildOrThrow()
     }
 
-    // ==================== Schema DDL ====================
-
-    // ==================== Schema DDL ====================
-
     override fun createSchema(session: ConnectorSession, schemaName: String, properties: Map<String, Any?>, owner: TrinoPrincipal)
     {
         translateCatalogExceptions { catalog.createSchema(schemaName) }
@@ -440,8 +429,6 @@ class DucklakeMetadata(
     {
         translateCatalogExceptions { catalog.dropSchema(schemaName) }
     }
-
-    // ==================== Table DDL ====================
 
     override fun createTable(session: ConnectorSession, tableMetadata: ConnectorTableMetadata, saveMode: SaveMode)
     {
@@ -500,8 +487,6 @@ class DucklakeMetadata(
         }
     }
 
-    // ==================== ALTER TABLE ====================
-
     override fun addColumn(session: ConnectorSession, tableHandle: ConnectorTableHandle, column: ColumnMetadata, position: ColumnPosition)
     {
         val handle = tableHandle as DucklakeTableHandle
@@ -523,12 +508,7 @@ class DucklakeMetadata(
         translateCatalogExceptions { catalog.renameColumn(handle.tableId, ducklakeColumn.columnId, target) }
     }
 
-    // ALTER TABLE ... ALTER COLUMN c SET DATA TYPE <type>. DuckLake permits WIDENING promotions only
-    // (so data files written under the old physical type still read correctly under the new one);
-    // narrowing would corrupt existing rows, so we reject it at DDL time. Reads of files written
-    // before the change get the widened type: parquet self-heals via the reader's type coercion,
-    // the DuckDB-engine (non-parquet) path CASTs to the file-era→current type, and inlined values
-    // convert under the current type. See DucklakeTypePromotion + DucklakePageSourceProvider.
+    // Widening preserves reads of existing physical files; narrowing would corrupt existing rows.
     override fun setColumnType(session: ConnectorSession, tableHandle: ConnectorTableHandle, column: ColumnHandle, type: Type)
     {
         val handle = tableHandle as DucklakeTableHandle
@@ -549,13 +529,6 @@ class DucklakeMetadata(
         translateCatalogExceptions { catalog.setColumnType(handle.tableId, ducklakeColumn.columnId, newDucklakeType) }
     }
 
-    // ALTER TABLE ... ALTER COLUMN s.child SET DATA TYPE <type>. The nested-field generalization of
-    // setColumnType: same widening-only contract (DuckLake permits widening promotions only, so
-    // files written under the old physical type still read correctly). `fieldPath` is the dotted path
-    // INCLUDING the top-level column name (e.g. [s, child]). We resolve the child's current Trino type
-    // by walking the catalog column tree, validate the promotion, and hand the DuckLake type string to
-    // the catalog. Reads across file generations: parquet self-heals the widened field via field
-    // name/id, and inlined values convert under the current type.
     override fun setFieldType(session: ConnectorSession, tableHandle: ConnectorTableHandle, fieldPath: List<String>, type: Type)
     {
         val handle = tableHandle as DucklakeTableHandle
@@ -569,14 +542,10 @@ class DucklakeMetadata(
                             "%s -> %s is not allowed for field \"%s\"",
                     sourceType.displayName, type.displayName, fieldPath.joinToString(".")))
         }
-        // toDucklakeType rejects any target with no DuckLake representation with its own NOT_SUPPORTED.
         val newDucklakeType: String = typeConverter.toDucklakeType(type)
         translateCatalogExceptions { catalog.setFieldType(handle.tableId, fieldPath, newDucklakeType) }
     }
 
-    // Resolve the current Trino type of a nested field by walking the catalog column tree along the
-    // dotted `fieldPath` (top-level column name first). Matches by name + parent_column, mirroring
-    // the catalog's resolveColumnIdByPath. Throws COLUMN_NOT_FOUND if any path step is missing.
     private fun resolveFieldTrinoType(tableId: Long, snapshotId: Long, fieldPath: List<String>): Type {
         val columns: List<DucklakeColumn> = catalog.getAllColumnsWithParentage(tableId, snapshotId)
         val field: DucklakeColumn? = fieldPath.fold(null as DucklakeColumn?) { parent, name ->
@@ -588,8 +557,6 @@ class DucklakeMetadata(
 
     // Nested struct field DDL. `addField`'s parentPath includes the top-level column name (there is no
     // separate ColumnHandle); `dropField` supplies the column separately, so we prepend its name.
-    // Reads of files written before a nested change are reconciled per file: parquet self-heals via
-    // field name/id.
     override fun addField(
             session: ConnectorSession,
             tableHandle: ConnectorTableHandle,
@@ -615,8 +582,6 @@ class DucklakeMetadata(
         translateCatalogExceptions { catalog.dropField(handle.tableId, fullPath) }
     }
 
-    // ==================== INSERT ====================
-
     override fun beginInsert(
             session: ConnectorSession,
             tableHandle: ConnectorTableHandle,
@@ -640,8 +605,6 @@ class DucklakeMetadata(
         writes.finishInsert(insertHandle as DucklakeWritableTableHandle, fragments)
         return Optional.empty()
     }
-
-    // ==================== CTAS ====================
 
     override fun beginCreateTable(
             session: ConnectorSession,
@@ -682,8 +645,6 @@ class DucklakeMetadata(
                     tableName.schemaName, tableName.tableName, dataFileFormat))
         }
     }
-
-    // ==================== DELETE / MERGE ====================
 
     override fun getRowChangeParadigm(session: ConnectorSession, tableHandle: ConnectorTableHandle): RowChangeParadigm =
             RowChangeParadigm.DELETE_ROW_AND_INSERT_ROW
@@ -731,8 +692,6 @@ class DucklakeMetadata(
             fragments: Collection<Slice>) =
             writes.finishMerge(mergeTableHandle as DucklakeMergeTableHandle, fragments)
 
-    // ==================== View operations ====================
-
     override fun listViews(session: ConnectorSession, schemaName: Optional<String>): List<SchemaTableName> =
             views.listViews(session, schemaName)
 
@@ -764,17 +723,13 @@ class DucklakeMetadata(
     override fun dropView(session: ConnectorSession, viewName: SchemaTableName) = views.dropView(session, viewName)
 
     companion object {
-        // The virtual (hidden) columns exposed via getColumnHandles / getTableMetadata.
-        // Constant-per-split ($path, $snapshot_id, $file_size_bytes) plus the row-varying
-        // lineage pair ($file_row_number, $row_id), all injected by DucklakePageSourceProvider.
         private val EXPOSED_VIRTUAL_COLUMNS: List<VirtualKind> = VirtualKind.values().toList()
 
         /**
          * Reject any virtual column handle in a write column list with NOT_SUPPORTED.
          * Routed through DucklakeColumnHandle.isVirtual() (the single sentinel check) so
          * the guard can never drift from VirtualKind. The MERGE row-id handle (-100) is
-         * NOT virtual, so this never rejects it. `internal` (not private) so TestDucklakeMetadata
-         * can pin the write-path guard directly (DESIGN-virtual-columns.md § 5).
+         * NOT virtual, so this never rejects it.
          */
         internal fun rejectVirtualColumnWrites(columns: Iterable<ColumnHandle>)
         {

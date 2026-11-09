@@ -50,8 +50,6 @@ internal class DucklakeColumnTreeCache(
     }
 
     private companion object {
-        // Cap before a wholesale clear. Keyed by (tableId, begin_snapshot); only populated for
-        // tables that have actually evolved and been read, so this ceiling is effectively never hit.
         const val MAX_ENTRIES = 2048
     }
 }

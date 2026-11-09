@@ -41,8 +41,7 @@ internal object DucklakeReadSupport {
         // (e.g. `category=home%20appliances`, `created_at=…%3A30%3A00`), so Path.toUri turns
         // the literal `%` into `%25` and the reader looks for a non-existent `%2520` path.
         // Trino's Location does not percent-decode, so the literal on-disk path is what
-        // newInputFile needs. For paths without special characters this is identical to the
-        // old toUri() form (`file://` + absolute path).
+        // newInputFile needs.
         return Location.of("file://" + path)
     }
 

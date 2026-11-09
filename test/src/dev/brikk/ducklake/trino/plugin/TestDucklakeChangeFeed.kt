@@ -21,13 +21,12 @@ import org.junit.jupiter.api.parallel.Execution
 import org.junit.jupiter.api.parallel.ExecutionMode
 
 /**
- * The DuckLake change feed (F9): `table_insertions` / `table_deletions` / `table_changes`
+ * The DuckLake change feed: `table_insertions` / `table_deletions` / `table_changes`
  * exposed as `TABLE(ducklake.system.*)`. Each returns `snapshot_id`, `rowid` (+ `change_type`
  * for `table_changes`) followed by the table's columns as of the END snapshot, for the inclusive
- * snapshot window. Covers snapshot-id and timestamp bounds, non-parquet (duckdb) data, projection
- * pushdown, empty windows, and both Trino-written-UPDATE shapes: the default (separate
- * `delete` + `insert` under fresh row ids) and the lineage-preserving one (`write_row_lineage`
- * session property — F7 — pairs into `update_preimage`/`update_postimage`; the cross-engine
+ * snapshot window. Covers snapshot-id and timestamp bounds, projection, empty windows,
+ * and both Trino-written-UPDATE shapes: separate `delete` + `insert` under fresh row ids
+ * and lineage-preserving `update_preimage`/`update_postimage` (`write_row_lineage`); the cross-engine
  * suite proves DuckDB reads the preserved rowids too).
  *
  * SAME_THREAD: writes to the shared catalog; concurrent commits would race the snapshot retry.
@@ -104,8 +103,7 @@ class TestDucklakeChangeFeed : AbstractDucklakeIntegrationTest() {
                             "ORDER BY change_type, id, val")
             // 2 inserts at s2, 1 delete at s3, and the UPDATE at s4 = a delete of the old row +
             // an insert of the new row. Under the row_id_start+position rowid vocabulary the moved
-            // row gets a fresh rowid, so it is NOT paired into update_preimage/postimage (the
-            // pairing logic itself is unit-tested in TestChangeFeedPageSource).
+            // row gets a fresh rowid, so it is NOT paired into update_preimage/postimage.
             assertThat(result.map { it.getField(0) as String })
                     .containsExactly("delete", "delete", "insert", "insert", "insert")
             val inserts = result.filter { it.getField(0) == "insert" }.map { it.getField(2) as String }
@@ -124,7 +122,7 @@ class TestDucklakeChangeFeed : AbstractDucklakeIntegrationTest() {
 
     @Test
     fun updatePairsIntoPreAndPostImageWithWriteRowLineage() {
-        // F7 lineage-preserving writes: with write_row_lineage the connector's own
+        // With write_row_lineage the connector's own
         // UPDATE embeds the original rowid (_ducklake_internal_row_id, field-id
         // 2147483540) into the rewritten file, so the change feed pairs the rewrite
         // into update_preimage/update_postimage — same shape as DuckDB-written updates.
@@ -147,7 +145,6 @@ class TestDucklakeChangeFeed : AbstractDucklakeIntegrationTest() {
             assertThat(preImage.getField(3) as String).isEqualTo("DuckLake")
             assertThat(postImage.getField(3) as String).isEqualTo("Updated")
 
-            // Table contents unaffected by the lineage column (it is schema-invisible).
             assertThat(rows("SELECT id, val FROM $table ORDER BY id").map { it.getField(1) as String })
                     .containsExactly("Hello", "Updated")
         }
@@ -218,7 +215,6 @@ class TestDucklakeChangeFeed : AbstractDucklakeIntegrationTest() {
                     .`as`("chained update still carries the ORIGINAL rowid")
                     .isEqualTo(original)
 
-            // And the second hop pairs in the change feed on the original rowid.
             val result = rows(
                     "SELECT change_type, rowid, val FROM " +
                             "TABLE(ducklake.system.table_changes('test_schema', 'cf_chained_updates', $s, $s)) " +
@@ -245,12 +241,10 @@ class TestDucklakeChangeFeed : AbstractDucklakeIntegrationTest() {
             computeActual("INSERT INTO $table VALUES (3)")
             val s4 = snapshot()
 
-            // Only the middle snapshot: inclusive on both ends, excludes s2 and s4.
             val middle = rows(
                     "SELECT id FROM TABLE(ducklake.system.table_insertions('test_schema', 'cf_bounds', $s3, $s3))")
             assertThat(middle.map { it.getField(0) as Int }).containsExactly(2)
 
-            // Full window s2..s4 sees all three.
             val all = rows(
                     "SELECT id FROM TABLE(ducklake.system.table_insertions('test_schema', 'cf_bounds', $s2, $s4)) ORDER BY id")
             assertThat(all.map { it.getField(0) as Int }).containsExactly(1, 2, 3)
@@ -287,7 +281,6 @@ class TestDucklakeChangeFeed : AbstractDucklakeIntegrationTest() {
             computeActual("INSERT INTO $table VALUES (1), (2)")
             val s2 = snapshot()
 
-            // now() as the end timestamp bound; start as a snapshot id. Both rows inserted before now.
             val result = rows(
                     "SELECT id FROM TABLE(ducklake.system.table_insertions(" +
                             "schema_name => 'test_schema', table_name => 'cf_timestamp', " +
@@ -328,7 +321,6 @@ class TestDucklakeChangeFeed : AbstractDucklakeIntegrationTest() {
             computeActual("INSERT INTO $table VALUES (1)")
             val s2 = snapshot()
 
-            // A window that made no changes: table_deletions over the insert-only snapshot.
             val deletions = rows(
                     "SELECT * FROM TABLE(ducklake.system.table_deletions('test_schema', 'cf_empty', $s2, $s2))")
             assertThat(deletions).isEmpty()

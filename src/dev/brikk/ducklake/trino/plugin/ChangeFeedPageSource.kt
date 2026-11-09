@@ -28,7 +28,7 @@ import java.io.IOException
  * One data file to read for the change feed. [baseSource] lazily opens the connector's normal
  * data-file read pipeline projecting exactly [ChangeFeedPageSource]'s requested data columns
  * followed by `$file_row_number` (or the actual row ID for an inlined source), reading as of the
- * feed's END-snapshot schema (so schema evolution / all file formats are handled for free).
+ * feed's END-snapshot schema.
  *
  * - [snapshotId] is the snapshot to report for every row of this unit (the file's `begin_snapshot`
  *   for an insert unit; the deletion's snapshot for a delete unit).
@@ -65,8 +65,8 @@ class ChangeFeedUnit @JvmOverloads constructor(
 
 /**
  * Streams the DuckLake change feed as `snapshot_id, rowid[, change_type]` + table columns.
- * Reads each [ChangeFeedUnit]'s data file through the connector's ordinary read pipeline (reused
- * for schema evolution + every file format), then per page: derives each row's FILE position from
+ * Reads each [ChangeFeedUnit]'s data file through the connector's ordinary read pipeline, then
+ * per page: derives each row's FILE position from
  * `$file_row_number`, filters to the deleted positions (delete units), computes the true
  * `rowid` (embedded lineage column when present, else positional), stamps `snapshot_id`, and
  * classifies `change_type` (pairing an UPDATE's delete + re-insert of the same rowid in one
@@ -143,7 +143,6 @@ class ChangeFeedPageSource(
             if (transformed != null) {
                 return transformed
             }
-            // Every row of this page was filtered out (delete unit); try the next page.
         }
         return null
     }
@@ -160,7 +159,6 @@ class ChangeFeedPageSource(
         if (keptCount == 0) {
             return null
         }
-        // keepPositions == null means the whole page is kept in order, so data blocks pass through.
         val selectAll: Boolean = unit.keepPositions == null && keptCount == positionCount
 
         val blocks: Array<Block?> = arrayOfNulls(requestedColumns.size)

@@ -24,11 +24,7 @@ import org.junit.jupiter.api.parallel.ExecutionMode
  * promotion). The nested generalization of [TestDucklakeSetColumnType]: DuckLake permits only
  * widening changes, so a struct field written under the old physical type must still read correctly
  * under the new type. Covers the write-side validation (widening accepted, narrowing / incompatible
- * rejected) and the read side across BOTH generations of data files (pre- and post-promotion) for
- * the parquet and DuckDB (`.db`) formats.
- *
- * There is NO corpus test for nested field type change, so these hand-written tests are the only
- * safety net for the feature.
+ * rejected) and the read side across both generations of Parquet data files (pre- and post-promotion).
  */
 @Execution(ExecutionMode.SAME_THREAD)
 internal open class TestDucklakeSetFieldType : AbstractDucklakeIntegrationTest() {
@@ -43,10 +39,8 @@ internal open class TestDucklakeSetFieldType : AbstractDucklakeIntegrationTest()
         val table = "test_schema.promote_field_$format"
         try {
             computeActual("CREATE TABLE $table (id INTEGER, s ROW(a INTEGER)) WITH (data_file_format = '$format')")
-            // Row written under the OLD physical type (INTEGER).
             computeActual("INSERT INTO $table VALUES (1, CAST(ROW(1) AS ROW(a INTEGER)))")
             computeActual("ALTER TABLE $table ALTER COLUMN s.a SET DATA TYPE BIGINT")
-            // Row written under the NEW type (BIGINT) — a second file generation.
             computeActual("INSERT INTO $table VALUES (2, CAST(ROW(3000000000) AS ROW(a BIGINT)))")
 
             assertThat(computeScalar("SELECT typeof(s) FROM $table LIMIT 1")).isEqualTo("row(\"a\" bigint)")

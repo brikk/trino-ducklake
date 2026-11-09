@@ -127,10 +127,6 @@ object DucklakePartitionComputer {
             REAL -> return REAL.getFloat(block, position).toString()
             DOUBLE -> return DOUBLE.getDouble(block, position).toString()
         }
-        // Wide identity types whose canonical text mirrors DucklakePartitionValueParser (the read
-        // side): DECIMAL and the timestamp family. These are long/Int128/object-backed, so the old
-        // `getSlice()` fallback threw UnsupportedOperationException at INSERT time — encode them
-        // properly instead.
         return when (type) {
             is DecimalType -> encodeDecimal(type, block, position)
             is TimestampType, is TimestampWithTimeZoneType ->
@@ -138,7 +134,6 @@ object DucklakePartitionComputer {
                 // LocalDateTime; render `yyyy-MM-dd HH:mm:ss[.fraction]`, which the parser accepts
                 // (it swaps the space for 'T' before LocalDateTime/OffsetDateTime.parse).
                 extractLocalDateTime(type, block, position).format(IDENTITY_TIMESTAMP_FORMAT)
-            // VARCHAR round-trips as its raw UTF-8 text.
             is VarcharType -> type.getSlice(block, position).toStringUtf8()
             // Everything else (VARBINARY, UUID, CHAR, TIME, …) has no canonical identity-partition
             // text the read side can parse back — fail loud rather than write a value that reads
@@ -185,7 +180,6 @@ object DucklakePartitionComputer {
                 val nanoAdjustment = (floorMod(epochMicros, MICROSECONDS_PER_SECOND).toInt()) * 1000
                 return LocalDateTime.ofEpochSecond(epochSeconds, nanoAdjustment, ZoneOffset.UTC)
             }
-            // Long timestamp (precision > 6)
             val longTs: LongTimestamp = columnType.getObject(block, position) as LongTimestamp
             val epochMicros = longTs.epochMicros
             val epochSeconds = floorDiv(epochMicros, MICROSECONDS_PER_SECOND)

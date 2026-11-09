@@ -23,7 +23,7 @@ import java.util.zip.CRC32
  * positions into a single DuckLake deletion-vector-v1 blob — the bare-blob shape DuckLake writes
  * for one deletion vector (`DuckLakePuffinWriter::Write` with a single blob, no PFA1 container).
  * Byte-exact to `DuckLakeDeletionVectorData::ToBlob`
- * (`vendor/ducklake/src/storage/ducklake_deletion_vector.cpp`); see [DucklakePuffinDeleteReader] for
+ * (`ducklake/src/storage/ducklake_deletion_vector.cpp`); see [DucklakePuffinDeleteReader] for
  * the full layout. Both Trino and DuckDB read what this produces.
  */
 object DucklakePuffinDeleteWriter {

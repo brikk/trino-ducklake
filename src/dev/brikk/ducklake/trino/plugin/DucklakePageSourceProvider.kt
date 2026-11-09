@@ -58,9 +58,6 @@ class DucklakePageSourceProvider @Inject constructor(
     private val inlinedPageSources = DucklakeInlinedPageSourceFactory(catalog, typeConverter, readStrategy, inlinedRows)
     private val metadataTablePageSources = DucklakeMetadataTablePageSource(catalog)
 
-    // Resolves relative catalog file paths (data/delete files) to full paths for the change feed,
-    // which reads files the way the split manager does. Built from the same inputs the split
-    // manager's injected resolver uses; the provider isn't handed one directly.
     private val changeFeedPlanner = DucklakeChangeFeedPlanner(
             catalog,
             DucklakePathResolver(catalog, ducklakeConfig),
@@ -86,7 +83,6 @@ class DucklakePageSourceProvider @Inject constructor(
 
         val ducklakeSplit = split as DucklakeSplit
 
-        // Combine file statistics domain with dynamic filter for effective predicate
         val dynamicFilterPredicate: TupleDomain<DucklakeColumnHandle> = dynamicFilter.currentPredicate
                 .transformKeys(DucklakeColumnHandle::class.java::cast)
         val effectivePredicate: TupleDomain<DucklakeColumnHandle> = ducklakeSplit.fileStatisticsDomain

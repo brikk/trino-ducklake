@@ -40,7 +40,7 @@ class TestDucklakeAddFilesCrossEngine : AbstractDucklakeCrossEngineTest() {
     @Test
     @Throws(Exception::class)
     fun testDuckdbWritesParquetTrinoAddFilesDuckdbReads() {
-        // 1. DuckDB writes a parquet file outside any DuckLake-managed directory. The
+        // DuckDB writes a parquet file outside any DuckLake-managed directory. The
         // file's column order intentionally differs from the table's column order
         // (parquet has name first, then id) to prove the name_map round-trip.
         val duckdbOutputDir = getIsolatedCatalog().dataDir.parent.resolve("add_files_xengine")
@@ -56,7 +56,6 @@ class TestDucklakeAddFilesCrossEngine : AbstractDucklakeCrossEngineTest() {
             }
         }
 
-        // 2. Trino creates the destination DuckLake table and registers the file.
         computeActual("CREATE TABLE test_schema.xengine_add_files_dst (id INTEGER, name VARCHAR)")
         try {
             computeActual(String.format(
@@ -66,7 +65,6 @@ class TestDucklakeAddFilesCrossEngine : AbstractDucklakeCrossEngineTest() {
                             + "files => ARRAY['%s'])",
                     parquetPath))
 
-            // 3. Trino reads — sanity check the connector's own side
             val trinoResult = computeActual(
                     "SELECT id, name FROM test_schema.xengine_add_files_dst ORDER BY id")
             assertThat(trinoResult.rowCount).isEqualTo(2)
@@ -75,8 +73,6 @@ class TestDucklakeAddFilesCrossEngine : AbstractDucklakeCrossEngineTest() {
             assertThat(trinoResult.materializedRows[1].getField(0)).isEqualTo(2)
             assertThat(trinoResult.materializedRows[1].getField(1)).isEqualTo("bob")
 
-            // 4. DuckDB reads the catalog-registered table — proves name_map is consumed
-            // by upstream DuckLake.
             createDuckdbConnection().use { duckdb ->
                 duckdb.createStatement().use { stmt ->
                     stmt.executeQuery(

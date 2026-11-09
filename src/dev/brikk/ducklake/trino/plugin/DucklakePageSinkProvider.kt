@@ -86,7 +86,6 @@ class DucklakePageSinkProvider @Inject constructor(
 
         // Lineage-preserving rewrites (session write_row_lineage): a SECOND insert
         // sink embeds the original rowid column into UPDATE-rewritten rows.
-        // Parquet-only — other data-file formats keep today's delete+insert shape.
         val lineageSink: DucklakePageSink? =
                 if (DucklakeSessionProperties.isWriteRowLineage(session) &&
                         DucklakeSessionProperties.FORMAT_PARQUET.equals(

@@ -110,10 +110,7 @@ open class DucklakeSessionProperties @Inject constructor() {
         fun getReadSnapshotTimestamp(session: ConnectorSession): Optional<Instant> {
             val timestamp = session.getProperty(READ_SNAPSHOT_TIMESTAMP, String::class.java) ?: return Optional.empty()
             // The stored value was already validated by parseSnapshotTimestamp as the SET-time
-            // stringProperty validator, so parse directly here — Instant.parse is deterministic
-            // and cannot fail on the same string twice. Re-wrapping in the validator's try/catch
-            // was dead defensiveness that also nominally moved the failure surface from SET time
-            // to query-execution time.
+            // stringProperty validator, so Instant.parse cannot fail on the same string here.
             return Optional.of(Instant.parse(timestamp))
         }
 

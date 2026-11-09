@@ -26,8 +26,6 @@ import org.junit.jupiter.api.Test
 import java.time.LocalDate
 
 internal class TestDucklakePartitionComputer {
-    // ===== Identity transforms =====
-
     @Test
     fun testIdentityVarchar() {
         val block = buildVarcharBlock("hello")
@@ -63,7 +61,6 @@ internal class TestDucklakePartitionComputer {
                 TIMESTAMP_MICROS, buildTimestampMicrosBlock(epochMicros), 0,
                 DucklakePartitionTransform.IDENTITY, DucklakeTemporalPartitionEncoding.CALENDAR)
         assertThat(value).isEqualTo("2024-01-03 10:30:15")
-        // Encoder output must round-trip through the read-side parser (same micros back).
         assertThat(DucklakePartitionValueParser.parseIdentity(TIMESTAMP_MICROS, value!!)).isEqualTo(epochMicros)
     }
 
@@ -130,8 +127,6 @@ internal class TestDucklakePartitionComputer {
         assertThat(value).isNull()
     }
 
-    // ===== Calendar encoding (DuckDB-compatible) =====
-
     @Test
     fun testCalendarYearFromDate() {
         val block = buildDateBlock(LocalDate.of(2023, 6, 15))
@@ -158,7 +153,6 @@ internal class TestDucklakePartitionComputer {
 
     @Test
     fun testCalendarYearFromTimestamp() {
-        // 2023-06-15 14:30:00 UTC in microseconds since epoch
         val epochMicros = LocalDate.of(2023, 6, 15).atTime(14, 30).toEpochSecond(java.time.ZoneOffset.UTC) * 1_000_000L
         val block = buildTimestampMicrosBlock(epochMicros)
         val value = DucklakePartitionComputer.computePartitionValue(
@@ -174,8 +168,6 @@ internal class TestDucklakePartitionComputer {
                 TIMESTAMP_MICROS, block, 0, DucklakePartitionTransform.HOUR, DucklakeTemporalPartitionEncoding.CALENDAR)
         assertThat(value).isEqualTo("14")
     }
-
-    // ===== Epoch encoding =====
 
     @Test
     fun testEpochYearFromDate() {
@@ -210,8 +202,6 @@ internal class TestDucklakePartitionComputer {
         val expectedHours = LocalDate.of(2023, 6, 15).toEpochDay() * 24 + 14
         assertThat(value).isEqualTo(expectedHours.toString())
     }
-
-    // ===== Edge cases =====
 
     @Test
     fun testEpochBoundaryDate() {
@@ -271,8 +261,6 @@ internal class TestDucklakePartitionComputer {
         assertThat(value).isEqualTo("3.14")
     }
 
-    // ===== Helpers =====
-
     private fun buildDateBlock(date: LocalDate): Block {
         val builder = DATE.createBlockBuilder(null, 1)
         DATE.writeInt(builder, date.toEpochDay().toInt())
@@ -290,8 +278,6 @@ internal class TestDucklakePartitionComputer {
         VARCHAR.writeSlice(builder, io.airlift.slice.Slices.utf8Slice(value))
         return builder.build()
     }
-
-    // ===== Bucket transform (Iceberg-compatible Murmur3) =====
 
     // Reference values from Iceberg's spec Appendix B "Bucketing":
     //   bucket[100] over int 34 → bucket 79
@@ -342,8 +328,6 @@ internal class TestDucklakePartitionComputer {
 
     @Test
     fun testBucketIsStableAcrossInvocations() {
-        // Determinism check — the hash function must be pure so two calls on the
-        // same input always produce the same bucket.
         val block = buildVarcharBlock("alice")
         val first = DucklakePartitionComputer.computeBucket(VARCHAR, block, 0, 16)
         val second = DucklakePartitionComputer.computeBucket(VARCHAR, block, 0, 16)

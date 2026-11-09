@@ -19,11 +19,7 @@ import org.junit.jupiter.api.parallel.Execution
 import org.junit.jupiter.api.parallel.ExecutionMode
 
 /**
- * Sanity that ordinary (non-partial) delete files and time-travel are never gated. The former
- * partial-PUFFIN read gate is now LIFTED — consolidated puffin delete files are snapshot-filtered
- * per blob (`DucklakePuffinDeleteReader`, pinned by `TestDucklakePuffinDeleteReader` +
- * `TestDucklakePuffinPartialDelete`); only an unknown delete-file format still hard-fails (via
- * `validateDeleteFileFormats`). See DESIGN-maintenance.md § 6.
+ * Ordinary delete files and time-travel reads must remain available.
  *
  * SAME_THREAD: writes to the shared isolated catalog.
  */
@@ -38,7 +34,6 @@ class TestDucklakePartialFileGuard : AbstractDucklakeIntegrationTest() {
         try {
             computeActual("CREATE TABLE $table AS SELECT * FROM (VALUES (1, 'a'), (2, 'b'), (3, 'c')) AS t(id, name)")
             computeActual("DELETE FROM $table WHERE id = 2")
-            // A normal (non-partial) delete file is never gated and applies at the latest read.
             assertThat(computeActual("SELECT id FROM $table ORDER BY id").materializedRows.map { it.getField(0) as Int })
                     .containsExactly(1, 3)
         }

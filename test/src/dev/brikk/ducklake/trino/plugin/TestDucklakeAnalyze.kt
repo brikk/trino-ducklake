@@ -27,7 +27,7 @@ import org.junit.jupiter.api.parallel.ExecutionMode
  * aggregates are rebuilt in the catalog from the authoritative per-file stats. Because DuckLake
  * maintains these aggregates incrementally on every write, ANALYZE leaves the same stats on a
  * never-drifted table — so the meaningful test deliberately drifts `record_count` in the catalog
- * and asserts ANALYZE recomputes it from a full scan, overwriting the wrong cached value.
+ * and asserts ANALYZE recomputes it from catalog file statistics, overwriting the wrong cached value.
  *
  * SAME_THREAD: writes to the shared catalog; concurrent commits would race the snapshot retry.
  */
@@ -42,8 +42,6 @@ class TestDucklakeAnalyze : AbstractDucklakeIntegrationTest() {
             computeActual("CREATE TABLE $table AS " +
                     "SELECT * FROM (VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd'), (5, 'e')) AS t(id, name)")
 
-            // Before this connector wired the statistics-collection SPI, ANALYZE threw
-            // "This connector does not support analyze". It must now run cleanly.
             val before = getCurrentSnapshotIdFromCatalog()
             computeActual("ANALYZE $table")
             assertThat(getCurrentSnapshotIdFromCatalog()).isEqualTo(before + 1)
@@ -67,7 +65,6 @@ class TestDucklakeAnalyze : AbstractDucklakeIntegrationTest() {
             computeActual("CREATE TABLE $table (id INTEGER)")
             computeActual("INSERT INTO $table VALUES (1), (2), (3)")
 
-            // Drift the cached record_count directly in the catalog, behind the connector's back.
             setRecordCount("an_drift", 999L)
             assertThat(catalogRecordCount("an_drift"))
                 .`as`("sanity: the corruption landed")
@@ -75,11 +72,9 @@ class TestDucklakeAnalyze : AbstractDucklakeIntegrationTest() {
 
             computeActual("ANALYZE $table")
 
-            // ANALYZE scanned the table (3 live rows) and overwrote the wrong cached value...
             assertThat(catalogRecordCount("an_drift"))
                 .`as`("ANALYZE recomputed record_count from the scan, not the stale cache")
                 .isEqualTo(3L)
-            // ...and the planner now sees the corrected count.
             assertThat(showStatsRowCount(table)).isEqualTo(3.0)
         }
         finally {

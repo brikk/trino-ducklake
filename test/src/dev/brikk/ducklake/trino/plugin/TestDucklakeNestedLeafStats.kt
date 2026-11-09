@@ -42,7 +42,7 @@ import java.util.LinkedHashMap
  *       contract — i.e. integers as decimal strings, varchars verbatim.
  *
  * Upstream emits nested-leaf stats the same way (see
- * `third_party/ducklake/src/functions/ducklake_add_data_files.cpp::MapColumnStats`),
+ * `ducklake/src/functions/ducklake_add_data_files.cpp::MapColumnStats`),
  * so this also pins cross-engine compatibility — DuckDB's reader queries
  * `ducklake_file_column_stats` by leaf field_id when planning pruning, and would
  * see incomplete coverage if we elided the nested-leaf rows.
@@ -56,9 +56,6 @@ open class TestDucklakeNestedLeafStats : AbstractDucklakeIntegrationTest() {
     @Test
     @Throws(Exception::class)
     fun rowOfPrimitivesEmitsOneStatsRowPerLeaf() {
-        // CREATE → catalog records ROW field plus one ducklake_column per child leaf,
-        // each with its own column_id. INSERT should emit one ducklake_file_column_stats
-        // row keyed by *each* leaf's column_id.
         computeActual("CREATE TABLE test_schema.row_stats (id INTEGER, data ROW(a INTEGER, b VARCHAR))")
         try {
             computeActual("INSERT INTO test_schema.row_stats VALUES "
@@ -101,7 +98,6 @@ open class TestDucklakeNestedLeafStats : AbstractDucklakeIntegrationTest() {
 
             val rowsByPath = readFileStatsByColumnPath("array_stats")
 
-            // id + the array's element leaf.
             assertThat(rowsByPath).containsOnlyKeys("id", "tags.element")
 
             // value_count for a list element is the count of non-null elements
@@ -126,7 +122,6 @@ open class TestDucklakeNestedLeafStats : AbstractDucklakeIntegrationTest() {
 
             val rowsByPath = readFileStatsByColumnPath("map_stats")
 
-            // id + map key + map value = 3 leaves.
             assertThat(rowsByPath).containsOnlyKeys("id", "attrs.key", "attrs.value")
 
             assertThat(rowsByPath["attrs.key"]!!.minValue).isEqualTo("k1")
@@ -177,7 +172,6 @@ open class TestDucklakeNestedLeafStats : AbstractDucklakeIntegrationTest() {
     @Test
     @Throws(Exception::class)
     fun rowOfRowEmitsDeeplyNestedLeafStats() {
-        // ROW(a INTEGER, nested ROW(b BIGINT, c VARCHAR)) → leaves a, nested.b, nested.c.
         computeActual("CREATE TABLE test_schema.nested_row_stats ("
                 + "id INTEGER, "
                 + "data ROW(a INTEGER, nested ROW(b BIGINT, c VARCHAR)))")
@@ -230,9 +224,6 @@ open class TestDucklakeNestedLeafStats : AbstractDucklakeIntegrationTest() {
 
             val rowsByPath = readFileStatsByColumnPath("add_files_dst")
 
-            // Both struct leaves should have stats emitted via the add_files name-mapper
-            // leaf walk — pinning that nested children flow through the same path the
-            // INSERT writer uses.
             assertThat(rowsByPath).containsOnlyKeys("id", "data.a", "data.b")
             assertThat(rowsByPath["data.a"]!!.minValue).isEqualTo("7")
             assertThat(rowsByPath["data.a"]!!.maxValue).isEqualTo("42")
@@ -244,8 +235,6 @@ open class TestDucklakeNestedLeafStats : AbstractDucklakeIntegrationTest() {
             tryDropTable("test_schema.add_files_dst")
         }
     }
-
-    // ==================== Catalog readers ====================
 
     /**
      * Reads `ducklake_file_column_stats` rows for an active table, joining
@@ -308,8 +297,6 @@ open class TestDucklakeNestedLeafStats : AbstractDucklakeIntegrationTest() {
 
     @JvmRecord
     private data class FileStatsRow(val valueCount: Long, val nullCount: Long, val minValue: String?, val maxValue: String?)
-
-    // ==================== add_files helpers (mirrors TestDucklakeAddFiles) ====================
 
     private fun singleFileAbsolutePath(unqualifiedTable: String): String {
         val files = computeActual("SELECT path FROM \"" + unqualifiedTable + "\$files\"")

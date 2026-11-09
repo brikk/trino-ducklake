@@ -66,8 +66,8 @@ data class DucklakeSplit @JsonCreator constructor(
         // column name to look up in this file's schema, when that differs from the
         // table column name. Populated from `ducklake_name_mapping` when the data
         // file has a non-null `mapping_id` (today: files registered via
-        // `add_files`). The page source consults this after name-then-field_id
-        // lookups miss in the parquet schema.
+        // `add_files`). When present, this mapping is authoritative; a missing entry means
+        // the field is absent, not permission to bind by name.
         @get:JvmName("fieldIdToParquetSourceName")
         @param:JsonProperty("fieldIdToParquetSourceName") val fieldIdToParquetSourceName: Map<Long, String>,
         // File-local row positions deleted via DuckLake's inlined-delete mechanism
@@ -79,7 +79,7 @@ data class DucklakeSplit @JsonCreator constructor(
         @param:JsonProperty("inlinedDeletedRowPositions") val inlinedDeletedRowPositions: Set<Long>,
         // Affinity key from SplitAffinityProvider. The engine routes splits with the
         // same key to the same worker(s) across queries via a consistent-hash ring,
-        // enabling filesystem-cache warm reuse. Empty when caching is not enabled.
+        // enabling filesystem-cache warm reuse.
         @get:JvmName("affinityKey")
         @param:JsonProperty("affinityKey") val affinityKey: Optional<String>,
         // begin_snapshot of the primary data file (ducklake_data_file.begin_snapshot) —
@@ -92,9 +92,8 @@ data class DucklakeSplit @JsonCreator constructor(
         // `_ducklake_internal_snapshot_id > S`. Null for ordinary files (no filter needed).
         @get:JvmName("snapshotFilterMax")
         @param:JsonProperty("snapshotFilterMax") val snapshotFilterMax: Long? = null,
-        // For consolidated ("partial") PARQUET delete files whose partial_max exceeds the read
-        // snapshot: resolved delete-file path -> the query snapshot S. The delete reader keeps only
-        // the deletions whose _ducklake_internal_snapshot_id <= S. Empty for ordinary delete files.
+        // Resolved delete-file path -> query snapshot S for formats that may embed deletion
+        // snapshots. Readers keep deletions at or before S when markers exist, otherwise the full union.
         @get:JvmName("deleteFileSnapshotFilters")
         @param:JsonProperty("deleteFileSnapshotFilters") val deleteFileSnapshotFilters: Map<String, Long> = mapOf(),
         // Physical file identity for DELETE/UPDATE/MERGE. Ordinary read-only synthetic splits
@@ -104,7 +103,6 @@ data class DucklakeSplit @JsonCreator constructor(
         : ConnectorSplit
 {
     override fun isRemotelyAccessible(): Boolean {
-        // Ducklake files can be on object storage
         return true
     }
 

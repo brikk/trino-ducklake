@@ -18,7 +18,7 @@ import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
 
-/** H15/N19 through the actual Trino adapter. Oracle totals cannot satisfy these coverage gates. */
+/** Actual Trino adapter coverage; oracle totals cannot satisfy these mirror gates. */
 class TestPublishedReplayMirrors {
     @TempDir lateinit var directory: Path
 

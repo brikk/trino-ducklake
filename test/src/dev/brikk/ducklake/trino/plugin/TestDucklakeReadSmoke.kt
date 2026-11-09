@@ -30,8 +30,6 @@ class TestDucklakeReadSmoke : AbstractDucklakeIntegrationTest() {
         return "integration-read-smoke"
     }
 
-    // ==================== Metadata queries ====================
-
     @Test
     fun testShowSchemas() {
         val result = computeActual("SHOW SCHEMAS")
@@ -119,8 +117,6 @@ class TestDucklakeReadSmoke : AbstractDucklakeIntegrationTest() {
         assertThat(result.rowCount).isGreaterThan(0)
     }
 
-    // ==================== information_schema ====================
-
     @Test
     fun testInformationSchemaTables() {
         val result = computeActual(
@@ -159,8 +155,6 @@ class TestDucklakeReadSmoke : AbstractDucklakeIntegrationTest() {
                 .map { row -> row.getField(0).toString() })
                 .contains("test_schema", "information_schema")
     }
-
-    // ==================== Basic reads ====================
 
     @Test
     fun testSelectSimpleTable() {
@@ -216,8 +210,6 @@ class TestDucklakeReadSmoke : AbstractDucklakeIntegrationTest() {
 
     @Test
     fun testSelectWithDatePredicate() {
-        // Dates: 2024-01-15, 2024-02-20, 2024-03-10, 2024-01-05, 2024-02-28
-        // Three are > 2024-02-01: 2024-02-20, 2024-03-10, 2024-02-28
         val result = computeActual(
                 "SELECT count(*) FROM simple_table WHERE created_date > DATE '2024-02-01'")
         assertThat(result.materializedRows[0].getField(0)).isEqualTo(3L)
@@ -259,8 +251,6 @@ class TestDucklakeReadSmoke : AbstractDucklakeIntegrationTest() {
                 "SELECT DISTINCT active FROM simple_table ORDER BY active")
         assertThat(result.rowCount).isEqualTo(2)
     }
-
-    // ==================== Edge cases ====================
 
     @Test
     fun testFalsePredicateReturnsEmpty() {

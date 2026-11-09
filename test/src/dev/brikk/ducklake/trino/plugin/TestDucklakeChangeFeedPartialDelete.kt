@@ -26,8 +26,8 @@ import java.nio.file.Path
 import java.sql.DriverManager
 
 /**
- * Change-feed correctness over a CONSOLIDATED ("partial") DELETE file — the delete-side analog of
- * the insert-side partial_max fix. DuckLake's delete consolidation (flush_inlined_data) folds
+ * Change-feed correctness over a CONSOLIDATED ("partial") DELETE file.
+ * DuckLake's delete consolidation (flush_inlined_data) folds
  * deletions recorded at several snapshots into ONE 3-column delete file (`file_path, pos,
  * _ducklake_internal_snapshot_id`) whose `begin_snapshot` = MIN(deletion snapshots) and
  * `partial_max` may be MAX or SQL NULL. The change feed must inspect the physical schema, report
@@ -95,8 +95,6 @@ class TestDucklakeChangeFeedPartialDelete : AbstractTestQueryFramework() {
 
     @Test
     fun eachDeletionAttributedToItsOwnSnapshot() {
-        // Over the full window both deletions appear, each at its OWN snapshot (A for id=1, B for
-        // id=5) — NOT both at begin_snapshot (A).
         val all = deletions(1, delSnapB)
         assertThat(all).containsExactlyInAnyOrder(delSnapA to 1, delSnapB to 5)
     }
@@ -112,7 +110,6 @@ class TestDucklakeChangeFeedPartialDelete : AbstractTestQueryFramework() {
 
     @Test
     fun windowOnlyFirstDeletionExcludesLater() {
-        // Window [A, A]: only id=1's deletion; id=5's (snapshot B > end) must be excluded.
         val rows = deletions(delSnapA, delSnapA)
         assertThat(rows).containsExactly(delSnapA to 1)
     }

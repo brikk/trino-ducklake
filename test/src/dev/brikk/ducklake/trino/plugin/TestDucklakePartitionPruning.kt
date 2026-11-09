@@ -72,7 +72,6 @@ class TestDucklakePartitionPruning {
             .findFirst().orElseThrow().columnId
         val regionColumn = DucklakeColumnHandle(regionColumnId, "region", VARCHAR, true)
 
-        // Apply filter with region = 'US'
         val constraint = Constraint(
             TupleDomain.withColumnDomains(
                 ImmutableMap.of(regionColumn as ColumnHandle, Domain.singleValue(VARCHAR, Slices.utf8Slice("US")))
@@ -111,7 +110,6 @@ class TestDucklakePartitionPruning {
             .findFirst().orElseThrow().columnId
         val amountColumn = DucklakeColumnHandle(amountColumnId, "amount", DOUBLE, true)
 
-        // Apply filter with amount > 100
         val constraint = Constraint(
             TupleDomain.withColumnDomains(
                 ImmutableMap.of(
@@ -128,11 +126,9 @@ class TestDucklakePartitionPruning {
         assertThat(result).isPresent
         val newHandle = result.get().handle as DucklakeTableHandle
 
-        // Amount should be unenforced (not a partition column)
         assertThat(newHandle.enforcedPredicate.isAll).isTrue()
         assertThat(newHandle.unenforcedPredicate.isAll).isFalse()
 
-        // Remaining filter should include amount
         assertThat(result.get().remainingFilter.isAll).isFalse()
     }
 
@@ -231,7 +227,6 @@ class TestDucklakePartitionPruning {
 
         val result = metadata.applyFilter(SESSION, tableHandle, constraint)
 
-        // Complex types are not pushed down into Ducklake predicates.
         assertThat(result).isEmpty
     }
 
@@ -247,7 +242,6 @@ class TestDucklakePartitionPruning {
             .findFirst().orElseThrow().columnId
         val regionColumn = DucklakeColumnHandle(regionColumnId, "region", VARCHAR, true)
 
-        // Create table handle with enforced predicate for region = 'EU'
         val tableHandle = DucklakeTableHandle(
             "test_schema", "partitioned_table",
             partitionedTable.tableId, snapshotId,
@@ -259,17 +253,14 @@ class TestDucklakePartitionPruning {
             )
         )
 
-        // Get all splits
         val allSplits = getSplits(
             splitManager, DucklakeTableHandle(
                 "test_schema", "partitioned_table", partitionedTable.tableId, snapshotId
             )
         )
 
-        // Get pruned splits
         val prunedSplits = getSplits(splitManager, tableHandle)
 
-        // Pruned splits should be fewer than all splits
         assertThat(prunedSplits.size).isLessThan(allSplits.size)
         assertThat(prunedSplits).isNotEmpty
     }
@@ -279,7 +270,6 @@ class TestDucklakePartitionPruning {
         val typeConverter = DucklakeTypeConverter(TESTING_TYPE_MANAGER)
         val metadata = testingDucklakeMetadata(catalog, typeConverter)
 
-        // Use simple_table which is NOT partitioned
         val simpleTable = catalog.listSchemas(snapshotId).stream()
             .filter { it.schemaName == "test_schema" }
             .findFirst()
@@ -310,7 +300,6 @@ class TestDucklakePartitionPruning {
         assertThat(result).isPresent
         val newHandle = result.get().handle as DucklakeTableHandle
 
-        // No partition specs -> all predicates should be unenforced
         assertThat(newHandle.enforcedPredicate.isAll).isTrue()
         assertThat(newHandle.unenforcedPredicate.isAll).isFalse()
     }

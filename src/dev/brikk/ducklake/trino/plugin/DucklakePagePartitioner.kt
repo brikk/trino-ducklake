@@ -38,7 +38,6 @@ open class DucklakePagePartitioner(
     private val partitionKeyNames: Map<Int, String>
 
     init {
-        // Build mappings: for each partition field, find the source column index and type
         val mappings: MutableList<PartitionColumnMapping> = mutableListOf()
         for (field in partitionSpec.fields) {
             val sourceColumnIndex = this.allColumns.indexOfFirst { it.columnId == field.columnId }
@@ -89,7 +88,6 @@ open class DucklakePagePartitioner(
         }
         this.partitionKeyNames = names
 
-        // Create page indexer for the partition column types
         val partitionTypes: List<Type> = partitionColumnMappings.map { it.indexerType }
         this.pageIndexer = pageIndexerFactory.createPageIndexer(partitionTypes)
     }
@@ -149,7 +147,6 @@ open class DucklakePagePartitioner(
                 partitionBlocks[i] = sourceBlock
             }
             else {
-                // Transform temporal / bucket values into integer partition values
                 partitionBlocks[i] = transformBlockToInteger(
                         mapping.sourceColumn.columnType,
                         sourceBlock,

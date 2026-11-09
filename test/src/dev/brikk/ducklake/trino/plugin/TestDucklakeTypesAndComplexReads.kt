@@ -16,28 +16,10 @@ package dev.brikk.ducklake.trino.plugin
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 
-/**
- * Type/null/complex-type read coverage for the connector. Walks every fixture table whose
- * job is to probe a specific corner of the type system or NULL handling:
- *
- *  * `wide_types_table` — full numeric, date/timestamp, blob coverage.
- *  * `nullable_table` / `complex_nulls_table` — NULL semantics for scalars,
- *    arrays, and structs (including the full-NULL vs. null-subfield distinction).
- *  * `empty_table` — empty result set / aggregation-over-empty edge cases.
- *  * `nested_table` / `array_table` — struct/map/array dereference and
- *    projection paths.
- *  * `multi_file_table` — that predicates and NULL handling work across the
- *    file boundaries of a multi-file scan.
- *  * `schema_evolution_table` — that ALTER TABLE ADD COLUMN reads back the new
- *    column as NULL on pre-ALTER rows and the literal value on post-ALTER rows.
- *  * `aggregation_table` — GROUP BY / HAVING / window / DISTINCT / FILTER paths.
- */
 class TestDucklakeTypesAndComplexReads : AbstractDucklakeIntegrationTest() {
     override fun isolatedCatalogName(): String {
         return "integration-types-complex"
     }
-
-    // ==================== DESCRIBE on type-rich fixtures ====================
 
     @Test
     fun testDescribeWideTypesTable() {
@@ -61,7 +43,6 @@ class TestDucklakeTypesAndComplexReads : AbstractDucklakeIntegrationTest() {
             .toList()
         assertThat(columns).containsExactly("id", "metadata", "tags", "nested_list", "complex_struct")
 
-        // Verify the type strings for complex columns
         val types = result.materializedRows.stream()
             .map { row -> row.getField(1).toString() }
             .toList()
@@ -82,7 +63,6 @@ class TestDucklakeTypesAndComplexReads : AbstractDucklakeIntegrationTest() {
         val dataTypes = result.materializedRows.stream()
             .map { row -> row.getField(1).toString() }
             .toList()
-        // tinyint, smallint, integer, bigint, real, double, decimal(10,2), boolean, varchar, date, timestamp(6), varbinary
         assertThat(dataTypes[0]).isEqualTo("tinyint")
         assertThat(dataTypes[1]).isEqualTo("smallint")
         assertThat(dataTypes[2]).isEqualTo("integer")
@@ -97,8 +77,6 @@ class TestDucklakeTypesAndComplexReads : AbstractDucklakeIntegrationTest() {
         assertThat(dataTypes[11]).isEqualTo("varbinary")
     }
 
-    // ==================== Wide types table ====================
-
     @Test
     fun testWideTypesTableRead() {
         assertQuery("SELECT count(*) FROM wide_types_table", "VALUES 3")
@@ -111,7 +89,6 @@ class TestDucklakeTypesAndComplexReads : AbstractDucklakeIntegrationTest() {
                 "FROM wide_types_table ORDER BY col_integer"
         )
         assertThat(result.rowCount).isEqualTo(3)
-        // Negative row
         val negativeRow = result.materializedRows[0]
         assertThat((negativeRow.getField(0) as Number).toByte()).isEqualTo((-1).toByte())
         assertThat((negativeRow.getField(1) as Number).toShort()).isEqualTo((-100).toShort())
@@ -159,11 +136,8 @@ class TestDucklakeTypesAndComplexReads : AbstractDucklakeIntegrationTest() {
             "SELECT col_blob FROM wide_types_table WHERE col_integer = 10000"
         )
         assertThat(result.rowCount).isEqualTo(1)
-        // blob should be non-null
         assertThat(result.materializedRows[0].getField(0)).isNotNull()
     }
-
-    // ==================== NULL handling ====================
 
     @Test
     fun testNullableTableRead() {
@@ -172,7 +146,6 @@ class TestDucklakeTypesAndComplexReads : AbstractDucklakeIntegrationTest() {
 
     @Test
     fun testNullableTableNullCount() {
-        // id column has one NULL (row 3)
         val result = computeActual(
             "SELECT count(*) FROM nullable_table WHERE id IS NULL"
         )
@@ -181,7 +154,6 @@ class TestDucklakeTypesAndComplexReads : AbstractDucklakeIntegrationTest() {
 
     @Test
     fun testNullableTableNullNameCount() {
-        // name column has NULLs in rows 2 and 4
         val result = computeActual(
             "SELECT count(*) FROM nullable_table WHERE name IS NULL"
         )
@@ -190,7 +162,6 @@ class TestDucklakeTypesAndComplexReads : AbstractDucklakeIntegrationTest() {
 
     @Test
     fun testNullableTableNullComplexTypes() {
-        // tags array is NULL in rows 2 and 4
         val result = computeActual(
             "SELECT count(*) FROM nullable_table WHERE tags IS NULL"
         )
@@ -199,7 +170,6 @@ class TestDucklakeTypesAndComplexReads : AbstractDucklakeIntegrationTest() {
 
     @Test
     fun testNullableTableNullFiltering() {
-        // Rows 1 and 3 have non-null name, price, active, created_date, and tags.
         val result = computeActual(
             "SELECT id FROM nullable_table " +
                 "WHERE name IS NOT NULL AND price IS NOT NULL AND active IS NOT NULL " +
@@ -218,8 +188,6 @@ class TestDucklakeTypesAndComplexReads : AbstractDucklakeIntegrationTest() {
             .toList()
         assertThat(names).contains("Present", "UNKNOWN", "NoId")
     }
-
-    // ==================== Empty table ====================
 
     @Test
     fun testEmptyTableRead() {
@@ -241,8 +209,6 @@ class TestDucklakeTypesAndComplexReads : AbstractDucklakeIntegrationTest() {
         assertThat(result.materializedRows[0].getField(1)).isNull()
         assertThat(result.materializedRows[0].getField(2)).isNull()
     }
-
-    // ==================== Complex types — dereference ====================
 
     @Test
     fun testStructFieldDereference() {
@@ -275,7 +241,6 @@ class TestDucklakeTypesAndComplexReads : AbstractDucklakeIntegrationTest() {
 
     @Test
     fun testArraySubscript() {
-        // nested_list for id=1 is [[1,2],[3,4]], so nested_list[1] is [1,2]
         val result = computeActual(
             "SELECT nested_list[1] FROM nested_table WHERE id = 1"
         )
@@ -294,7 +259,6 @@ class TestDucklakeTypesAndComplexReads : AbstractDucklakeIntegrationTest() {
 
     @Test
     fun testComplexStructNestedArrayDereference() {
-        // complex_struct.scores for id=1 is [90, 85, 92]
         val result = computeActual(
             "SELECT cardinality(complex_struct.scores) FROM nested_table WHERE id = 1"
         )
@@ -341,7 +305,6 @@ class TestDucklakeTypesAndComplexReads : AbstractDucklakeIntegrationTest() {
             "SELECT id, cardinality(tags) FROM array_table ORDER BY id"
         )
         assertThat(result.rowCount).isEqualTo(5)
-        // id=1 has 3 tags, id=4 has 1 tag
         assertThat((result.materializedRows[0].getField(1) as Number).toLong()).isEqualTo(3L)
         assertThat((result.materializedRows[3].getField(1) as Number).toLong()).isEqualTo(1L)
     }
@@ -355,11 +318,8 @@ class TestDucklakeTypesAndComplexReads : AbstractDucklakeIntegrationTest() {
         assertThat(result.rowCount).isEqualTo(3)
     }
 
-    // ==================== Complex NULL patterns (structs, arrays) ====================
-
     @Test
     fun testFullNullStructRow() {
-        // Row 2 has pair=NULL (entire struct is null) and row 4 has pair=NULL
         val result = computeActual(
             "SELECT id FROM complex_nulls_table WHERE pair IS NULL ORDER BY id"
         )
@@ -370,7 +330,6 @@ class TestDucklakeTypesAndComplexReads : AbstractDucklakeIntegrationTest() {
 
     @Test
     fun testStructWithNullSubfield() {
-        // Row 3 has pair.a=NULL, pair.b=40
         val result = computeActual(
             "SELECT pair.b FROM complex_nulls_table WHERE id = 3"
         )
@@ -379,8 +338,6 @@ class TestDucklakeTypesAndComplexReads : AbstractDucklakeIntegrationTest() {
 
     @Test
     fun testStructNullVsNullSubfield() {
-        // Distinguish full-NULL struct from struct with NULL subfields
-        // Row 2: pair IS NULL (true), Row 3: pair IS NOT NULL but pair.a IS NULL
         val result = computeActual(
             "SELECT id, pair IS NULL AS is_null_struct FROM complex_nulls_table WHERE id IN (2, 3) ORDER BY id"
         )
@@ -391,7 +348,6 @@ class TestDucklakeTypesAndComplexReads : AbstractDucklakeIntegrationTest() {
 
     @Test
     fun testArrayWithNullElement() {
-        // Row 2 has items=[NULL] — a non-null array containing a null element
         val result = computeActual(
             "SELECT cardinality(items) FROM complex_nulls_table WHERE id = 2"
         )
@@ -400,7 +356,6 @@ class TestDucklakeTypesAndComplexReads : AbstractDucklakeIntegrationTest() {
 
     @Test
     fun testFullNullArrayRow() {
-        // Row 3 has items=NULL (entire array is null)
         val result = computeActual(
             "SELECT items IS NULL FROM complex_nulls_table WHERE id = 3"
         )
@@ -409,8 +364,6 @@ class TestDucklakeTypesAndComplexReads : AbstractDucklakeIntegrationTest() {
 
     @Test
     fun testArrayNullVsNullElement() {
-        // Row 2: items IS NOT NULL (array exists but has null element)
-        // Row 3: items IS NULL (entire array is null)
         val result = computeActual(
             "SELECT id, items IS NULL AS is_null_array FROM complex_nulls_table WHERE id IN (2, 3) ORDER BY id"
         )
@@ -421,7 +374,6 @@ class TestDucklakeTypesAndComplexReads : AbstractDucklakeIntegrationTest() {
 
     @Test
     fun testVariableLengthArrays() {
-        // Arrays of different lengths: [1,2,3], [NULL], NULL, [4,5], []
         val result = computeActual(
             "SELECT id, cardinality(items) FROM complex_nulls_table WHERE items IS NOT NULL ORDER BY id"
         )
@@ -434,7 +386,6 @@ class TestDucklakeTypesAndComplexReads : AbstractDucklakeIntegrationTest() {
 
     @Test
     fun testEmptyArray() {
-        // Row 5 has items=[] — an empty array (not null)
         val result = computeActual(
             "SELECT items IS NULL, cardinality(items) FROM complex_nulls_table WHERE id = 5"
         )
@@ -442,11 +393,8 @@ class TestDucklakeTypesAndComplexReads : AbstractDucklakeIntegrationTest() {
         assertThat((result.materializedRows[0].getField(1) as Number).toLong()).isEqualTo(0L)
     }
 
-    // ==================== Multi-file scan ====================
-
     @Test
     fun testMultiFileScanCount() {
-        // 5 rows across 3 separate Parquet files
         val result = computeActual("SELECT count(*) FROM multi_file_table")
         assertThat(result.materializedRows[0].getField(0)).isEqualTo(5L)
     }
@@ -466,7 +414,6 @@ class TestDucklakeTypesAndComplexReads : AbstractDucklakeIntegrationTest() {
 
     @Test
     fun testMultiFileScanWithPredicate() {
-        // Predicate should work across file boundaries
         val result = computeActual(
             "SELECT count(*) FROM multi_file_table WHERE id > 2"
         )
@@ -481,8 +428,6 @@ class TestDucklakeTypesAndComplexReads : AbstractDucklakeIntegrationTest() {
         )
         assertThat(result.materializedRows[0].getField(0)).isEqualTo(1L)
     }
-
-    // ==================== Schema evolution ====================
 
     @Test
     fun testSchemaEvolutionTableRead() {
@@ -501,7 +446,6 @@ class TestDucklakeTypesAndComplexReads : AbstractDucklakeIntegrationTest() {
 
     @Test
     fun testSchemaEvolutionOldRowsHaveNullForNewColumn() {
-        // Rows 1 and 2 were inserted before added_col was added
         val result = computeActual(
             "SELECT id, added_col FROM schema_evolution_table WHERE id <= 2 ORDER BY id"
         )
@@ -526,11 +470,8 @@ class TestDucklakeTypesAndComplexReads : AbstractDucklakeIntegrationTest() {
             "SELECT * FROM schema_evolution_table ORDER BY id"
         )
         assertThat(result.rowCount).isEqualTo(4)
-        // Verify all columns are present including new one
         assertThat(result.types).hasSize(3)
     }
-
-    // ==================== Aggregation table ====================
 
     @Test
     fun testAggregationTableCount() {

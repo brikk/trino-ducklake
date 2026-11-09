@@ -188,7 +188,6 @@ object DucklakePuffinDeleteReader {
         return fail("File is not a valid deletion vector — magic mismatch: $path")
     }
 
-    /** Single throw site so the parse/decode helpers below stay within detekt's per-fn throw budget. */
     private fun fail(message: String, cause: Throwable? = null): Nothing = throw IOException(message, cause)
 
     /** PFA1 footer: `Magic | FooterPayload | FooterPayloadSize(4 LE) | Flags(4) | Magic`. */

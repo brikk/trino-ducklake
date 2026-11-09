@@ -14,8 +14,8 @@ import java.io.ByteArrayOutputStream
  * The rules mirror DuckDB's `StringUtil::URLEncode(encode_slash = true)` /
  * `URLDecode(plus_to_space = false)`, which DuckLake's `HivePartitioning::Escape` /
  * `Unescape` use to build/parse `BuildHivePartitionPath` segments (see
- * `vendor/ducklake/src/storage/ducklake_partition_data.cpp` and
- * `vendor/duckdb/src/common/string_util.cpp`):
+ * `ducklake/src/storage/ducklake_partition_data.cpp` and upstream DuckDB's
+ * `src/common/string_util.cpp`):
  *
  *  * Unreserved bytes pass through verbatim: `A-Z a-z 0-9 _ - ~ .`
  *  * Every other byte — including `/` (encode_slash) and any non-ASCII UTF-8 byte — becomes

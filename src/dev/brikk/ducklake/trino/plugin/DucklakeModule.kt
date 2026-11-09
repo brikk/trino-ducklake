@@ -42,12 +42,10 @@ class DucklakeModule(catalogConfig: Map<String, String>) : Module {
     private val catalogConfig: Map<String, String> = catalogConfig.toMap()
 
     override fun configure(binder: Binder) {
-        // Configuration
         configBinder(binder).bindConfig(DucklakeConfig::class.java)
         configBinder(binder).bindConfig(ParquetReaderConfig::class.java)
         configBinder(binder).bindConfig(ParquetWriterConfig::class.java)
 
-        // Core connector components
         binder.bind(DucklakeConnector::class.java).`in`(Scopes.SINGLETON)
         binder.bind(DucklakeTransactionManager::class.java).`in`(Scopes.SINGLETON)
         binder.bind(DucklakeMetadataFactory::class.java).`in`(Scopes.SINGLETON)
@@ -55,22 +53,17 @@ class DucklakeModule(catalogConfig: Map<String, String>) : Module {
         binder.bind(DucklakeSessionProperties::class.java).`in`(Scopes.SINGLETON)
         binder.bind(DucklakeNodePartitioningProvider::class.java).`in`(Scopes.SINGLETON)
 
-        // Catalog
         binder.bind(DucklakeCatalog::class.java).toProvider(DucklakeCatalogProvider::class.java).`in`(Scopes.SINGLETON)
 
-        // File system factory
         binder.bind(DucklakeFileSystemFactory::class.java).to(DefaultDucklakeFileSystemFactory::class.java).`in`(Scopes.SINGLETON)
 
-        // Path resolver
         binder.bind(DucklakePathResolver::class.java).`in`(Scopes.SINGLETON)
         binder.bind(DucklakeFilePathIdentity::class.java).`in`(Scopes.SINGLETON)
 
         // Always-on split affinity. FileSystemModule's setDefault() binds Noop; when
         // fs.cache.enabled=true the Alluxio module's setBinding() supersedes both. We
         // only install our setBinding() when caching is off — same key shape, so
-        // behavior is identical either way; the operator just doesn't have to configure
-        // fs.cache.directories etc. to get node pinning for DuckDB-format reads (which
-        // bypass TrinoFileSystem and gain nothing from the cache itself).
+        // behavior is identical either way.
         if (!java.lang.Boolean.parseBoolean(catalogConfig.getOrDefault("fs.cache.enabled", "false"))) {
             newOptionalBinder(binder, SplitAffinityProvider::class.java)
                     .setBinding()
@@ -78,7 +71,6 @@ class DucklakeModule(catalogConfig: Map<String, String>) : Module {
                     .`in`(Scopes.SINGLETON)
         }
 
-        // Split manager
         binder.bind(ConnectorSplitManager::class.java)
                 .annotatedWith(ForClassLoaderSafe::class.java)
                 .to(DucklakeSplitManager::class.java)
@@ -90,7 +82,6 @@ class DucklakeModule(catalogConfig: Map<String, String>) : Module {
         // manager to drive the real read path; JIT bindings are disabled.
         binder.bind(DucklakeSplitManager::class.java).`in`(Scopes.SINGLETON)
 
-        // Page source provider
         binder.bind(ConnectorPageSourceProviderFactory::class.java)
                 .annotatedWith(ForClassLoaderSafe::class.java)
                 .to(DucklakePageSourceProviderFactory::class.java)
@@ -100,7 +91,6 @@ class DucklakeModule(catalogConfig: Map<String, String>) : Module {
                 .to(ClassLoaderSafeConnectorPageSourceProviderFactory::class.java)
                 .`in`(Scopes.SINGLETON)
 
-        // Page sink provider
         binder.bind(ConnectorPageSinkProvider::class.java)
                 .annotatedWith(ForClassLoaderSafe::class.java)
                 .to(DucklakePageSinkProvider::class.java)
@@ -109,27 +99,19 @@ class DucklakeModule(catalogConfig: Map<String, String>) : Module {
                 .to(ClassLoaderSafeConnectorPageSinkProvider::class.java)
                 .`in`(Scopes.SINGLETON)
 
-        // Write fragment codecs
         jsonCodecBinder(binder).bindJsonCodec(DucklakeWriteFragment::class.java)
         jsonCodecBinder(binder).bindJsonCodec(DucklakeDeleteFragment::class.java)
 
-        // Parquet reader configuration and stats
         binder.bind(FileFormatDataSourceStats::class.java).`in`(Scopes.SINGLETON)
         newExporter(binder).export(FileFormatDataSourceStats::class.java).withGeneratedName()
 
-        // Type converter
         binder.bind(DucklakeTypeConverter::class.java).`in`(Scopes.SINGLETON)
 
-        // Table properties
         binder.bind(DucklakeTableProperties::class.java).`in`(Scopes.SINGLETON)
 
-        // Procedures (per-catalog, exposed under <catalog>.system.<name>).
         bindProcedures(binder)
 
-        // Table functions (per-catalog, invoked as TABLE(<catalog>.system.<name>(...))).
-        // DucklakeFunctionProvider routes each function's handle to its split processor.
         val tableFunctionBinder = Multibinder.newSetBinder(binder, ConnectorTableFunction::class.java)
-        // Change feed (F9): table_insertions / table_deletions / table_changes.
         tableFunctionBinder.addBinding().to(TableInsertionsTableFunction::class.java).`in`(Scopes.SINGLETON)
         tableFunctionBinder.addBinding().to(TableDeletionsTableFunction::class.java).`in`(Scopes.SINGLETON)
         tableFunctionBinder.addBinding().to(TableChangesTableFunction::class.java).`in`(Scopes.SINGLETON)

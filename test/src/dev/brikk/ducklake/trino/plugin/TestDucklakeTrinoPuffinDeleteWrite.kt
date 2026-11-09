@@ -46,17 +46,13 @@ class TestDucklakeTrinoPuffinDeleteWrite : AbstractDucklakeCrossEngineTest() {
             computeActual("CREATE TABLE $table AS SELECT * FROM (VALUES "
                     + "(1, 'keep'), (2, 'drop'), (3, 'keep'), (4, 'drop'), (5, 'keep')) AS t(id, label)")
 
-            // DELETE under write_deletion_vectors → the merge sink emits a .puffin delete file.
             computeActual(puffinSession(), "DELETE FROM $table WHERE label = 'drop'")
 
-            // The delete file the connector wrote must be format='puffin' with a .puffin path.
             assertThat(puffinDeleteFileCount()).`as`("Trino wrote a puffin deletion-vector delete file").isEqualTo(1L)
 
-            // Trino reads its own puffin deletes back.
             assertThat(computeActual("SELECT id FROM $table ORDER BY id").materializedRows.map { it.getField(0) as Int })
                     .`as`("Trino read of Trino-written puffin deletes").containsExactly(1, 3, 5)
 
-            // DuckDB reads the same puffin deletes from the shared PostgreSQL catalog.
             assertThat(duckdbIds("ducklake_db.test_schema.trino_puffin_write"))
                     .`as`("DuckDB read of Trino-written puffin deletes").containsExactly(1, 3, 5)
         }

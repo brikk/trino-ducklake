@@ -43,14 +43,11 @@ class TestDucklakeAddColumnDefaultCrossEngine : AbstractDucklakeCrossEngineTest(
                 }
             }
 
-            // Stage 1 — projection: old rows must read b = 42, not NULL.
             val projected = computeActual("SELECT a, b FROM $trino ORDER BY a").materializedRows
                     .map { it.getField(0) as Int to it.getField(1) as Int? }
             println("PROJECTED: $projected")
             assertThat(projected).containsExactly(1 to 42, 2 to 42, 3 to 42)
 
-            // Stage 2 — filter: WHERE b = 42 must match all old rows (stats-less
-            // column must not prune the file).
             val count = computeActual("SELECT count(*) FROM $trino WHERE b = 42").materializedRows[0].getField(0) as Long
             assertThat(count).`as`("filter on the added-default column").isEqualTo(3L)
         }

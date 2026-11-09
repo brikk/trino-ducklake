@@ -51,7 +51,6 @@ class TestDucklakeCrossEngineTableLocation
                     + "WITH (location = 'custom_rel_dir/')")
             computeActual("INSERT INTO $fullTrino VALUES (1, 'alice'), (2, 'bob')")
 
-            // Catalog row holds the requested path + relative flag verbatim.
             val catalog = getIsolatedCatalog()
             DriverManager.getConnection(catalog.jdbcUrl, catalog.user, catalog.password).use { conn ->
                 val dsl = CatalogTestSupport.dsl(conn)
@@ -65,7 +64,6 @@ class TestDucklakeCrossEngineTableLocation
                 assertThat(row.value2()).isTrue()
             }
 
-            // Data files landed under the relative directory under the schema path.
             val tableDir = getIsolatedCatalog().dataDir
                     .resolve("test_schema")
                     .resolve("custom_rel_dir")
@@ -77,7 +75,6 @@ class TestDucklakeCrossEngineTableLocation
                         .isPresent()
             }
 
-            // Round-trip through DuckDB on the same catalog.
             createDuckdbConnection().use { conn ->
                 conn.createStatement().use { stmt ->
                     stmt.executeQuery("SELECT id, name FROM ducklake_db.$fullTrino ORDER BY id").use { rs ->
@@ -164,7 +161,6 @@ class TestDucklakeCrossEngineTableLocation
             computeActual("CREATE TABLE test_schema.bad_loc (id INTEGER) WITH (location = '../escape/')")
         }
                 .hasMessageContaining("..")
-        // No table created.
         val rs = computeActual("SHOW TABLES FROM test_schema LIKE 'bad_loc'")
         assertThat(rs.rowCount).isZero()
     }

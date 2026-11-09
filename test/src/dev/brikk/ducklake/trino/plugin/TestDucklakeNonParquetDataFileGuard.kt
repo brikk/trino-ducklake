@@ -32,9 +32,8 @@ import java.sql.DriverManager
 import java.util.UUID
 
 /**
- * Pins the §7 fail-loud guard (PLAN-duckdb-parity-moveout.md): this connector reads only parquet
- * data files. A catalog that still references a removed non-parquet `file_format` (duckdb / vortex
- * / lance, from an older deployment) must surface a NAMED [StandardErrorCode.NOT_SUPPORTED] error —
+ * This connector reads only parquet data files. An unsupported `file_format` must surface
+ * a NAMED [StandardErrorCode.NOT_SUPPORTED] error —
  * naming the table and the format found — at BOTH split generation and metadata load, rather than
  * silently under-returning rows.
  *
@@ -54,7 +53,6 @@ class TestDucklakeNonParquetDataFileGuard {
                     .findFirst()
                     .orElseThrow { AssertionError("No data files found for simple_table") }
 
-            // Rewrite an existing data file's format to the removed 'duckdb' format.
             setDataFileFormat(isolated, victim.dataFileId, "duckdb")
 
             assertThatThrownBy {
@@ -78,8 +76,7 @@ class TestDucklakeNonParquetDataFileGuard {
                     .findFirst()
                     .orElseThrow { AssertionError("No data files found for simple_table") }
 
-            // A catalog written before P6 namespaced our formats as `trino/<fmt>`; the catalog
-            // layer's fromStored strips it, so the guard should name the BARE `vortex`.
+            // The catalog decoder strips the legacy `trino/` namespace, so errors name the bare format.
             setDataFileFormat(isolated, victim.dataFileId, "trino/vortex")
 
             assertThatThrownBy {
@@ -96,11 +93,8 @@ class TestDucklakeNonParquetDataFileGuard {
     @Test
     fun metadataLoadRejectsStaleTableDataFileFormatSettingWithNamedError() {
         runWithCatalog("guard-metadata-lance") { isolated, catalog, splitManager, table, snapshotId ->
-            // Inject a table-scoped `data_file_format = trino/lance` metadata setting, as a catalog
-            // created before P6 with WITH (data_file_format = 'lance') would carry.
             insertTableDataFileFormatSetting(isolated, table.tableId, "trino/lance")
 
-            // The catalog decoder strips the legacy namespace (fromStored STAYS, powering the guard).
             assertThat(catalog.getTableDataFileFormat(table.tableId)).isEqualTo("lance")
 
             // Metadata load runs the guard through getTableHandle. Build a session that carries the

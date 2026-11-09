@@ -35,9 +35,8 @@ import java.util.UUID
  * INSERT produced exactly one data file so `$file_row_number` alone linearizes the file.
  *
  *
- * The regression tests pin the gate: an unsorted table, a sorted+partitioned table, and a
- * sorted duckdb-format table must all keep working (the last two silently fall back to the
- * existing unsorted path) and return correct data.
+ * The regression tests pin the gate: unsorted tables and sorted+partitioned tables use the
+ * unsorted path and must return correct data.
  *
  * SAME_THREAD (like every sibling cross-engine test): the suite runs JUnit methods concurrently
  * by default, but all methods here write to ONE shared per-class catalog. Without serialization,
@@ -62,7 +61,6 @@ class TestDucklakeSortedWrites : AbstractDucklakeCrossEngineTest() {
                 }
             }
 
-            // Rows deliberately out of order in one INSERT (one data file).
             computeActual("INSERT INTO test_schema.$table VALUES (3, 'c'), (1, 'a'), (5, 'e'), (2, 'b'), (4, 'd')")
 
             assertSingleDataFile(table)
@@ -113,7 +111,6 @@ class TestDucklakeSortedWrites : AbstractDucklakeCrossEngineTest() {
                     + "(2, 10), (1, 5), (2, 30), (1, 20), (2, 20), (1, 5)")
 
             assertSingleDataFile(table)
-            // Expected physical order: grp ASC, then val DESC within each grp.
             val pairs = computeActual(
                     "SELECT grp, val FROM test_schema.$table ORDER BY \"\$file_row_number\"")
                     .materializedRows
@@ -129,7 +126,6 @@ class TestDucklakeSortedWrites : AbstractDucklakeCrossEngineTest() {
 
     @Test
     fun testUnsortedTableInsertReturnsCorrectData() {
-        // Regression: a table with NO sort spec must keep the existing (unsorted) write path.
         val table = uniqueTable("unsorted")
         val fullDuckdb = "ducklake_db.test_schema.$table"
         try {
@@ -153,8 +149,6 @@ class TestDucklakeSortedWrites : AbstractDucklakeCrossEngineTest() {
 
     @Test
     fun testSortedPartitionedTableFallsBackToUnsorted() {
-        // Regression: partitioned + sorted is outside the gate. The write must still succeed
-        // (falling back to the existing partitioned, unsorted path) and return correct data.
         val table = uniqueTable("sorted_partitioned")
         val fullDuckdb = "ducklake_db.test_schema.$table"
         try {

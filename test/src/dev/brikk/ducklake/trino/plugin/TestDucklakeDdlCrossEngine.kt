@@ -20,7 +20,7 @@ import org.junit.jupiter.api.parallel.ExecutionMode
 import java.sql.Connection
 
 /**
- * Cross-engine validation of the F1 DDL operations: after Trino renames a table or schema
+ * Cross-engine validation of DDL operations: after Trino renames a table or schema
  * or sets comments, a raw DuckDB connection ATTACHed to the same catalog must still load
  * the lake (its change-type parser throws on unknown `changes_made` vocabulary — the schema
  * rename writes `dropped_schema` + `created_schema` exactly because of that), resolve the
@@ -67,7 +67,6 @@ class TestDucklakeDdlCrossEngine : AbstractDucklakeCrossEngineTest() {
             createDuckdbConnection().use { duck ->
                 assertThat(queryLong(duck, "SELECT id FROM ducklake_db.xe_schema_dst.t"))
                         .isEqualTo(11L)
-                // And DuckDB can keep writing into the renamed schema.
                 duck.createStatement().use { it.execute("INSERT INTO ducklake_db.xe_schema_dst.t VALUES (12)") }
             }
             assertThat(computeScalar("SELECT count(*) FROM xe_schema_dst.t")).isEqualTo(2L)

@@ -30,7 +30,7 @@ import java.nio.file.Path
 import java.sql.DriverManager
 import java.util.function.Supplier
 
-/** N03 actual metadata and two-worker SQL, with separately expected names/values and route witnesses. */
+/** Actual metadata and two-worker SQL, with separately expected names/values and route witnesses. */
 @Execution(ExecutionMode.SAME_THREAD)
 class TestPublishedNestedReads {
     @Test fun localLegacyInline(): Unit = read("1.0", false, true)

@@ -20,10 +20,8 @@ import org.junit.jupiter.api.parallel.ExecutionMode
 
 /**
  * The reverse direction of [TestDucklakeCrossEnginePuffinDeleteRoundTrip]: TRINO performs the
- * row-level DELETE/UPDATE and DUCKDB reads the surviving rows. This is the verification spike
- * for a suspected interop hole — Trino's merge sink writes positional delete files as a single
- * `row_id` column holding GLOBAL row ids, while the DuckLake spec (and DuckDB's reader) expects
- * `(file_path, pos)` with FILE-LOCAL positions. Whatever this proves becomes the contract.
+ * row-level DELETE/UPDATE and DUCKDB reads the surviving rows through `(file_path, pos)`
+ * delete files with FILE-LOCAL positions.
  *
  * SAME_THREAD: writes to the shared catalog; concurrent commits would race the snapshot retry.
  */
@@ -49,7 +47,7 @@ class TestDucklakeCrossEngineTrinoDeleteRead : AbstractDucklakeCrossEngineTest()
                     .containsExactly(1L, 3L, 4L, 5L, 6L)
 
             // Trino deletes more: the superseding delete file must UNION the prior DuckDB
-            // pos-file positions (B3a) and stay spec-shaped so DuckDB keeps reading.
+            // pos-file positions and stay spec-shaped so DuckDB keeps reading.
             computeActual("DELETE FROM $table WHERE id = 4")
 
             assertThat(computeActual("SELECT id FROM $table ORDER BY id").materializedRows
@@ -73,12 +71,10 @@ class TestDucklakeCrossEngineTrinoDeleteRead : AbstractDucklakeCrossEngineTest()
 
             computeActual("DELETE FROM $table WHERE id IN (2, 4)")
 
-            // Trino agrees with itself...
             assertThat(computeActual("SELECT id FROM $table ORDER BY id").materializedRows
                     .map { (it.getField(0) as Number).toLong() })
                     .containsExactly(1L, 3L, 5L)
 
-            // ...and DuckDB must see the same survivors through its own delete-file reader.
             assertThat(duckdbQueryLongs("SELECT id FROM ducklake_db.$table ORDER BY id"))
                     .`as`("DuckDB read after a Trino DELETE (delete-file interop)")
                     .containsExactly(1L, 3L, 5L)
@@ -89,11 +85,8 @@ class TestDucklakeCrossEngineTrinoDeleteRead : AbstractDucklakeCrossEngineTest()
     }
 
     /**
-     * DuckDB's delete-file reader requires `pos` to be strictly increasing. The connector used
-     * to preserve insertion order while building the cumulative replacement file: prior position
-     * 4 followed by a new position 1 produced `[4, 1]`, and DuckDB refused the entire table with
-     * "row ids must be sorted and strictly increasing". The two statements below pin that exact
-     * cross-snapshot order (higher position first, then lower).
+     * DuckDB's delete-file reader requires `pos` to be strictly increasing. Deleting a higher
+     * position first, then a lower one, must still produce a sorted cumulative replacement file.
      */
     @Test
     fun duckdbReadsAfterLaterDeleteAddsALowerPosition() {

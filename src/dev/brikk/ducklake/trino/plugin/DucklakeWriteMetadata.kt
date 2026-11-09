@@ -72,11 +72,9 @@ internal class DucklakeWriteMetadata(
     {
         val tableName: SchemaTableName = tableMetadata.table
 
-        // Convert columns to DuckLake column specs
         val columnSpecs: List<TableColumnSpec> = tableMetadata.columns
                 .map { column -> toColumnSpec(column.name, column.type, column.isNullable) }
 
-        // Parse partition spec from table properties
         val partitionFields: List<PartitionFieldSpec> = DucklakeTableProperties.getPartitionFields(tableMetadata.properties)
         validateIdentityPartitionTypes(tableMetadata.columns, partitionFields)
         val partitionSpec: List<PartitionFieldSpec>? = partitionFields.ifEmpty { null }
@@ -181,9 +179,9 @@ internal class DucklakeWriteMetadata(
      *      routes rows per partition and a global sort across partitions is out of scope), and
      *   2. the data file format is parquet, and
      *   3. the table's catalog sort spec resolves to at least one leading column via the exact
-     *      same rules the read side uses ([DucklakeSortPropertyMapper.resolveHonoredPrefix]).
+     *      prefix rules ([DucklakeSortPropertyMapper.resolveHonoredPrefix]).
      *
-     * Any failing condition yields [emptyList], so the sink is byte-for-byte unchanged.
+     * Any failing condition yields [emptyList], disabling sort buffering.
      */
     private fun resolveWriteSortColumns(
             tableId: Long,
@@ -228,10 +226,8 @@ internal class DucklakeWriteMetadata(
     {
         val tableName: SchemaTableName = tableMetadata.table
 
-        // Create the table structure (DDL snapshot)
         createTable(tableMetadata)
 
-        // Resolve the newly created table to get its ID and build a writable handle
         val snapshotId: Long = catalog.currentSnapshotId
         val table: DucklakeTable = catalog.getTable(tableName.schemaName, tableName.tableName, snapshotId)
             ?: throw TrinoException(GENERIC_INTERNAL_ERROR, "Table was not created: $tableName")
@@ -368,7 +364,7 @@ internal class DucklakeWriteMetadata(
     {
         // Gate DELETE/UPDATE/MERGE on tables that still hold live inlined rows. The merge scan
         // requests the $row_id of every scanned row, but inlined rows have no data file / file
-        // position, and this connector's merge sink only writes parquet positional delete files
+        // position, and this connector's merge sink only writes positional deletes
         // keyed by (data_file_id, position) — it has no way to tombstone an inlined row. Rather
         // than fail mid-scan with an opaque "Column not found: $row_id" from the inlined page
         // source, reject early with guidance. Flushing the inlined data to files (DuckLake's
@@ -382,7 +378,6 @@ internal class DucklakeWriteMetadata(
                             "data_inlining_row_limit = 0).")
         }
 
-        // Build insert handle for UPDATE support (delete+insert pattern)
         val allCatalogColumns: List<DucklakeColumn> = catalog.getAllColumnsWithParentage(handle.tableId, handle.snapshotId)
         val ducklakeColumns: List<DucklakeColumnHandle> = catalog.getTableColumns(handle.tableId, handle.snapshotId)
                 .filter { col -> col.parentColumn == null }

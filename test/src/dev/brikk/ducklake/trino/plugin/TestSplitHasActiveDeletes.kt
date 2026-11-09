@@ -18,17 +18,8 @@ import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 
 /**
- * Pins B3b's predicate-disabling trigger. [DucklakePageSourceProvider] branches on
- * [DucklakeParquetPageSourceFactory.splitHasActiveDeletes] when deciding whether to push
- * the query predicate into the parquet reader / DuckDB scan; this test guarantees the
- * branch fires for every form of "active deletes" the catalog produces (external delete
- * files, puffin DV files, and inlined deletes from `ducklake_inlined_delete_*`)
- * and ONLY for those.
- *
- *
- * Without this guard, predicate pushdown prunes row groups and pages inside the
- * underlying parquet file, breaking `RowIdInjectingPageSource` /
- * `DeleteRowFilterTransform`'s cumulative-offset math and masking the wrong rows.
+ * Active deletes must disable Parquet predicate pushdown: pruned row groups or pages break
+ * [DeleteRowFilterTransform]'s cumulative-offset math and mask the wrong rows.
  */
 internal class TestSplitHasActiveDeletes {
     @Test

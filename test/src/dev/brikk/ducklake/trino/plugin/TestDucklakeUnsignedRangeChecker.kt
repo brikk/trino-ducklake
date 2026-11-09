@@ -29,8 +29,6 @@ import org.junit.jupiter.api.Test
 import java.math.BigInteger
 
 class TestDucklakeUnsignedRangeChecker {
-    // ---------- No-op when no unsigned columns ----------
-
     @Test
     fun testNoUnsignedColumnsProducesNoOpChecker() {
         val checker = DucklakeUnsignedRangeChecker.build(
@@ -39,11 +37,8 @@ class TestDucklakeUnsignedRangeChecker {
                 DucklakeColumnHandle(2, "b", INTEGER, true)),
             mapOf(1L to "int64", 2L to "int32"))
         assertThat(checker.isNoOp()).isTrue()
-        // No-op validate must not throw on anything.
         checker.validate(Page(1, smallintBlock((-1).toShort())))
     }
-
-    // ---------- uint8 ----------
 
     @Test
     fun testUint8InRangeAccepted() {
@@ -68,9 +63,7 @@ class TestDucklakeUnsignedRangeChecker {
 
     @Test
     fun testUint8WrapValue300Rejected() {
-        // 300 as SMALLINT survives Trino intact; the bug (pre-fix) was Parquet encoding
-        // the low 8 bits (300 & 0xFF = 44) into the uint8 column and silently losing the
-        // high bit on read. This test pins the symptom at its first crossing.
+        // 300 survives SMALLINT encoding but would wrap to 44 when read as uint8.
         val checker = uint8Checker()
         val block = smallintBlock(300.toShort())
         assertOverflow(checker, block, "uint8", "300", "255")
@@ -85,8 +78,6 @@ class TestDucklakeUnsignedRangeChecker {
         builder.appendNull()
         checker.validate(Page(3, builder.build()))
     }
-
-    // ---------- uint16 ----------
 
     @Test
     fun testUint16InRangeAccepted() {
@@ -107,8 +98,6 @@ class TestDucklakeUnsignedRangeChecker {
         assertOverflow(checker, intBlock(65_536), "uint16", "65536", "65535")
     }
 
-    // ---------- uint32 ----------
-
     @Test
     fun testUint32InRangeAccepted() {
         val checker = uint32Checker()
@@ -127,8 +116,6 @@ class TestDucklakeUnsignedRangeChecker {
         val checker = uint32Checker()
         assertOverflow(checker, bigintBlock(1L shl 32), "uint32", "4294967296", "4294967295")
     }
-
-    // ---------- uint64 ----------
 
     @Test
     fun testUint64ZeroAccepted() {
@@ -157,8 +144,6 @@ class TestDucklakeUnsignedRangeChecker {
         val block = longDecimalBlock(BigInteger("18446744073709551616"))
         assertOverflow(checker, block, "uint64", "18446744073709551616", "18446744073709551615")
     }
-
-    // ---------- helpers ----------
 
     companion object {
         // Trino read-side widenings for DuckLake unsigned types (see DucklakeTypeConverter).

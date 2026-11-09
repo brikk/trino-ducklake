@@ -18,10 +18,9 @@ import org.junit.jupiter.api.Test
 import java.sql.DriverManager
 
 /**
- * W-C2 regression: before `getUpdateLayout`, Trino distributed row changes from one source data
- * file across several merge sinks. Each sink wrote its own cumulative delete file; both rows became
- * active in `ducklake_delete_file`. Upstream's plain LEFT JOIN then returned the data file twice,
- * so DuckDB emitted duplicate survivors (each copy filtered by a different partial delete set).
+ * Row changes from one source data file must reach one merge sink. Multiple active delete files
+ * make upstream's plain LEFT JOIN return the data file twice, duplicating survivors filtered by
+ * different partial delete sets.
  */
 class TestDucklakeMergeDeleteFileAffinity : AbstractDucklakeCrossEngineTest() {
     override fun isolatedCatalogName(): String = "merge-delete-affinity"

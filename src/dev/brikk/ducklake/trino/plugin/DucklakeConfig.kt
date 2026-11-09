@@ -381,7 +381,6 @@ class DucklakeConfig {
         catalogConfig.catalogConnectionIdleTimeout = catalogConnectionIdleTimeout?.let { JavaDuration.ofMillis(it.toMillis()) }
         catalogConfig.catalogConnectionMaxLifetime = catalogConnectionMaxLifetime?.let { JavaDuration.ofMillis(it.toMillis()) }
         catalogConfig.catalogConnectionTimeout = JavaDuration.ofMillis(catalogConnectionTimeout.toMillis())
-        // The released 0.13 floor supplies the API; connector planning admission remains separate.
         catalogConfig.enableFinal11Reads = isEnableFinal11Reads()
         catalogConfig.requiredCatalogFormat = when (getCatalogFormatVersion()) {
             "1.0" -> DucklakeCatalogFormat.V1_0

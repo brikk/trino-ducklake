@@ -72,7 +72,6 @@ class TestFooterPrefetchingParquetDataSource {
         assertThat(delegate.readTailBytes).isEqualTo(2008)
         assertThat(delegate.readTailCalls).isEqualTo(1)
 
-        // Verify the returned bytes match the actual file tail.
         val expectedTail = ByteArray(2008)
         System.arraycopy(FILE_BYTES, FILE_BYTES.size - 2008, expectedTail, 0, 2008)
         assertThat(tail.bytes).isEqualTo(expectedTail)
@@ -152,13 +151,11 @@ class TestFooterPrefetchingParquetDataSource {
 
         val wrapped = FooterPrefetchingParquetDataSource.wrapWithPrefetchedTail(delegate, tail)
 
-        // First readTail returns the supplied slice without touching the delegate again.
         val served = wrapped.readTail(48 * 1024)
         assertThat(served.length()).isEqualTo(3000)
         assertThat(served.bytes).isEqualTo(tail.bytes)
         assertThat(delegate.readTailCalls).isEqualTo(1)
 
-        // Single-shot: the next readTail delegates.
         wrapped.readTail(8)
         assertThat(delegate.readTailCalls).isEqualTo(2)
     }
@@ -168,12 +165,10 @@ class TestFooterPrefetchingParquetDataSource {
         val delegate = CountingInMemoryDataSource(FILE_BYTES)
         val wrapped = FooterPrefetchingParquetDataSource.wrapIfHintUsable(delegate, 2000, MAX_FOOTER_READ_SIZE)
 
-        // readFully is not intercepted — column data reads always hit the delegate.
         val chunk = wrapped.readFully(100, 50)
         assertThat(chunk.length()).isEqualTo(50)
         assertThat(delegate.readFullyCalls).isEqualTo(1)
 
-        // Metadata getters pass through.
         assertThat(wrapped.id).isEqualTo(delegate.id)
         assertThat(wrapped.estimatedSize).isEqualTo(delegate.estimatedSize)
     }

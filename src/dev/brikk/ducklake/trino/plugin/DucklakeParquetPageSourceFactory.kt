@@ -169,8 +169,6 @@ internal class DucklakeParquetPageSourceFactory(
                     Optional.empty(), // bloomFilterStore
                     Optional.empty()) // rowFilter
 
-            // Wrap in ParquetPageSource, apply column transforms for missing columns,
-            // then apply merge-on-read delete filtering if present
             var pageSource: ConnectorPageSource = projection.transforms.build(ParquetPageSource(parquetReader))
             pageSource = injectPositionalColumns(pageSource, inputFile, fileSystem, split, fileColumns.size, positionalInjections)
             pageSource = deleteFilter.apply(fileSystem, split, pageSource)
@@ -324,7 +322,6 @@ internal class DucklakeParquetPageSourceFactory(
                     defaults?.let { it::missing })
             if (field.isEmpty) {
                 readStrategy.rejectUnsupportedPhysicalField(column.columnName)
-                // Could not construct field — return nulls (or partition constant if available)
                 transforms.constantValue(readStrategy.missingColumnBlock(column, split))
                 return
             }
@@ -398,12 +395,6 @@ internal class DucklakeParquetPageSourceFactory(
         /**
          * Whether the split carries any active position deletes — either external parquet/puffin
          * delete files or inlined deletes from `ducklake_inlined_delete_<tableId>`.
-         *
-         * When this returns `true`, the page-source pipeline must NOT push the query
-         * predicate down into the parquet reader: doing so prunes row groups
-         * / skips rows inside the underlying file, breaking the cumulative-offset math that
-         * [PositionalVirtualInjectingPageSource] and [DeleteRowFilterTransform] use to compute
-         * file-absolute positions for delete matching.
          */
         fun splitHasActiveDeletes(split: DucklakeSplit): Boolean =
             split.deleteFilePaths.isNotEmpty() || split.inlinedDeletedRowPositions.isNotEmpty() ||

@@ -39,8 +39,6 @@ class TestDucklakeInsertAndCtas : AbstractDucklakeIntegrationTest() {
         return "write-insert-and-ctas"
     }
 
-    // ==================== Basic INSERT ====================
-
     @Test
     fun testBasicInsert() {
         computeActual("CREATE TABLE test_schema.basic_insert (id INTEGER, name VARCHAR)")
@@ -76,8 +74,6 @@ class TestDucklakeInsertAndCtas : AbstractDucklakeIntegrationTest() {
             tryDropTable("test_schema.multi_insert")
         }
     }
-
-    // ==================== Type coverage ====================
 
     @Test
     fun testInsertAllPrimitiveTypes() {
@@ -135,8 +131,6 @@ class TestDucklakeInsertAndCtas : AbstractDucklakeIntegrationTest() {
         }
     }
 
-    // ==================== NULL handling ====================
-
     @Test
     fun testInsertWithNulls() {
         computeActual("CREATE TABLE test_schema.null_insert (id INTEGER, name VARCHAR, value DOUBLE)")
@@ -168,8 +162,6 @@ class TestDucklakeInsertAndCtas : AbstractDucklakeIntegrationTest() {
         }
     }
 
-    // ==================== CTAS ====================
-
     @Test
     fun testCtas() {
         computeActual("CREATE TABLE test_schema.ctas_source (id INTEGER, name VARCHAR)")
@@ -199,7 +191,6 @@ class TestDucklakeInsertAndCtas : AbstractDucklakeIntegrationTest() {
             val result = computeActual("SELECT count(*) FROM test_schema.ctas_empty")
             assertThat(result.materializedRows[0].getField(0)).isEqualTo(0L)
 
-            // Verify table exists with correct schema
             val columns = computeActual("DESCRIBE test_schema.ctas_empty")
             val columnNames: List<String> = columns.materializedRows.stream()
                     .map { row -> row.getField(0).toString() }
@@ -265,8 +256,6 @@ class TestDucklakeInsertAndCtas : AbstractDucklakeIntegrationTest() {
         }
     }
 
-    // ==================== Aggregations ====================
-
     @Test
     fun testInsertThenSelectAggregations() {
         computeActual("CREATE TABLE test_schema.agg_test (category VARCHAR, amount DOUBLE, quantity INTEGER)")
@@ -279,7 +268,6 @@ class TestDucklakeInsertAndCtas : AbstractDucklakeIntegrationTest() {
                             "GROUP BY category ORDER BY category")
             assertThat(counts.rowCount).isEqualTo(3)
 
-            // Category A: count=2, sum=30.0
             assertThat(counts.materializedRows[0].getField(0)).isEqualTo("A")
             assertThat(counts.materializedRows[0].getField(1)).isEqualTo(2L)
             assertThat(counts.materializedRows[0].getField(2)).isEqualTo(30.0)
@@ -289,18 +277,14 @@ class TestDucklakeInsertAndCtas : AbstractDucklakeIntegrationTest() {
         }
     }
 
-    // ==================== Lifecycle ====================
-
     @Test
     fun testInsertThenDrop() {
         computeActual("CREATE TABLE test_schema.lifecycle_test (id INTEGER)")
         computeActual("INSERT INTO test_schema.lifecycle_test VALUES (1), (2), (3)")
 
-        // Verify data exists
         val result = computeActual("SELECT count(*) FROM test_schema.lifecycle_test")
         assertThat(result.materializedRows[0].getField(0)).isEqualTo(3L)
 
-        // Drop and verify gone
         computeActual("DROP TABLE test_schema.lifecycle_test")
         val tables: List<String> = computeActual("SHOW TABLES FROM test_schema").materializedRows.stream()
                 .map { row -> row.getField(0).toString() }
@@ -327,8 +311,6 @@ class TestDucklakeInsertAndCtas : AbstractDucklakeIntegrationTest() {
             tryDropTable("test_schema.multi_b")
         }
     }
-
-    // ==================== Large/boundary values ====================
 
     @Test
     fun testInsertLargeValues() {

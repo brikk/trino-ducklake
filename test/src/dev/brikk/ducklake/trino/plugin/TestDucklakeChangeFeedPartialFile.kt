@@ -60,8 +60,6 @@ class TestDucklakeChangeFeedPartialFile : AbstractTestQueryFramework() {
                 st.execute("CALL merge_adjacent_files()")
             }
         }
-        // Read back the partial file's begin_snapshot / partial_max: begin == the first insert's
-        // snapshot, partial_max == the second insert's snapshot (each row tagged with its origin).
         DriverManager.getConnection("jdbc:duckdb:$lakeDb").use { conn ->
             conn.createStatement().use { st ->
                 st.executeQuery("SELECT begin_snapshot, partial_max FROM ducklake_data_file "
@@ -94,14 +92,11 @@ class TestDucklakeChangeFeedPartialFile : AbstractTestQueryFramework() {
 
     @Test
     fun eachRowAttributedToItsOriginSnapshotNotBeginSnapshot() {
-        // Over the FULL window both source snapshots' rows appear, and — crucially — each row's
-        // reported snapshot_id is its OWN origin, not the merged file's begin_snapshot.
         val all = computeActual("SELECT snapshot_id, data FROM " +
                 "TABLE(ducklake.system.table_insertions('test_schema', 't', 1, $snap2))")
                 .materializedRows
                 .map { (it.getField(0) as Long) to (it.getField(1) as String) }
         assertThat(all).hasSize(200)
-        // 's1' rows carry snap1; 's2' rows carry snap2 (NOT snap1).
         assertThat(all.filter { it.second == "s1" }.map { it.first }.distinct()).containsExactly(snap1)
         assertThat(all.filter { it.second == "s2" }.map { it.first }.distinct()).containsExactly(snap2)
     }
@@ -125,20 +120,17 @@ class TestDucklakeChangeFeedPartialFile : AbstractTestQueryFramework() {
         assertThat(rows.map { it.second }.distinct()).containsExactly("s2")
         assertThat(rows).hasSize(100)
         assertThat(rows.map { it.first }.distinct()).containsExactly(snap2.toInt())
-        // The ids are exactly the second insert's (100..199).
         assertThat(rows.map { it.first == snap2.toInt() }.all { it }).isTrue()
         assertThat(rows.map { it.second }.all { it == "s2" }).isTrue()
     }
 
     @Test
     fun tableChangesWindowsPartialFileByOrigin() {
-        // table_changes over the whole history: 200 pure inserts, each with its origin snapshot.
         val changes = computeActual("SELECT change_type, snapshot_id, data FROM " +
                 "TABLE(ducklake.system.table_changes('test_schema', 't', 1, $snap2))")
                 .materializedRows
         assertThat(changes).hasSize(200)
         assertThat(changes.map { it.getField(0) as String }.distinct()).containsExactly("insert")
-        // Sub-window to the second snapshot only: no first-insert rows.
         val second = computeActual("SELECT DISTINCT data FROM " +
                 "TABLE(ducklake.system.table_changes('test_schema', 't', ${snap1 + 1}, $snap2))")
                 .materializedRows

@@ -21,18 +21,14 @@ import io.trino.spi.function.table.ConnectorTableFunctionHandle
 import io.trino.spi.function.table.TableFunctionProcessorProvider
 
 /**
- * Dispatches the engine's "who executes this table function?" lookup to the matching
- * processor provider. The only remaining table function is the change feed, which is always
- * planned as a scan via [DucklakeMetadata.applyTableFunction]; the processor path is never taken.
+ * Rejects processor execution of change-feed functions, which must be planned as scans via
+ * [DucklakeMetadata.applyTableFunction].
  */
 class DucklakeFunctionProvider @Inject constructor() : FunctionProvider {
 
     override fun getTableFunctionProcessorProvider(
             functionHandle: ConnectorTableFunctionHandle): TableFunctionProcessorProvider {
         if (functionHandle is ChangeFeedHandle) {
-            // The change feed is always planned as a scan via DucklakeMetadata.applyTableFunction
-            // (it reuses the connector's data-file read path + pushdown-free filtering above the
-            // scan); the table-function processor path is never taken. Fail clearly if it ever is.
             throw TrinoException(GENERIC_INTERNAL_ERROR,
                     "The change-feed table function must be planned as a table scan (applyTableFunction)")
         }

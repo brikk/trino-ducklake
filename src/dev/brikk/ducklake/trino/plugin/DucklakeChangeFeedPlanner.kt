@@ -93,7 +93,6 @@ internal class DucklakeChangeFeedPlanner(
         // Physical origin fields are authoritative even when catalog partial_max is absent.
         val insertOriginSnapshots: Map<Long, LongArray?> = readInsertOriginSnapshots(files, tableDataPath, insertFiles)
 
-        // Delete side: newly-deleted positions per deletion event, mapped to lineage-aware rowids.
         val deletedRowidsBySnapshot = mutableMapOf<Long, DucklakeLongSet>()
         val transientPositions = mutableMapOf<String, DucklakeLongSet>()
         val resolvedDeletions: List<ResolvedChangeFeedDeletion> =
@@ -107,7 +106,6 @@ internal class DucklakeChangeFeedPlanner(
         val inlineFileDeleteGroups: List<InlineFileDeleteGroup> =
                 collectInlineFileDeleteGroups(files, tableDataPath, table, deletedRowidsBySnapshot, transientPositions)
 
-        // Update pairing across ALL sources (file inserts + inlined inserts vs. every delete).
         val updatedBySnapshot = computeUpdatedRowids(
                 deletedRowidsBySnapshot, insertFiles, insertLineage, insertOriginSnapshots,
                 inlined.insertedRowidsBySnapshot)
@@ -316,9 +314,7 @@ internal class DucklakeChangeFeedPlanner(
     /**
      * Per insert-file embedded `_ducklake_internal_snapshot_id` array (keyed by data_file_id) — the
      * ORIGIN snapshot of each row, in file order. Physical presence is authoritative;
-     * an ordinary file without the field maps to null and uses its `begin_snapshot`. Parquet
-     * only — the non-parquet formats this connector writes never carry the column, and compaction
-     * output is always parquet.
+     * an ordinary file without the field maps to null and uses its `begin_snapshot`.
      */
     private fun readInsertOriginSnapshots(
             files: DucklakeChangeFeedFiles,
@@ -528,7 +524,6 @@ internal class DucklakeChangeFeedPlanner(
         }
 
         if (originSnapshots == null) {
-            // Ordinary file: begin_snapshot IS every row's origin.
             return listOf(ChangeFeedUnit(
                     baseSource = baseSource,
                     snapshotId = file.beginSnapshot,
@@ -540,9 +535,6 @@ internal class DucklakeChangeFeedPlanner(
                     physicalRows = file.recordCount))
         }
 
-        // Partial file: bucket file positions by their per-row origin snapshot, then keep only the
-        // buckets whose snapshot is in the feed window. Each bucket becomes its own unit so a single
-        // physical file surfaces as several correctly-attributed insert events.
         val window: LongRange = table.startSnapshot..table.endSnapshot
         val positionsBySnapshot = mutableMapOf<Long, DucklakeLongSet>()
         for (position in originSnapshots.indices) {

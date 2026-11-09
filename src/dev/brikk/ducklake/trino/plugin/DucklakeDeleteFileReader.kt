@@ -233,8 +233,7 @@ object DucklakeDeleteFileReader {
      * file, returning each row's ORIGINAL rowid in file order (index = file-local position), or
      * null when the file does not carry it (fresh-INSERT files — the caller then uses
      * `row_id_start + position`). Used by the change feed so UPDATE/compaction-preserved rowids
-     * pair into update pre/post-image instead of surfacing as delete+insert. Parquet only (the
-     * non-parquet formats this connector writes never carry lineage).
+     * pair into update pre/post-image instead of surfacing as delete+insert.
      */
     @Throws(IOException::class)
     @JvmOverloads
@@ -362,8 +361,7 @@ object DucklakeDeleteFileReader {
      * snapshot that actually produced it, rather than the merged file's `begin_snapshot` (which is
      * only the MIN across the merged rows).
      *
-     * Called ONLY for files the catalog marks partial (`partial_max > begin_snapshot`), so the
-     * marker column MUST be present. If it is absent we THROW rather than fall back to
+     * The marker column MUST be present. If it is absent we THROW rather than fall back to
      * `begin_snapshot` for every row: that fallback would silently mis-attribute (and mis-window)
      * every later-origin row — a fail-open the same way an empty drop-set would be in
      * [readSnapshotDropPositions]. A missing marker on a partial file is a data/metadata integrity
@@ -448,7 +446,7 @@ object DucklakeDeleteFileReader {
      * Upstream decides from the physical schema, not catalog `partial_max`: a 3-column file keeps
      * positions whose `_ducklake_internal_snapshot_id <= snapshotFilterMax`; a legacy 2-column
      * `(file_path, pos)` file has no marker and returns the full union. `file_path` is ignored (the
-     * catalog row already scopes the file to one data file). Always file-local (`global=false`).
+     * catalog row already scopes the file to one data file). Legacy `row_id` files retain their global vocabulary.
      */
     @Throws(IOException::class)
     fun readPositionsWithSnapshotFilter(
@@ -500,8 +498,8 @@ object DucklakeDeleteFileReader {
      * position, the deletion snapshot that recorded it (`pos` → `_ducklake_internal_snapshot_id`).
      * Used by the change feed to attribute each folded deletion to its OWN snapshot instead of the
      * delete file's `begin_snapshot` (the MIN across the folded deletions). The delete-side twin of
-     * [readInternalSnapshotIds]; called only for files the catalog marks partial, so the marker
-     * column MUST be present — a missing one is a data/metadata integrity failure and THROWS rather
+     * [readInternalSnapshotIds]; the marker column MUST be present — a missing one is a
+     * data/metadata integrity failure and THROWS rather
      * than silently attributing every position to one snapshot.
      */
     @Throws(IOException::class)

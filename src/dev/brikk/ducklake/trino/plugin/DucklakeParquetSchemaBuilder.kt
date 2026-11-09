@@ -46,21 +46,17 @@ class DucklakeParquetSchemaBuilder private constructor() {
                 allColumns: List<DucklakeColumn>,
                 sourceMessageType: MessageType,
                 extraTopLevelFieldIds: Map<String, Long> = emptyMap()): MessageType {
-            // Build lookup: parentColumnId -> childName -> DucklakeColumn
             val childrenByParent: Map<Long, Map<String, DucklakeColumn>> =
                     allColumns
                             .mapNotNull { column -> column.parentColumn?.let { parent -> parent to column } }
                             .groupBy({ it.first }, { it.second })
                             .mapValues { (_, cols) -> cols.associateBy { it.columnName } }
 
-            // Build top-level name -> columnId map
             val topLevelColumnIds: Map<String, Long> =
                     topLevelColumns.associate { it.columnName to it.columnId } + extraTopLevelFieldIds
 
-            // Rebuild each field with field_id
             val annotatedFields = sourceMessageType.fields.map { field ->
                 val columnId = topLevelColumnIds[field.name]
-                // No column ID found — keep original (shouldn't happen for well-formed schemas)
                 columnId?.let { annotateType(field, it, childrenByParent) } ?: field
             }
 

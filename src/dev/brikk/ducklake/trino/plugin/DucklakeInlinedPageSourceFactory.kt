@@ -46,7 +46,6 @@ internal class DucklakeInlinedPageSourceFactory(
                 catalog.readInlinedBeginSnapshots(inlinedSplit.tableId, inlinedSplit.schemaVersion, inlinedSplit.snapshotId)
             else null
 
-        // Read the real-column values (if any) and establish the row count.
         val tableColumns: List<DucklakeColumn> = catalog.getTableColumns(inlinedSplit.tableId, inlinedSplit.snapshotId)
         val columnById: Map<Long, DucklakeColumn> = tableColumns.associateBy { it.columnId }
         val realQueryColumns: List<DucklakeColumn> = realColumns.map { handle ->
@@ -80,7 +79,6 @@ internal class DucklakeInlinedPageSourceFactory(
             rowCount = countRows.size
         }
 
-        // Assemble output rows in the requested column order, weaving virtuals per row.
         val outputTypes: List<Type> = ducklakeColumns.map { it.columnType }
         val outputRows: List<List<Any?>> = (0 until rowCount).map { r ->
             var realIdx = 0

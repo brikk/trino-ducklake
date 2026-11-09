@@ -24,6 +24,13 @@ import io.trino.spi.connector.SortingProperty
 import java.util.Locale
 
 /**
+ * One entry of the honored sort prefix: the lowercased top-level column name plus its
+ * resolved [SortOrder]. Callers map [lowercaseColumnName] to whatever they need — a
+ * [ColumnHandle] on the read side, a page channel index on the write side.
+ */
+internal data class ResolvedSortColumn(val lowercaseColumnName: String, val order: SortOrder)
+
+/**
  * Resolves DuckLake's catalog-stored sort spec for physical per-file write ordering. The optional
  * [LocalProperty] adapter is only valid when a caller independently knows its whole scan stream is
  * ordered; [DucklakeMetadata] deliberately does not use it because DuckLake's guarantee is per
@@ -43,13 +50,6 @@ import java.util.Locale
  * parser we treat foreign-dialect expressions as opaque and emit no sort
  * property at all rather than misinterpret quoting/identifier rules.
  */
-/**
- * One entry of the honored sort prefix: the lowercased top-level column name plus its
- * resolved [SortOrder]. Callers map [lowercaseColumnName] to whatever they need — a
- * [ColumnHandle] on the read side, a page channel index on the write side.
- */
-internal data class ResolvedSortColumn(val lowercaseColumnName: String, val order: SortOrder)
-
 class DucklakeSortPropertyMapper private constructor() {
     companion object {
         private const val DUCKDB_DIALECT = "duckdb"
@@ -117,9 +117,6 @@ class DucklakeSortPropertyMapper private constructor() {
                 val columnName = parseColumnReference(key.expression) ?: break
                 val lowercase = columnName.lowercase(Locale.ROOT)
                 if (!resolvableLowercaseColumnNames.contains(lowercase)) {
-                    // Expression names a column we don't see at this snapshot (likely renamed
-                    // / dropped after the sort spec was written) or one not being written by
-                    // this sink. Stop here.
                     break
                 }
                 resolved.add(ResolvedSortColumn(lowercase, toSortOrder(key.direction, key.nullOrder)))

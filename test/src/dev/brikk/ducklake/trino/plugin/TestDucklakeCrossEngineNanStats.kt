@@ -20,7 +20,7 @@ import org.junit.jupiter.api.parallel.ExecutionMode
 import java.sql.DriverManager
 
 /**
- * Cross-engine regression for `contains_nan` (terra P1): a connector-written REAL/DOUBLE file that
+ * Cross-engine regression for `contains_nan`: a connector-written REAL/DOUBLE file that
  * contains NaN must persist `contains_nan = TRUE`. DuckLake's own `DuckLakeColumnStats::ToStats`
  * only builds min/max pruning stats for a float column when it positively knows there is no NaN
  * (`has_contains_nan && !contains_nan`); a SQL-NULL flag is read as "no NaN". Because our writers
@@ -40,7 +40,6 @@ internal class TestDucklakeCrossEngineNanStats : AbstractDucklakeCrossEngineTest
             computeActual("INSERT INTO test_schema.nan_prune VALUES (DOUBLE '1.0'), (nan())")
             assertRowsWrittenToParquet("nan_prune")
 
-            // The stat that stops DuckDB pruning the file.
             assertThat(containsNanPersisted("nan_prune")).`as`("contains_nan persisted TRUE").isTrue()
 
             // The end-to-end proof: DuckDB reads the file (not pruned) and NaN > 5 is TRUE there,
@@ -62,16 +61,12 @@ internal class TestDucklakeCrossEngineNanStats : AbstractDucklakeCrossEngineTest
     }
 
     /**
-     * Trino-side pruning probe for the shared-catalog `float-nan-prune-guard` question: does Trino,
-     * running against the CURRENT (0.3.0) catalog that has NO NaN guard, ever return a WRONG result
-     * because a `contains_nan` file gets pruned on its NaN-excluding max?
-     *
      * Trino's SCALAR float comparisons are IEEE (proven from `DoubleType`: `<`/`<=` are `left < right`,
      * `>`/`>=` are the flipped `<`, `=` is `left == right`), so `nan() > 5` is FALSE and NaN never
      * satisfies `> / >= / < / <= / =`. The RISK is the pruning path: `DucklakeSplitManager` extracts
      * bounds from `Domain`'s `ranges.span`, which is ordered by the NaN-LAST total-ordering comparator
      * — and a NEGATED predicate like `NOT (x <= 5)` DOES match NaN at the scalar level. If Trino pushes
-     * such a domain into `constraint.summary` and our max/min bounds prune the NaN file (files are
+     * such a domain into the table handle and our max/min bounds prune the NaN file (files are
      * removed from the split list and cannot be recovered), the NaN row would be silently dropped.
      *
      * Fixture: one file holding `1.0` and `nan()`, `contains_nan = TRUE`, min/max = [1.0, 1.0].
@@ -86,7 +81,6 @@ internal class TestDucklakeCrossEngineNanStats : AbstractDucklakeCrossEngineTest
 
             val q = "SELECT count(*) FROM test_schema.nan_trino"
 
-            // Sanity: both rows are present and NaN is readable.
             assertThat(scalarLong("$q")).`as`("total rows").isEqualTo(2L)
             assertThat(scalarLong("$q WHERE is_nan(x)")).`as`("is_nan finds the NaN row").isEqualTo(1L)
 
@@ -112,7 +106,6 @@ internal class TestDucklakeCrossEngineNanStats : AbstractDucklakeCrossEngineTest
         }
     }
 
-    /** Run a `SELECT count(*)`-shaped query and return the single long value. */
     private fun scalarLong(sql: String): Long =
             computeActual(sql).materializedRows[0].getField(0) as Long
 

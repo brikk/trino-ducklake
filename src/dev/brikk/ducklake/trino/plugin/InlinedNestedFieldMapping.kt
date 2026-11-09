@@ -122,7 +122,7 @@ object InlinedNestedFieldMapper {
                 // A field ADDED after this inlined era (absent from eraById) projects its
                 // initial_default for rows that predate it — the nested-field variant of the
                 // top-level ADD COLUMN ... DEFAULT rule. Parsed to the field's native value; an
-                // unparseable / typeless default degrades to null (same as the scalar path).
+                 // unparseable / typeless default degrades to null.
                 val defaults =
                     children.mapIndexed { i, child ->
                         val default = child.initialDefault

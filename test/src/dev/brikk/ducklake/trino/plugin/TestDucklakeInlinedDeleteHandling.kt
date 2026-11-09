@@ -147,7 +147,6 @@ class TestDucklakeInlinedDeleteHandling {
 
             val victim = findDataFileForSplit(fx.catalog, table.tableId, snapshotId, baselineSplit)
             createInlinedDeleteTable(fx.isolated.jdbcUrl, fx.isolated.user, fx.isolated.password, table.tableId)
-            // begin_snapshot = snapshotId + 1000 — definitely in the future.
             insertInlinedDelete(fx.isolated.jdbcUrl, fx.isolated.user, fx.isolated.password,
                     table.tableId, victim.dataFileId, 0L, snapshotId + 1000)
 
@@ -179,7 +178,6 @@ class TestDucklakeInlinedDeleteHandling {
                     io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER)
             val metadata = testingDucklakeMetadata(fx.catalog, typeConverter)
 
-            // Baseline: stats should be present with row count + column stats.
             val baseline = metadata.getTableStatistics(SESSION, tableHandle)
             assertThat(baseline.rowCount.isUnknown).isFalse()
             assertThat(baseline.columnStatistics).isNotEmpty()
@@ -210,8 +208,6 @@ class TestDucklakeInlinedDeleteHandling {
             assertThat(fx.catalog.getInlinedDeletes(table.tableId, snapshotId)).isEmpty()
         }
     }
-
-    // ==================== helpers ====================
 
     private class Fixture private constructor(
             val isolated: DucklakeCatalogGenerator.IsolatedCatalog,

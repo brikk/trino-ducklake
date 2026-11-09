@@ -49,8 +49,6 @@ internal open class TestDucklakeAddFiles
         return "write-add-files"
     }
 
-    // ==================== Helpers ====================
-
     /**
      * Absolute path on disk for the (only) parquet file backing the given (unqualified)
      * table in the default `test_schema`. The `path` stored in
@@ -95,8 +93,6 @@ internal open class TestDucklakeAddFiles
             throw IllegalStateException(failure, e)
         }
 
-    // ==================== Round-trip ====================
-
     @Test
     fun testAddFilesBasicRoundTrip()
     {
@@ -121,7 +117,6 @@ internal open class TestDucklakeAddFiles
             assertThat(result.materializedRows[1].getField(0)).isEqualTo(2)
             assertThat(result.materializedRows[1].getField(1)).isEqualTo("bob")
 
-            // Confirm the registered file appears in $files with the absolute path
             val files = computeActual(
                     "SELECT path FROM \"add_files_dst\$files\"")
             assertThat(files.rowCount).isEqualTo(1)
@@ -186,12 +181,9 @@ internal open class TestDucklakeAddFiles
                 .hasMessageContaining("Table not found")
     }
 
-    // ==================== Column reorder ====================
-
     @Test
     fun testAddFilesColumnReorderByName()
     {
-        // Source: write the same logical columns in (name, id) order
         computeActual("CREATE TABLE test_schema.reorder_src (name VARCHAR, id INTEGER)")
         computeActual("CREATE TABLE test_schema.reorder_dst (id INTEGER, name VARCHAR)")
         try {
@@ -216,8 +208,6 @@ internal open class TestDucklakeAddFiles
             tryDropTable("test_schema.reorder_dst")
         }
     }
-
-    // ==================== Missing columns ====================
 
     @Test
     fun testAddFilesMissingColumnRejectedWithoutFlag()
@@ -273,8 +263,6 @@ internal open class TestDucklakeAddFiles
         }
     }
 
-    // ==================== Extra columns ====================
-
     @Test
     fun testAddFilesExtraColumnRejectedWithoutFlag()
     {
@@ -328,8 +316,6 @@ internal open class TestDucklakeAddFiles
             tryDropTable("test_schema.extra_dst_ok")
         }
     }
-
-    // ==================== Mapping dedup ====================
 
     @Test
     fun testAddFilesMappingDedupForSameSchema()
@@ -389,7 +375,6 @@ internal open class TestDucklakeAddFiles
     {
         // The footer_size hint stored in ducklake_data_file lets the read path skip the
         // blind 48 KB tail read on subsequent queries (FooterPrefetchingParquetDataSource).
-        // Pre-fix this was hardcoded to 0; this test pins the new behavior.
         computeActual("CREATE TABLE test_schema.footer_src (id INTEGER, name VARCHAR)")
         computeActual("CREATE TABLE test_schema.footer_dst (id INTEGER, name VARCHAR)")
         try {
@@ -411,7 +396,6 @@ internal open class TestDucklakeAddFiles
             val fileSize = Files.size(Paths.get(fileAbs))
             assertThat(footerSize).isLessThan(fileSize)
 
-            // Read path must still work with the new hint.
             val result = computeActual(
                     "SELECT id, name FROM test_schema.footer_dst ORDER BY id")
             assertThat(result.rowCount).isEqualTo(3)
@@ -421,8 +405,6 @@ internal open class TestDucklakeAddFiles
             tryDropTable("test_schema.footer_dst")
         }
     }
-
-    // ==================== Duplicate paths within one call ====================
 
     @Test
     fun testAddFilesDuplicatePathDedup()
@@ -440,7 +422,6 @@ internal open class TestDucklakeAddFiles
                             + "files => ARRAY['%s', '%s'])",
                     fileAbs, fileAbs))
 
-            // Both entries dedupe to one file → 3 rows total, not 6
             val result = computeActual(
                     "SELECT COUNT(*) FROM test_schema.duppath_dst")
             assertThat(result.materializedRows[0].getField(0)).isEqualTo(3L)
@@ -450,8 +431,6 @@ internal open class TestDucklakeAddFiles
             tryDropTable("test_schema.duppath_dst")
         }
     }
-
-    // ==================== Hive partitioning (IDENTITY) ====================
 
     @Test
     fun testPartitionedAddFilesRequiresHivePartitioning()
@@ -563,7 +542,6 @@ internal open class TestDucklakeAddFiles
                             + "hive_partitioning => true)",
                     destPath.toAbsolutePath()))
 
-            // Read-side: partition column projects as the catalog-recorded value, not NULL.
             val result = computeActual(
                     "SELECT region, val FROM test_schema.hive_dst ORDER BY val")
             assertThat(result.rowCount).isEqualTo(2)
@@ -572,8 +550,6 @@ internal open class TestDucklakeAddFiles
             assertThat(result.materializedRows[1].getField(0)).isEqualTo("us")
             assertThat(result.materializedRows[1].getField(1)).isEqualTo("world")
 
-            // Partition pushdown still prunes — a predicate matching the value keeps the
-            // file, a non-matching predicate drops it.
             val matchedCount = computeActual(
                     "SELECT COUNT(*) FROM test_schema.hive_dst WHERE region = 'us'")
             assertThat(matchedCount.materializedRows[0].getField(0)).isEqualTo(2L)
@@ -587,8 +563,6 @@ internal open class TestDucklakeAddFiles
             tryDropTable("test_schema.hive_dst")
         }
     }
-
-    // ==================== Name-map consulted at read time ====================
 
     @Test
     @Throws(Exception::class)
@@ -637,8 +611,6 @@ internal open class TestDucklakeAddFiles
             tryDropTable("test_schema.case_dst")
         }
     }
-
-    // ==================== List/Struct nested types ====================
 
     @Test
     fun testAddFilesNestedStruct()

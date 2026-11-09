@@ -19,14 +19,6 @@ import org.junit.jupiter.api.TestInstance
 import org.junit.jupiter.api.parallel.Execution
 import org.junit.jupiter.api.parallel.ExecutionMode
 
-/**
- * Write-guard slice of cross-engine compatibility: cases where a Trino write would otherwise
- * silently corrupt a DuckLake column that DuckDB owns the type of. Today that's the unsigned
- * integer family — DuckLake stores u8/u16/u32/u64 but Trino has no native unsigned types, so
- * the connector widens on read to the next-larger signed type, and the write path needs an
- * explicit range check ([DucklakeUnsignedRangeChecker]) to convert silent corruption
- * into a loud `NUMERIC_VALUE_OUT_OF_RANGE` at INSERT time.
- */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @Execution(ExecutionMode.SAME_THREAD)
 class TestDucklakeCrossEngineWriteGuards : AbstractDucklakeCrossEngineTest() {
@@ -62,7 +54,6 @@ class TestDucklakeCrossEngineWriteGuards : AbstractDucklakeCrossEngineTest() {
                 }
             }
 
-            // In-range values from every unsigned bound must round-trip cleanly.
             computeActual("INSERT INTO $fullTrino VALUES (" +
                     "1, SMALLINT '255', INTEGER '65535', BIGINT '4294967295', DECIMAL '18446744073709551615')")
 
@@ -90,8 +81,6 @@ class TestDucklakeCrossEngineWriteGuards : AbstractDucklakeCrossEngineTest() {
                 }
             }
 
-            // 300 is the canonical symptom: it survives SMALLINT encoding unharmed, but the
-            // low 8 bits are 44 — so pre-fix, DuckDB would silently read back 44.
             assertInsertFailsWithOverflow(
                     "INSERT INTO $fullTrino VALUES (2, SMALLINT '300', INTEGER '1', BIGINT '1', DECIMAL '1')",
                     "uint8")
@@ -100,7 +89,6 @@ class TestDucklakeCrossEngineWriteGuards : AbstractDucklakeCrossEngineTest() {
                     "INSERT INTO $fullTrino VALUES (3, SMALLINT '-1', INTEGER '1', BIGINT '1', DECIMAL '1')",
                     "uint8")
 
-            // One check per unsigned type so a regression pins down which size broke.
             assertInsertFailsWithOverflow(
                     "INSERT INTO $fullTrino VALUES (4, SMALLINT '0', INTEGER '65536', BIGINT '1', DECIMAL '1')",
                     "uint16")
@@ -111,7 +99,6 @@ class TestDucklakeCrossEngineWriteGuards : AbstractDucklakeCrossEngineTest() {
                     "INSERT INTO $fullTrino VALUES (6, SMALLINT '0', INTEGER '0', BIGINT '0', DECIMAL '18446744073709551616')",
                     "uint64")
 
-            // The rejected rows must NOT have reached DuckDB — only row id=1 exists.
             createDuckdbConnection().use { duck ->
                 duck.createStatement().use { stmt ->
                     stmt.executeQuery("SELECT count(*) FROM $fullDuckdb").use { rs ->

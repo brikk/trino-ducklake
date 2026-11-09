@@ -25,9 +25,8 @@ import io.trino.spi.connector.SortOrder
  * The channel — rather than the column name — is stored because that is precisely what
  * [io.trino.spi.PageSorter.sort] consumes, and it stays valid even when the sink appends a
  * trailing synthetic channel (the row-lineage rowid), since sort channels only ever index
- * the leading catalog columns. Resolution (which keys are honored, in what order) is done
- * once in [DucklakeMetadata] via [DucklakeSortPropertyMapper.resolveHonoredPrefix] so the
- * write side sorts by the SAME prefix the read side advertises to the planner.
+ * the leading catalog columns. [DucklakeSortPropertyMapper.resolveHonoredPrefix] resolves
+ * which keys are honored, in what order; it does not imply scan ordering across files.
  */
 @JvmRecord
 data class DucklakeSortColumn @JsonCreator constructor(

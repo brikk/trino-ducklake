@@ -56,7 +56,7 @@ class TestDucklakeChangeFeedCrossEngine : AbstractDucklakeCrossEngineTest() {
             val afterInsert = currentSnapshot()
 
             // DuckDB UPDATE with data inlining disabled, so the change lands in real data/delete
-            // files (the feed reads file-based changes; inlined changes are gated at analyze time).
+            // files rather than exercising the inlined path.
             // DuckDB embeds the preserved rowid in the rewritten file.
             createDuckdbConnection().use { conn ->
                 conn.createStatement().use { stmt ->
@@ -71,7 +71,6 @@ class TestDucklakeChangeFeedCrossEngine : AbstractDucklakeCrossEngineTest() {
                     "SELECT change_type, rowid, id, val FROM " +
                             "TABLE(ducklake.system.table_changes('test_schema', 'cf_xengine_update', " +
                             "${afterInsert + 1}, $afterUpdate)) ORDER BY change_type")
-            // The lineage-preserving UPDATE pairs into pre/post-image on the same rowid.
             assertThat(result.map { it.getField(0) as String })
                     .containsExactly("update_postimage", "update_preimage")
             val postImage = result.first { it.getField(0) == "update_postimage" }
@@ -88,8 +87,7 @@ class TestDucklakeChangeFeedCrossEngine : AbstractDucklakeCrossEngineTest() {
     @Test
     @Throws(Exception::class)
     fun trinoLineageUpdatePreservesRowidsForDuckdb() {
-        // The inverse of duckdbUpdatePairsIntoPreAndPostImage: TRINO performs the
-        // UPDATE with write_row_lineage, and DUCKDB must observe the SAME rowid on
+        // With write_row_lineage, DUCKDB must observe the SAME rowid on
         // the rewritten row (its reader resolves the embedded field-id 2147483540
         // column ahead of row_id_start), while Trino's own table_changes pairs the
         // rewrite into update_preimage/update_postimage.
@@ -115,7 +113,6 @@ class TestDucklakeChangeFeedCrossEngine : AbstractDucklakeCrossEngineTest() {
             computeActual(lineageSession, "UPDATE $trino SET val = 'Updated' WHERE id = 2")
             val afterUpdate = currentSnapshot()
 
-            // DuckDB sees the ORIGINAL rowid on the rewritten row + the new value.
             createDuckdbConnection().use { conn ->
                 conn.createStatement().use { stmt ->
                     stmt.executeQuery("SELECT rowid, val FROM $duckdb WHERE id = 2").use { rs ->
@@ -126,7 +123,6 @@ class TestDucklakeChangeFeedCrossEngine : AbstractDucklakeCrossEngineTest() {
                 }
             }
 
-            // Trino's change feed pairs the Trino-written rewrite.
             val result = rows(
                     "SELECT change_type, rowid, val FROM " +
                             "TABLE(ducklake.system.table_changes('test_schema', 'cf_xengine_lineage', " +
@@ -172,7 +168,6 @@ class TestDucklakeChangeFeedCrossEngine : AbstractDucklakeCrossEngineTest() {
             assertThat(deletions).hasSize(1)
             assertThat(deletions[0].getField(1) as String).isEqualTo("a")
 
-            // Full changes over the window: 2 inlined inserts + 1 inlined delete.
             val changes = rows("SELECT change_type, id, val FROM TABLE(ducklake.system.table_changes(" +
                     "'test_schema', 'cf_xengine_inlined', 1, $afterDelete)) ORDER BY change_type, id")
             assertThat(changes.map { it.getField(0) as String }).containsExactly("delete", "insert", "insert")
@@ -216,7 +211,6 @@ class TestDucklakeChangeFeedCrossEngine : AbstractDucklakeCrossEngineTest() {
             assertThat(deletions).hasSize(1)
             assertThat(deletions[0].getField(0) as Int).isEqualTo(2)
             assertThat(deletions[0].getField(1) as String).isEqualTo("b")
-            // Survivors still read correctly through both engines.
             assertThat(computeActual("SELECT id FROM $trino ORDER BY id").materializedRows.map { it.getField(0) as Int })
                     .containsExactly(1, 3)
         }

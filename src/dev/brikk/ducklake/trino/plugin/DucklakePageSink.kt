@@ -82,7 +82,6 @@ class DucklakePageSink(
     private val primitiveTypes: Map<List<String>, Type>
     private val unsignedRangeChecker: DucklakeUnsignedRangeChecker
 
-    // Partition support
     private val partitioner: DucklakePagePartitioner?
 
     // Writers: for unpartitioned tables, only index 0 is used.
@@ -91,15 +90,8 @@ class DucklakePageSink(
     private val completedFragments: MutableList<DucklakeWriteFragment> = mutableListOf()
     private val writtenFilePaths: MutableList<Location> = mutableListOf()
 
-    // Sorted-write support. Active ONLY for the gated case (parquet + unpartitioned + a resolvable
-    // sort spec), enforced upstream in DucklakeMetadata by leaving sortColumns empty otherwise; we
-    // re-check the local invariants (parquet, no partitioner) defensively so a stray handle can
-    // never flip on buffering for a path that must stay byte-for-byte unchanged. When active,
-    // appendPage BUFFERS pages in memory instead of writing; finish() sorts the whole buffer with
-    // PageSorter and replays it through the normal unpartitioned write path. The buffer is
-    // deliberately unbounded: it is confined to the gated scope and is the accepted v1 memory
-    // trade-off (a single INSERT into a sorted, unpartitioned table). getMemoryUsage() reports the
-    // buffered bytes so the engine still accounts for it.
+    // Sorted writes buffer the whole INSERT without a local bound; getMemoryUsage() reports it
+    // to the engine. Only unpartitioned Parquet tables with a resolvable sort spec use this path.
     private val sortColumns: List<DucklakeSortColumn> = handle.sortColumns
     private val sortingActive: Boolean
     private val sortTypes: List<Type>
@@ -148,7 +140,6 @@ class DucklakePageSink(
             throw TrinoException(StandardErrorCode.NOT_SUPPORTED, "Unsupported data file format: $fileFormat")
         }
 
-        // Set up partitioner if table is partitioned
         if (handle.partitionSpec.isPresent) {
             this.partitioner = DucklakePagePartitioner(
                     pageIndexerFactory,
@@ -160,10 +151,6 @@ class DucklakePageSink(
             this.partitioner = null
         }
 
-        // Sorting is active only when the handle carries a resolved prefix AND the local
-        // invariants hold: parquet writer path and no partitioner. (DucklakeMetadata already
-        // guarantees these when it populates sortColumns; the defensive re-check keeps the
-        // no-buffering contract for every other path.)
         this.sortingActive = sortColumns.isNotEmpty() &&
                 partitioner == null &&
                 FORMAT_PARQUET.equals(fileFormat, ignoreCase = true)
@@ -262,15 +249,11 @@ class DucklakePageSink(
         val maxIndex = partitioner.getMaxIndex()
         val positionCount = page.positionCount
 
-        // Ensure writers list is big enough
         while (writers.size <= maxIndex) {
             writers.add(null)
         }
 
-        // Group positions by writer index directly into int[] buckets — one counting pass to
-        // size each bucket, one fill pass — avoiding the per-row Integer autoboxing and the
-        // per-entry stream re-materialization of a Map<Integer, List<Integer>> on the hot
-        // append path. Filling in position order keeps each bucket ascending, as before.
+        // Primitive buckets avoid per-row boxing; filling in position order keeps each bucket ascending.
         val counts = IntArray(maxIndex + 1)
         for (position in 0 until positionCount) {
             counts[writerIndexes[position]]++
@@ -290,20 +273,16 @@ class DucklakePageSink(
             positions[fillOffsets[writerIndex]++] = position
         }
 
-        // Write to each partition's writer
         for (writerIndex in 0..maxIndex) {
             val posArray = positionsByWriter[writerIndex] ?: continue
 
-            // Get or create writer for this partition
             var writer = writers[writerIndex]
             if (writer == null) {
-                // Compute partition values from the first row in this partition
                 val partitionValues = partitioner.getPartitionValues(page, posArray[0])
                 writer = openNewWriter(partitionValues)
                 writers[writerIndex] = writer
             }
 
-            // Extract sub-page for this partition
             val partitionPage = page.getPositions(posArray, 0, posArray.size)
             writer.write(partitionPage)
 
@@ -382,7 +361,6 @@ class DucklakePageSink(
         bufferedPages.clear()
         bufferedRetainedBytes = 0
 
-        // Best-effort delete all written files
         for (path in writtenFilePaths) {
             try {
                 fileSystem.deleteFile(path)

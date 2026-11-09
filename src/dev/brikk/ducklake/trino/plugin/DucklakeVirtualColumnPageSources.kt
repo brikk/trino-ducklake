@@ -156,7 +156,6 @@ internal class PositionalVirtualInjectingPageSource(
         val sourcePage: SourcePage = delegate.nextSourcePage ?: return null
         val positionCount: Int = sourcePage.positionCount
 
-        // Build each positional block from the running offset (all share the same offset).
         val injectedBlocks: HashMap<Int, Block> = HashMap(injections.size * 2)
         for (injection in injections) {
             val blockBuilder: BlockBuilder = BIGINT.createBlockBuilder(null, positionCount)

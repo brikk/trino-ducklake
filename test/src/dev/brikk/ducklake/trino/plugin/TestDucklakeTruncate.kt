@@ -22,7 +22,7 @@ import org.junit.jupiter.api.parallel.ExecutionMode
  * `TRUNCATE TABLE` — a catalog bulk-clear that end-snapshots every active data file, delete
  * file, and inlined row for the table at a new snapshot, keeping the schema. Unlike
  * row-by-row DELETE it writes no delete files (O(1) regardless of row count) and does not bump
- * the schema version. Covers parquet + non-parquet data, partitioned tables, prior deletes,
+ * the schema version. Covers Parquet data, partitioned tables, prior deletes,
  * insert-after-truncate, and time travel back across the truncate (the pre-truncate snapshot
  * still sees its rows).
  *
@@ -43,7 +43,6 @@ class TestDucklakeTruncate : AbstractDucklakeIntegrationTest() {
             computeActual("TRUNCATE TABLE $table")
 
             assertThat(computeScalar("SELECT count(*) FROM $table")).isEqualTo(0L)
-            // The table still exists and is writable; the $files metadata shows no active files.
             assertThat(computeScalar("SELECT count(*) FROM \"trunc_basic\$files\"")).isEqualTo(0L)
             computeActual("INSERT INTO $table VALUES (4, 'd')")
             assertThat(computeActual("SELECT id, name FROM $table ORDER BY id").materializedRows
@@ -67,7 +66,6 @@ class TestDucklakeTruncate : AbstractDucklakeIntegrationTest() {
 
             assertThat(computeScalar("SELECT count(*) FROM $table")).isEqualTo(0L)
             assertThat(computeScalar("SELECT count(*) FROM $table WHERE region = 'US'")).isEqualTo(0L)
-            // Partitioning still applies to subsequent writes.
             computeActual("INSERT INTO $table VALUES (5, 'US')")
             assertThat(computeScalar("SELECT count(*) FROM $table WHERE region = 'US'")).isEqualTo(1L)
         }
@@ -90,7 +88,6 @@ class TestDucklakeTruncate : AbstractDucklakeIntegrationTest() {
             computeActual("TRUNCATE TABLE $table")
 
             assertThat(computeScalar("SELECT count(*) FROM $table")).isEqualTo(0L)
-            // Fresh inserts read back cleanly (no resurrected/leaked rows from old delete files).
             computeActual("INSERT INTO $table VALUES (10),(11)")
             assertThat(computeActual("SELECT id FROM $table ORDER BY id").materializedRows
                     .map { (it.getField(0) as Number).toLong() })
@@ -112,7 +109,6 @@ class TestDucklakeTruncate : AbstractDucklakeIntegrationTest() {
             computeActual("TRUNCATE TABLE $table")
             assertThat(computeScalar("SELECT count(*) FROM $table")).isEqualTo(0L)
 
-            // The pre-truncate snapshot still sees the three rows (truncate is a versioned op).
             assertThat(computeScalar("SELECT count(*) FROM $table FOR VERSION AS OF $beforeTruncate"))
                     .isEqualTo(3L)
         }

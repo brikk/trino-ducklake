@@ -118,6 +118,18 @@ class TestDucklakePuffinDeleteReader {
     }
 
     @Test
+    fun duplicateHighWordsCannotOverwriteTombstones() {
+        val blob = buildBlob(mapOf(0 to longArrayOf(1), 1 to longArrayOf(2)))
+        val first = RoaringBitmap.bitmapOf(1).apply { runOptimize() }
+        ByteBuffer.wrap(blob).order(ByteOrder.LITTLE_ENDIAN).putInt(20 + first.serializedSizeInBytes(), 0)
+        val crc = CRC32().apply { update(blob, 4, blob.size - 8) }
+        ByteBuffer.wrap(blob).putInt(blob.size - 4, crc.value.toInt())
+        assertThatThrownBy { DucklakePuffinDeleteReader.decodeBlob(blob) }
+                .isInstanceOf(IOException::class.java)
+                .hasRootCauseMessage("Corrupt puffin deletion vector: duplicate high word")
+    }
+
+    @Test
     fun testMagicMismatchRejected() {
         val bitmaps = HashMap<Int, LongArray>()
         bitmaps[0] = longArrayOf(1L)

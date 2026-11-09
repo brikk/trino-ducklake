@@ -19,19 +19,15 @@ import io.trino.spi.block.BlockBuilder
 import io.trino.spi.type.ArrayType
 import io.trino.spi.type.BigintType.BIGINT
 import io.trino.spi.type.BooleanType.BOOLEAN
-import io.trino.spi.type.DateTimeEncoding.packDateTimeWithZone
 import io.trino.spi.type.DateType
 import io.trino.spi.type.DecimalType
 import io.trino.spi.type.DoubleType.DOUBLE
 import io.trino.spi.type.Int128
 import io.trino.spi.type.IntegerType.INTEGER
-import io.trino.spi.type.LongTimestamp
-import io.trino.spi.type.LongTimestampWithTimeZone
 import io.trino.spi.type.MapType
 import io.trino.spi.type.RealType
 import io.trino.spi.type.RowType
 import io.trino.spi.type.SmallintType.SMALLINT
-import io.trino.spi.type.TimeZoneKey.UTC_KEY
 import io.trino.spi.type.TimestampType
 import io.trino.spi.type.TimestampWithTimeZoneType
 import io.trino.spi.type.TinyintType.TINYINT
@@ -44,19 +40,12 @@ import java.math.BigDecimal
 import java.nio.charset.StandardCharsets
 import java.sql.SQLException
 import java.time.LocalDate
-import java.time.LocalDateTime
-import java.time.OffsetDateTime
-import java.time.ZoneOffset
-import java.time.format.DateTimeParseException
 
 /**
  * Converts JDBC values from SQLite inlined data tables to Trino-native values
  * compatible with InMemoryRecordSet.
  */
 object DucklakeInlinedValueConverter {
-    private val HOUR_OFFSET = Regex(".*[+-][0-9]{2}$")
-    private val COMPACT_OFFSET = Regex(".*[+-][0-9]{4}$")
-
     /**
      * Convert a JDBC value to the representation expected by InMemoryRecordSet for the given Trino type.
      * Returns null for null input.
@@ -110,10 +99,10 @@ object DucklakeInlinedValueConverter {
             return toEpochDays(jdbcValue)
         }
         if (trinoType is TimestampType) {
-            return toTimestamp(jdbcValue, trinoType)
+            return DucklakeTimestampValues.timestamp(jdbcValue, trinoType, jdbcOffsetAsInstant = true)
         }
         if (trinoType is TimestampWithTimeZoneType) {
-            return toTimestampWithTimeZone(jdbcValue, trinoType)
+            return DucklakeTimestampValues.timestampWithTimeZone(jdbcValue, trinoType)
         }
         if (trinoType is UuidType) {
             return toUuidSlice(jdbcValue)
@@ -257,10 +246,7 @@ object DucklakeInlinedValueConverter {
                 // unquoted too, so a blob whose bytes spell exactly "NULL" is indistinguishable
                 // from a genuine null at the text level — an inherent ambiguity in DuckDB's list
                 // serialization. We resolve it in favour of the common, intended case (a genuine
-                // null element, pinned by TestDucklakeCrossEngineTypeAudit's list<blob> NULL test)
-                // rather than the rare blob-spelling-NULL payload; fixing the latter would break
-                // the former. The non-finite float/double tokens (inf/-inf/nan) ARE handled — see
-                // normalizeNonFiniteToken in toFloat/toDouble.
+                // null element) rather than the rare blob-spelling-NULL payload.
                 elements.add(if (token == "NULL") null else token)
             }
             while (i < len && inner[i].isWhitespace()) {
@@ -389,108 +375,6 @@ object DucklakeInlinedValueConverter {
         }
         // SQLite may store dates as ISO strings
         return LocalDate.parse(toStringValue(value)).toEpochDay()
-    }
-
-    private fun toTimestamp(value: Any, timestampType: TimestampType): Any {
-        var epochMicros: Long
-        var picosOfMicro = 0
-
-        if (value is Number) {
-            epochMicros = value.toLong()
-        }
-        else {
-            val timestamp = parseLocalDateTimeValue(value)
-            val epochSecond = timestamp.toEpochSecond(ZoneOffset.UTC)
-            val nanosOfSecond = timestamp.nano
-            epochMicros = epochSecond * 1_000_000 + nanosOfSecond / 1_000
-            picosOfMicro = (nanosOfSecond % 1_000) * 1_000
-        }
-
-        if (timestampType.isShort) {
-            return epochMicros
-        }
-        return LongTimestamp(epochMicros, picosOfMicro)
-    }
-
-    private fun toTimestampWithTimeZone(value: Any, timestampWithTimeZoneType: TimestampWithTimeZoneType): Any {
-        var epochMicros: Long
-        var picosOfMicro = 0
-
-        if (value is Number) {
-            epochMicros = value.toLong()
-        }
-        else {
-            val timestampWithZone = parseOffsetDateTimeValue(value)
-            val epochSecond = timestampWithZone.toEpochSecond()
-            val nanosOfSecond = timestampWithZone.nano
-            epochMicros = epochSecond * 1_000_000 + nanosOfSecond / 1_000
-            picosOfMicro = (nanosOfSecond % 1_000) * 1_000
-        }
-
-        val epochMillis = Math.floorDiv(epochMicros, 1_000)
-        val microsOfMilli = Math.floorMod(epochMicros, 1_000).toInt()
-        val picosOfMilli = microsOfMilli * 1_000_000 + picosOfMicro
-
-        if (timestampWithTimeZoneType.isShort) {
-            return packDateTimeWithZone(epochMillis, UTC_KEY)
-        }
-        return LongTimestampWithTimeZone.fromEpochMillisAndFraction(epochMillis, picosOfMilli, UTC_KEY)
-    }
-
-    private fun parseLocalDateTimeValue(value: Any): LocalDateTime {
-        if (value is LocalDateTime) {
-            return value
-        }
-
-        val normalized = normalizeTimestampText(toStringValue(value))
-        try {
-            return LocalDateTime.parse(normalized)
-        }
-        catch (e: DateTimeParseException) {
-            // Some drivers can return offset-bearing text even for timestamp without time zone.
-            try {
-                return OffsetDateTime.parse(normalized)
-                        .atZoneSameInstant(ZoneOffset.UTC)
-                        .toLocalDateTime()
-            }
-            catch (_: DateTimeParseException) {
-                throw IllegalArgumentException("Invalid timestamp value: $value", e)
-            }
-        }
-    }
-
-    private fun parseOffsetDateTimeValue(value: Any): OffsetDateTime {
-        if (value is OffsetDateTime) {
-            return value
-        }
-
-        val normalized = normalizeTimestampText(toStringValue(value))
-        try {
-            return OffsetDateTime.parse(normalized)
-        }
-        catch (e: DateTimeParseException) {
-            // If no explicit zone is provided, default to UTC for internal normalization.
-            try {
-                return LocalDateTime.parse(normalized).atOffset(ZoneOffset.UTC)
-            }
-            catch (_: DateTimeParseException) {
-                throw IllegalArgumentException("Invalid timestamp with time zone value: $value", e)
-            }
-        }
-    }
-
-    private fun normalizeTimestampText(value: String): String {
-        var normalized = value.trim().replace(' ', 'T')
-        if (normalized.matches(HOUR_OFFSET)) {
-            normalized = "$normalized:00"
-        }
-        if (normalized.matches(COMPACT_OFFSET)) {
-            normalized = normalized.substring(0, normalized.length - 5) +
-                    normalized.substring(normalized.length - 5, normalized.length - 2) +
-                    ":" +
-                    normalized.substring(normalized.length - 2)
-        }
-        return normalized
     }
 
     private fun toDecimal(value: Any, decimalType: DecimalType): Any {

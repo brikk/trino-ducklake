@@ -24,6 +24,8 @@ import io.trino.spi.type.MapType
 import io.trino.spi.type.RowType
 import io.trino.spi.type.TimeType
 import io.trino.spi.type.TimeWithTimeZoneType
+import io.trino.spi.type.TimestampType
+import io.trino.spi.type.TimestampWithTimeZoneType
 import io.trino.spi.type.Type
 import io.trino.spi.type.TypeUtils.writeNativeValue
 import java.time.LocalTime
@@ -33,6 +35,8 @@ import java.time.OffsetTime
 internal object DucklakeDecodedValueConverter {
     fun convert(value: Any?, type: Type): Any? = when {
         value == null -> null
+        type is TimestampType -> DucklakeTimestampValues.timestamp(value, type)
+        type is TimestampWithTimeZoneType -> DucklakeTimestampValues.timestampWithTimeZone(value, type)
         type is RowType -> row(value as Map<*, *>, type)
         type is MapType -> map(value as Map<*, *>, type)
         type is ArrayType -> {

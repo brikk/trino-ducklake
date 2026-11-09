@@ -20,9 +20,6 @@ import io.trino.spi.type.VarcharType
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.LocalDate
-import java.time.LocalDateTime
-import java.time.OffsetDateTime
-import java.time.ZoneOffset
 
 import io.trino.spi.type.BigintType.BIGINT
 import io.trino.spi.type.BooleanType.BOOLEAN
@@ -31,15 +28,11 @@ import io.trino.spi.type.DecimalType
 import io.trino.spi.type.DoubleType.DOUBLE
 import io.trino.spi.type.Int128
 import io.trino.spi.type.IntegerType.INTEGER
-import io.trino.spi.type.LongTimestamp
-import io.trino.spi.type.LongTimestampWithTimeZone
 import io.trino.spi.type.RealType.REAL
 import io.trino.spi.type.SmallintType.SMALLINT
 import io.trino.spi.type.TimestampType
 import io.trino.spi.type.TimestampWithTimeZoneType
-import io.trino.spi.type.TimeZoneKey.UTC_KEY
 import io.trino.spi.type.TinyintType.TINYINT
-import io.trino.spi.type.DateTimeEncoding.packDateTimeWithZone
 import io.trino.spi.type.VarcharType.VARCHAR
 
 /**
@@ -76,8 +69,8 @@ object DucklakePartitionValueParser
     private fun parseWideType(type: Type, value: String): Any =
         when (type) {
             is DecimalType -> parseDecimal(type, value)
-            is TimestampType -> parseTimestamp(type, value)
-            is TimestampWithTimeZoneType -> parseTimestampWithTimeZone(type, value)
+            is TimestampType -> DucklakeTimestampValues.timestamp(value, type)
+            is TimestampWithTimeZoneType -> DucklakeTimestampValues.timestampWithTimeZone(value, type)
             else -> throw IllegalArgumentException("Unsupported partition value type: $type")
         }
 
@@ -89,36 +82,6 @@ object DucklakePartitionValueParser
         } else {
             Int128.valueOf(decimal.unscaledValue())
         }
-    }
-
-    // TIMESTAMP (without time zone): a hive path stores the value as `2024-01-15 10:30:00[.ffffff]`.
-    // Short precision (<= 6) projects as epoch micros; long precision as LongTimestamp(micros, picos).
-    private fun parseTimestamp(type: TimestampType, value: String): Any {
-        val ldt: LocalDateTime = LocalDateTime.parse(value.trim().replace(' ', 'T'))
-        val epochMicros: Long = ldt.toEpochSecond(ZoneOffset.UTC) * 1_000_000 + ldt.nano / 1_000
-        if (type.isShort) {
-            return epochMicros
-        }
-        val picosOfMicro: Int = (ldt.nano % 1_000) * 1_000
-        return LongTimestamp(epochMicros, picosOfMicro)
-    }
-
-    // TIMESTAMP WITH TIME ZONE: parse an offset-bearing (or UTC-defaulted) literal to the packed
-    // short form or LongTimestampWithTimeZone, normalized to UTC (the connector's storage zone).
-    private fun parseTimestampWithTimeZone(type: TimestampWithTimeZoneType, value: String): Any {
-        val text: String = value.trim().replace(' ', 'T')
-        val odt: OffsetDateTime = try {
-            OffsetDateTime.parse(text)
-        } catch (_: java.time.format.DateTimeParseException) {
-            LocalDateTime.parse(text).atOffset(ZoneOffset.UTC)
-        }
-        val epochMicros: Long = odt.toEpochSecond() * 1_000_000 + odt.nano / 1_000
-        val epochMillis: Long = Math.floorDiv(epochMicros, 1_000)
-        if (type.isShort) {
-            return packDateTimeWithZone(epochMillis, UTC_KEY)
-        }
-        val picosOfMilli: Int = Math.floorMod(epochMicros, 1_000).toInt() * 1_000_000 + (odt.nano % 1_000) * 1_000
-        return LongTimestampWithTimeZone.fromEpochMillisAndFraction(epochMillis, picosOfMilli, UTC_KEY)
     }
 
     // Boolean.parseBoolean maps unrecognized text to false. Match the catalog's true/false

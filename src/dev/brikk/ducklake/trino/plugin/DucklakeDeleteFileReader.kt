@@ -58,7 +58,7 @@ import java.util.OptionalLong
  *
  *  - DuckLake-spec files — what the DuckDB extension AND this connector's merge sink write —
  *    carry `(file_path, pos)`, whose INT64 `pos` column holds FILE-LOCAL row offsets;
- *  - LEGACY Trino files (merge-sink output before the cross-engine fix) carry a single
+ *  - Legacy Trino files carry a single
  *    [TRINO_ROW_ID_COLUMN] (`row_id`) INT64 column holding GLOBAL row ids
  *    (`rowIdStart + file position`). DuckDB rejects this shape, which is why the sink no
  *    longer writes it; the reader keeps accepting it for tables deleted by older builds.
@@ -92,12 +92,11 @@ object DucklakeDeleteFileReader {
      * [global] = true for global row ids (`row_id` schema), false for file-local offsets
      * (DuckLake-spec `pos` schema).
      */
-    data class DeletePositions(val values: Set<Long>, val global: Boolean)
+    data class DeletePositions(val values: DucklakeLongSet, val global: Boolean)
 
     /**
      * Reads all non-null positions from a single parquet delete file. The returned set
-     * is unordered and dedup'd (the read path tolerates duplicate aliasing — see
-     * `TestDeleteRowFilterTransformOverlap`).
+     * is unordered and deduplicated, including overlapping tombstones.
      */
     @Throws(IOException::class)
     fun readPositions(
@@ -133,7 +132,7 @@ object DucklakeDeleteFileReader {
                     dataSource, inputFile.length(), parquetMetadata,
                     Column(deleteFileColumn.columnName, deleteFileColumn.field), memoryContext, parquetReaderOptions)
 
-            val deletedRows: Set<Long> = readNonNullValues(ParquetPageSource(parquetReader), deleteFileColumn.columnType)
+            val deletedRows = readNonNullValues(ParquetPageSource(parquetReader), deleteFileColumn.columnType)
             val global: Boolean = deleteFileColumn.columnName.equals(TRINO_ROW_ID_COLUMN, ignoreCase = true)
             return DeletePositions(deletedRows, global)
         }
@@ -154,6 +153,80 @@ object DucklakeDeleteFileReader {
      */
     const val ROW_ID_PARQUET_FIELD_ID: Int = 2_147_483_540
     const val SNAPSHOT_ID_PARQUET_FIELD_ID: Int = 2_147_483_539
+
+    class DataFileInfo(val metadata: ParquetMetadata, val lineage: LongArray?, val origins: LongArray?) {
+        fun getRetainedSizeInBytes(): Long {
+            val output = com.google.common.io.CountingOutputStream(java.io.OutputStream.nullOutputStream())
+            org.apache.parquet.format.Util.writeFileMetaData(metadata.parquetMetadata, output)
+            // Thrift/schema objects expand on heap; reserve headers in addition to encoded bytes.
+            return 1024L + output.count * 8 + metadata.blocks.sumOf { 1024L * it.columns.size } +
+                    8L * ((lineage?.size ?: 0).toLong() + (origins?.size ?: 0))
+        }
+    }
+
+    /** Reads the footer and both identity columns together; absent fields remain absent. */
+    fun readDataFileInfo(
+            fileSystem: TrinoFileSystem, path: String, footerSize: Long,
+            options: ParquetReaderOptions, stats: FileFormatDataSourceStats,
+            checkRows: (Long) -> Unit): DataFileInfo {
+        val input = fileSystem.newInputFile(toLocation(path))
+        val memory = newSimpleAggregatedMemoryContext()
+        var source: ParquetDataSource? = null
+        try {
+            source = createDataSource(input, OptionalLong.empty(), options, memory, stats)
+            source = FooterPrefetchingParquetDataSource.wrapIfHintUsable(source, footerSize, options.maxFooterReadSize.toBytes())
+            val metadata = MetadataReader.readFooter(source, options, Optional.empty(), Optional.empty())
+            val rows = metadata.blocks.fold(0L) { n, block -> Math.addExact(n, block.rowCount) }
+            checkRows(rows)
+            val schema = metadata.fileMetaData.schema
+            val columnIO = getColumnIO(schema, schema)
+            val lineage = schema.fields.firstOrNull { it.id?.intValue() == ROW_ID_PARQUET_FIELD_ID }?.let { field ->
+                requiredNamedColumn(columnIO, field.name, path)
+            }
+            val origins = columnIO.getChild(INTERNAL_SNAPSHOT_ID_COLUMN)?.let {
+                requiredNamedColumn(columnIO, INTERNAL_SNAPSHOT_ID_COLUMN, path)
+            }
+            val columns = listOfNotNull(lineage, origins)
+            if (columns.isEmpty()) {
+                source.close()
+                return DataFileInfo(metadata, null, null)
+            }
+            val reader = createParquetReaderForColumns(source, input.length(), metadata, columns, memory, options)
+            val arrays = collectInternalColumns(ParquetPageSource(reader), columns, rows, path)
+            return DataFileInfo(metadata, if (lineage == null) null else arrays[0], if (origins == null) null else arrays.last())
+        }
+        catch (e: IOException) {
+            throw closeAndWrap(source, path, e)
+        }
+        catch (e: RuntimeException) {
+            throw closePreservingDiagnostic(source, path, e)
+        }
+        finally { memory.close() }
+    }
+
+    private fun collectInternalColumns(pages: ConnectorPageSource, columns: List<Column>, rows: Long, path: String): List<LongArray> {
+        val arrays = List(columns.size) { LongArray(Math.toIntExact(rows)) }
+        pages.use {
+            var position = 0
+            while (!pages.isFinished) {
+                val page = pages.nextSourcePage ?: continue
+                for (channel in columns.indices) {
+                    copyInternalValues(page.getBlock(channel), arrays[channel], position, columns[channel].name, path)
+                }
+                position += page.positionCount
+            }
+            check(position.toLong() == rows) { "Embedded DuckLake column row count differs from footer: $path" }
+        }
+        return arrays
+    }
+
+    private fun copyInternalValues(block: Block, target: LongArray, start: Int, column: String, path: String) {
+        for (i in 0 until block.positionCount) {
+            if (block.isNull(i)) throw TrinoException(GENERIC_INTERNAL_ERROR,
+                    "Embedded DuckLake $column column contains NULL: $path")
+            target[start + i] = BIGINT.getLong(block, i)
+        }
+    }
 
     /**
      * Reads the embedded row-lineage column (parquet field-id [ROW_ID_PARQUET_FIELD_ID]) of a data
@@ -248,7 +321,7 @@ object DucklakeDeleteFileReader {
             footerSizeHint: Long,
             snapshotFilterMax: Long,
             parquetReaderOptions: ParquetReaderOptions,
-            stats: FileFormatDataSourceStats): Set<Long> {
+            stats: FileFormatDataSourceStats): DucklakeLongSet {
         val inputFile = fileSystem.newInputFile(toLocation(dataFilePath))
         val memoryContext = newSimpleAggregatedMemoryContext()
         var dataSource: ParquetDataSource? = null
@@ -259,30 +332,26 @@ object DucklakeDeleteFileReader {
             val parquetMetadata = MetadataReader.readFooter(dataSource, parquetReaderOptions, Optional.empty(), Optional.empty())
             val schema = parquetMetadata.fileMetaData.schema
             val messageColumnIO = getColumnIO(schema, schema)
-            val columnIO: ColumnIO = messageColumnIO.getChild(INTERNAL_SNAPSHOT_ID_COLUMN)
-                    ?: throw TrinoException(
-                            GENERIC_INTERNAL_ERROR,
-                            "Partial data file is missing its $INTERNAL_SNAPSHOT_ID_COLUMN column, which is " +
-                                    "required to drop rows newer than the read snapshot ($snapshotFilterMax): " +
-                                    dataFilePath)
-            val field: Field = DucklakeParquetTypeUtils.constructField(BIGINT, columnIO)
-                    .orElseThrow { TrinoException(GENERIC_INTERNAL_ERROR, "Could not construct field for $INTERNAL_SNAPSHOT_ID_COLUMN") }
+            val field = requiredSnapshotField(messageColumnIO, dataFilePath, snapshotFilterMax)
             val parquetReader = createParquetReader(
                     dataSource, inputFile.length(), parquetMetadata,
                     Column(INTERNAL_SNAPSHOT_ID_COLUMN, field), memoryContext, parquetReaderOptions)
             return collectPositionsAbove(ParquetPageSource(parquetReader), snapshotFilterMax)
         }
-        catch (e: TrinoException) {
-            // Already specific (missing marker / unconstructable field). Close the data source and
-            // rethrow AS-IS so the precise error code + message aren't buried by the generic wrap.
-            dataSource?.let { runCatching { it.close() } }
-            throw e
-        }
         catch (e: IOException) {
             throw closeAndWrap(dataSource, dataFilePath, e)
         }
         catch (e: RuntimeException) {
-            throw closeAndWrap(dataSource, dataFilePath, e)
+            throw closePreservingDiagnostic(dataSource, dataFilePath, e)
+        }
+    }
+
+    private fun requiredSnapshotField(columns: MessageColumnIO, path: String, snapshot: Long): Field {
+        val column = columns.getChild(INTERNAL_SNAPSHOT_ID_COLUMN) ?: throw TrinoException(GENERIC_INTERNAL_ERROR,
+                "Partial data file is missing its $INTERNAL_SNAPSHOT_ID_COLUMN column, which is " +
+                        "required to drop rows newer than the read snapshot ($snapshot): $path")
+        return DucklakeParquetTypeUtils.constructField(BIGINT, column).orElseThrow {
+            TrinoException(GENERIC_INTERNAL_ERROR, "Could not construct field for $INTERNAL_SNAPSHOT_ID_COLUMN")
         }
     }
 
@@ -356,8 +425,8 @@ object DucklakeDeleteFileReader {
     }
 
     /** File-local positions whose BIGINT value is strictly greater than [threshold], in file order. */
-    private fun collectPositionsAbove(pageSource: ConnectorPageSource, threshold: Long): Set<Long> {
-        val positions = mutableSetOf<Long>()
+    private fun collectPositionsAbove(pageSource: ConnectorPageSource, threshold: Long): DucklakeLongSet {
+        val positions = DucklakeLongSet()
         var base = 0L
         pageSource.use { source ->
             while (!source.isFinished) {
@@ -365,7 +434,7 @@ object DucklakeDeleteFileReader {
                 val block = page.getBlock(0)
                 for (i in 0 until block.positionCount) {
                     if (!block.isNull(i) && BIGINT.getLong(block, i) > threshold) {
-                        positions.add(base + i)
+                        positions.addLong(base + i)
                     }
                 }
                 base += block.positionCount
@@ -531,8 +600,8 @@ object DucklakeDeleteFileReader {
             ?: throw TrinoException(GENERIC_INTERNAL_ERROR, "Partial delete file missing '$name' column: $deleteFilePath")
 
     /** Block 0 = `pos`, block 1 = snapshot id; keep `pos` where snapshot id <= [threshold]. */
-    private fun collectPositionsAtOrBelow(pageSource: ConnectorPageSource, threshold: Long): Set<Long> {
-        val positions = mutableSetOf<Long>()
+    private fun collectPositionsAtOrBelow(pageSource: ConnectorPageSource, threshold: Long): DucklakeLongSet {
+        val positions = DucklakeLongSet()
         pageSource.use { source ->
             while (!source.isFinished) {
                 val page = source.nextSourcePage ?: continue
@@ -540,7 +609,7 @@ object DucklakeDeleteFileReader {
                 val snapBlock = page.getBlock(1)
                 for (i in 0 until posBlock.positionCount) {
                     if (!posBlock.isNull(i) && !snapBlock.isNull(i) && BIGINT.getLong(snapBlock, i) <= threshold) {
-                        positions.add(BIGINT.getLong(posBlock, i))
+                        positions.addLong(BIGINT.getLong(posBlock, i))
                     }
                 }
             }
@@ -614,15 +683,15 @@ object DucklakeDeleteFileReader {
     }
 
     /** Drains the page source, collecting every non-null value of its single column. */
-    private fun readNonNullValues(pageSource: ConnectorPageSource, columnType: Type): Set<Long> {
-        val values = mutableSetOf<Long>()
+    private fun readNonNullValues(pageSource: ConnectorPageSource, columnType: Type): DucklakeLongSet {
+        val values = DucklakeLongSet()
         pageSource.use { source ->
             while (!source.isFinished) {
                 val page = source.nextSourcePage ?: continue
                 val block = page.getBlock(0)
                 for (position in 0 until block.positionCount) {
                     if (!block.isNull(position)) {
-                        values.add(readDeleteValue(columnType, block, position))
+                        values.addLong(readDeleteValue(columnType, block, position))
                     }
                 }
             }

@@ -16,6 +16,12 @@ nested JSON writes retain the existing explicit unsupported restriction. See
 Native-row source reservations conservatively count shared values more than once and
 measure inline JSON using a temporary single-value block. Page production is byte-budgeted;
 this does not retroactively bound the released catalog's older list-returning inline reads.
+Read-side delete filters reserve Roaring64 retained storage, not a boxed-long cardinality
+estimate. CDC reserves its query-local footers, primitive identity arrays and bitmap sets,
+releasing them on close/exhaustion. Shared lineage can be conservatively counted both in
+the file cache and in the units. Trino 484's default per-source `MemoryUsageReportingPageSource`
+forwards these `getMemoryUsage()` values to its `MemoryContext`; provider-shared column-cache
+reservations remain separate. These estimates are not a streaming or query/node-global bound.
 
 ## Native snapshot-column compatibility
 
@@ -475,3 +481,16 @@ result whole. The APIs that would remove these are in TODO.md under "Writes and 
   loaded too and are not counted, because the catalog cannot count them. Inlined data is not
   bounded by construction: every DuckDB insert under `data_inlining_row_limit` adds rows until
   someone flushes. Removal criterion: a paged inlined change read streamed into the writer.
+
+## Legacy JDBC timestamp offsets
+
+`DucklakeTimestampValues` centralizes timestamp parsing/encoding, but deliberately keeps an
+explicit `jdbcOffsetAsInstant` input policy. The legacy JDBC converter normalizes offset-bearing
+unzoned timestamp text to UTC. DuckDB and catalog 0.17.0's `InlinedTemporalValues.localTimestampText`
+instead ignore the offset and keep wall-clock time; identity-partition and decoded catalog values
+follow that rule. The existing JDBC compatibility tests require its different behavior and remain
+unchanged. Normal decoded catalog TIMESTAMP values are already `LocalDateTime`.
+
+Removal criterion: separately approve changing the legacy JDBC offset contract, with driver/backend
+qualification and an intentional test-contract change. Do not silently treat its text as catalog
+TIMESTAMP text. See [WP6 measurements and semantics](archive/WP6-READ-PATH-PERFORMANCE.md).

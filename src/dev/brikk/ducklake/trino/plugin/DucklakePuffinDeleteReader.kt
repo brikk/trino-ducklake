@@ -17,6 +17,8 @@ import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import io.trino.filesystem.TrinoInputFile
 import org.roaringbitmap.RoaringBitmap
+import java.io.ByteArrayInputStream
+import java.io.DataInputStream
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -24,7 +26,7 @@ import java.util.zip.CRC32
 
 /**
  * Reader for DuckLake's `.puffin` deletion-vector files. Two on-disk shapes exist (see
- * `vendor/ducklake/src/storage/ducklake_puffin.cpp` `DuckLakePuffinWriter::Write`):
+ * `ducklake/src/storage/ducklake_puffin.cpp` `DuckLakePuffinWriter::Write`):
  *
  *  1. **Bare blob** — a single deletion-vector-v1 blob written with NO surrounding container
  *     (what DuckLake writes when a file has one deletion vector). Its snapshot is the catalog
@@ -33,7 +35,7 @@ import java.util.zip.CRC32
  *     multiple snapshots are CONSOLIDATED into one file ("partial" delete file, `partial_max`
  *     set). The JSON footer lists each blob's `offset`/`length` and a `ducklake-snapshot-id`
  *     property. A time-travel read at snapshot S must apply only the blobs whose snapshot id
- *     `<= S` — this is what retires the old partial-puffin read gate.
+ *     `<= S`.
  *
  * Mirror of upstream `DuckLakePuffinReader::ParseFooter` +
  * `DuckLakeDeleteFilter::ScanDeletionVectorFile`.
@@ -76,7 +78,7 @@ object DucklakePuffinDeleteReader {
      * (single-blob) file.
      */
     @Throws(IOException::class)
-    fun readDeletedPositions(inputFile: TrinoInputFile): Set<Long> =
+    fun readDeletedPositions(inputFile: TrinoInputFile): DucklakeLongSet =
         decodeFile(readAllBytes(inputFile), inputFile.location().toString(), null)
 
     /**
@@ -89,7 +91,7 @@ object DucklakePuffinDeleteReader {
      *  - a MIX is corrupt (DuckLake rejects it identically).
      */
     @Throws(IOException::class)
-    fun readDeletedPositions(inputFile: TrinoInputFile, snapshotFilterMax: Long): Set<Long> =
+    fun readDeletedPositions(inputFile: TrinoInputFile, snapshotFilterMax: Long): DucklakeLongSet =
         decodeFile(readAllBytes(inputFile), inputFile.location().toString(), snapshotFilterMax)
 
     /** Earliest deletion snapshot per position, or null for a bare/untagged legacy vector. */
@@ -97,21 +99,32 @@ object DucklakePuffinDeleteReader {
     fun readDeletionSnapshotsIfPresent(inputFile: TrinoInputFile): Map<Long, Long>? =
         decodeDeletionSnapshotsIfPresent(readAllBytes(inputFile), inputFile.location().toString())
 
+    fun readDeletionGroupsIfPresent(inputFile: TrinoInputFile): Map<Long, DucklakeLongSet>? =
+        decodeDeletionGroupsIfPresent(readAllBytes(inputFile), inputFile.location().toString())
+
     @Throws(IOException::class)
     fun decodeDeletionSnapshotsIfPresent(data: ByteArray, path: String): Map<Long, Long>? {
+        val groups = decodeDeletionGroupsIfPresent(data, path) ?: return null
+        return mutableMapOf<Long, Long>().also { result ->
+            groups.forEach { (snapshot, positions) -> positions.forEachLong { result[it] = snapshot } }
+        }
+    }
+
+    internal fun decodeDeletionGroupsIfPresent(data: ByteArray, path: String): Map<Long, DucklakeLongSet>? {
         val blobs = parseBlobs(data, path)
         if (blobs.none { it.snapshotId != null }) return null
         if (blobs.any { it.snapshotId == null }) {
             fail("Puffin delete file mixes deletion vectors with and without a snapshot id: $path")
         }
-        val result = mutableMapOf<Long, Long>()
+        val result = mutableMapOf<Long, DucklakeLongSet>()
+        val seen = DucklakeLongSet()
         // Native containers hold cumulative vectors. The earliest tag is the event, not the
         // container's begin_snapshot, and not current-path minus an identical previous path.
         for (blob in blobs.sortedBy { it.snapshotId }) {
             val snapshot = checkNotNull(blob.snapshotId)
-            for (position in decodeBlobRegion(data, blob.offset, blob.length)) {
-                result.putIfAbsent(position, snapshot)
-            }
+            val positions = decodeBlobRegion(data, blob.offset, blob.length)
+            result.getOrPut(snapshot) { DucklakeLongSet() }.addAll(positions.subtract(seen))
+            seen.addAll(positions)
         }
         return result
     }
@@ -122,14 +135,14 @@ object DucklakePuffinDeleteReader {
      * PFA1-container + per-blob snapshot logic without filesystem plumbing.
      */
     @Throws(IOException::class)
-    fun decodeFile(data: ByteArray, path: String, snapshotFilterMax: Long?): Set<Long> {
+    fun decodeFile(data: ByteArray, path: String, snapshotFilterMax: Long?): DucklakeLongSet {
         val blobs = parseBlobs(data, path)
         val snapshotTagged = blobs.count { it.snapshotId != null }
         val mustFilter = snapshotFilterMax != null && snapshotTagged > 0
         if (snapshotTagged != 0 && snapshotTagged != blobs.size) {
             throw IOException("Puffin delete file mixes deletion vectors with and without a snapshot id: $path")
         }
-        val positions = hashSetOf<Long>()
+        val positions = DucklakeLongSet()
         for (blob in blobs) {
             if (mustFilter && blob.snapshotId!! > snapshotFilterMax!!) {
                 continue
@@ -258,13 +271,13 @@ object DucklakePuffinDeleteReader {
      * Decode a single bare deletion-vector blob (offset 0, whole array). Visible for testing.
      */
     @Throws(IOException::class)
-    fun decodeBlob(blob: ByteArray): Set<Long> = decodeBlobRegion(blob, 0, blob.size)
+    fun decodeBlob(blob: ByteArray): DucklakeLongSet = decodeBlobRegion(blob, 0, blob.size)
 
     /**
      * Decode one deletion-vector-v1 blob occupying [length] bytes starting at [start] within [data].
      */
     @Throws(IOException::class)
-    private fun decodeBlobRegion(data: ByteArray, start: Int, length: Int): Set<Long> {
+    private fun decodeBlobRegion(data: ByteArray, start: Int, length: Int): DucklakeLongSet {
         if (length < MIN_BLOB_SIZE) {
             fail("Puffin delete blob too small: $length bytes (minimum $MIN_BLOB_SIZE)")
         }
@@ -318,24 +331,16 @@ object DucklakePuffinDeleteReader {
      * translated to IOException so a corrupt file fails the split the same clean way every other
      * corruption mode does.
      */
-    private fun decodeBitmaps(buf: ByteBuffer, bitmapCount: Long, length: Int): Set<Long> {
-        val positions = hashSetOf<Long>()
+    private fun decodeBitmaps(buf: ByteBuffer, bitmapCount: Long, length: Int): DucklakeLongSet {
         try {
-            var b = 0L
-            while (b < bitmapCount) {
-                val highLong = buf.getInt().toLong() shl 32
-                val rbStart = buf.position()
-                // RoaringBitmap.deserialize(ByteBuffer) internally slices the buffer so it does NOT
-                // advance the input position; we advance manually by the serialized size. CRoaring's
-                // portable format is LITTLE_ENDIAN, which the library forces on its internal slice.
-                val bitmap = RoaringBitmap()
-                bitmap.deserialize(buf)
-                buf.position(rbStart + bitmap.serializedSizeInBytes())
-                for (low in bitmap) {
-                    positions.add(highLong or (low.toLong() and 0xFFFFFFFFL))
-                }
-                b++
-            }
+            if (bitmapCount > 1) validateHighWords(buf.duplicate().order(ByteOrder.LITTLE_ENDIAN), bitmapCount)
+            // DuckLake's count/high-word/Roaring32 payload is the portable Roaring64 format.
+            val start = buf.position() - Long.SIZE_BYTES
+            val input = ByteArrayInputStream(buf.array(), buf.arrayOffset() + start, length - start - 4)
+            val before = input.available()
+            val positions = DucklakeLongSet.readPortable(DataInputStream(input))
+            buf.position(start + before - input.available())
+            return positions
         }
         catch (e: IOException) {
             fail("Corrupt puffin deletion vector: bitmap decode failed (bitmap_count=$bitmapCount, blob length=$length)", e)
@@ -343,6 +348,17 @@ object DucklakePuffinDeleteReader {
         catch (e: RuntimeException) {
             fail("Corrupt puffin deletion vector: bitmap decode failed (bitmap_count=$bitmapCount, blob length=$length)", e)
         }
-        return positions
+    }
+
+    private fun validateHighWords(buffer: ByteBuffer, count: Long) {
+        val highs = hashSetOf<Int>()
+        repeat(Math.toIntExact(count)) {
+            // DuckLake serializes a map; duplicate keys must not silently overwrite tombstones.
+            if (!highs.add(buffer.getInt())) fail("Corrupt puffin deletion vector: duplicate high word")
+            val start = buffer.position()
+            val bitmap = RoaringBitmap()
+            bitmap.deserialize(buffer)
+            buffer.position(start + bitmap.serializedSizeInBytes())
+        }
     }
 }

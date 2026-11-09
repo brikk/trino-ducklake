@@ -51,13 +51,17 @@ class ChangeFeedUnit @JvmOverloads constructor(
         val snapshotId: Long,
         val rowIdStart: Long?,
         val lineageRowIds: LongArray?,
-        val keepPositions: Set<Long>?,
-        val updatedRowids: Set<Long>,
+        keepPositions: Set<Long>?,
+        updatedRowids: Set<Long>,
         val isDelete: Boolean,
         /** Whole-source rows visited by this unit, including rows rejected by keepPositions. */
         val physicalRows: Long = 0,
         /** Physical versions born and deleted in one snapshot, not other versions of that row ID. */
-        val excludedPositions: Set<Long> = emptySet())
+        excludedPositions: Set<Long> = emptySet()) {
+    val keepPositions: DucklakeLongSet? = keepPositions?.let { if (it is DucklakeLongSet) it else DucklakeLongSet.copyOf(it) }
+    val updatedRowids: DucklakeLongSet = if (updatedRowids is DucklakeLongSet) updatedRowids else DucklakeLongSet.copyOf(updatedRowids)
+    val excludedPositions: DucklakeLongSet = if (excludedPositions is DucklakeLongSet) excludedPositions else DucklakeLongSet.copyOf(excludedPositions)
+}
 
 /**
  * Streams the DuckLake change feed as `snapshot_id, rowid[, change_type]` + table columns.
@@ -75,8 +79,10 @@ class ChangeFeedPageSource(
         units: List<ChangeFeedUnit>,
         private val requestedColumns: List<DucklakeColumnHandle>,
         private val dataColumns: List<DucklakeColumnHandle>,
-        private val emitChangeType: Boolean) : ConnectorPageSource {
-    private val units: List<ChangeFeedUnit> = units.toList()
+        private val emitChangeType: Boolean,
+        private val retainedFileBytes: Long = 0,
+        private val releaseFiles: () -> Unit = {}) : ConnectorPageSource {
+    private val units = units.toMutableList()
     private val rowIdChannel: Int = dataColumns.size
     private val dataChannelByColumnId: Map<Long, Int> = dataColumns.withIndex()
             .associate { (i, col) -> col.columnId to i }
@@ -87,6 +93,8 @@ class ChangeFeedPageSource(
     private var finished: Boolean = false
     private var completedBytes: Long = 0
     private var readTimeNanos: Long = 0
+    private val retainedUnitBytes = retainedUnitBytes()
+    private var closed = false
 
     override fun getCompletedBytes(): Long = completedBytes
 
@@ -94,13 +102,27 @@ class ChangeFeedPageSource(
 
     override fun isFinished(): Boolean = finished
 
-    override fun getMemoryUsage(): Long = currentSource?.memoryUsage ?: 0L
+    override fun getMemoryUsage(): Long = if (closed) 0 else retainedFileBytes + retainedUnitBytes + (currentSource?.memoryUsage ?: 0L)
+
+    private fun retainedUnitBytes(): Long {
+        val seen = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Any, Boolean>())
+        return units.sumOf { unit ->
+            128L + listOfNotNull(unit.keepPositions, unit.updatedRowids, unit.excludedPositions, unit.lineageRowIds).sumOf { value ->
+                if (!seen.add(value)) 0L else when (value) {
+                    is DucklakeLongSet -> value.getRetainedSizeInBytes()
+                    is LongArray -> 16L + 8L * value.size
+                    else -> 0L
+                }
+            }
+        }
+    }
 
     override fun getNextSourcePage(): SourcePage? {
         while (!finished) {
             val source: ConnectorPageSource = currentSource ?: run {
                 if (unitIndex >= units.size) {
                     finished = true
+                    close()
                     return null
                 }
                 currentUnit = units[unitIndex]
@@ -134,16 +156,7 @@ class ChangeFeedPageSource(
 
         val keptIdx = IntArray(positionCount)
         val keptRowIds = LongArray(positionCount)
-        var keptCount = 0
-        for (i in 0 until positionCount) {
-            val filePosition: Long = BIGINT.getLong(filePositionBlock, i)
-            if (!keep(unit, filePosition)) {
-                continue
-            }
-            keptIdx[keptCount] = i
-            keptRowIds[keptCount] = DucklakeRowIdentity.rowId(unit.lineageRowIds, unit.rowIdStart, filePosition)
-            keptCount++
-        }
+        val keptCount = fillKeptRows(unit, filePositionBlock, keptIdx, keptRowIds)
         if (keptCount == 0) {
             return null
         }
@@ -170,7 +183,22 @@ class ChangeFeedPageSource(
     }
 
     private fun keep(unit: ChangeFeedUnit, position: Long): Boolean =
-        position !in unit.excludedPositions && (unit.keepPositions == null || position in unit.keepPositions)
+        !unit.excludedPositions.containsLong(position) && (unit.keepPositions == null || unit.keepPositions.containsLong(position))
+
+    private fun fillKeptRows(unit: ChangeFeedUnit, positions: Block, indexes: IntArray, rowIds: LongArray): Int {
+        var count = 0
+        for (index in indexes.indices) {
+            if (keep(unit, BIGINT.getLong(positions, index))) indexes[count++] = index
+        }
+        if (count == 0) return 0
+        val start = if (unit.lineageRowIds == null) DucklakeRowIdentity.requireStart(unit.rowIdStart) else 0L
+        for (index in 0 until count) {
+            val position = BIGINT.getLong(positions, indexes[index])
+            rowIds[index] = if (unit.lineageRowIds == null) Math.addExact(start, position)
+                else DucklakeRowIdentity.rowId(unit.lineageRowIds, null, position)
+        }
+        return count
+    }
 
     private fun rowIdBlock(keptRowIds: LongArray, keptCount: Int): Block {
         val builder = BIGINT.createBlockBuilder(null, keptCount)
@@ -181,17 +209,12 @@ class ChangeFeedPageSource(
     }
 
     private fun changeTypeBlock(unit: ChangeFeedUnit, keptRowIds: LongArray, keptCount: Int): Block {
-        val updatedLabel: String = if (unit.isDelete) {
-            ChangeFeedColumns.CHANGE_UPDATE_PREIMAGE
-        }
-        else {
-            ChangeFeedColumns.CHANGE_UPDATE_POSTIMAGE
-        }
-        val plainLabel: String = if (unit.isDelete) ChangeFeedColumns.CHANGE_DELETE else ChangeFeedColumns.CHANGE_INSERT
+        val updatedLabel = if (unit.isDelete) UPDATE_PREIMAGE else UPDATE_POSTIMAGE
+        val plainLabel = if (unit.isDelete) DELETE else INSERT
         val builder = VARCHAR.createBlockBuilder(null, keptCount)
         for (j in 0 until keptCount) {
-            val label: String = if (unit.updatedRowids.contains(keptRowIds[j])) updatedLabel else plainLabel
-            VARCHAR.writeSlice(builder, Slices.utf8Slice(label))
+            val label = if (unit.updatedRowids.containsLong(keptRowIds[j])) updatedLabel else plainLabel
+            VARCHAR.writeSlice(builder, label)
         }
         return builder.build()
     }
@@ -204,7 +227,21 @@ class ChangeFeedPageSource(
 
     @Throws(IOException::class)
     override fun close() {
-        currentSource?.close()
-        currentSource = null
+        try { currentSource?.close() }
+        finally {
+            currentSource = null
+            currentUnit = null
+            units.clear()
+            releaseFiles()
+            finished = true
+            closed = true
+        }
+    }
+
+    companion object {
+        private val INSERT = Slices.utf8Slice(ChangeFeedColumns.CHANGE_INSERT)
+        private val DELETE = Slices.utf8Slice(ChangeFeedColumns.CHANGE_DELETE)
+        private val UPDATE_PREIMAGE = Slices.utf8Slice(ChangeFeedColumns.CHANGE_UPDATE_PREIMAGE)
+        private val UPDATE_POSTIMAGE = Slices.utf8Slice(ChangeFeedColumns.CHANGE_UPDATE_POSTIMAGE)
     }
 }

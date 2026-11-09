@@ -50,8 +50,10 @@ port, feature and release history is not an instruction to redo shipped work.
 
 ## Read performance and metadata
 
-- [ ] Keep Roaring/primitive delete membership through filtering instead of expanding
-  dense vectors into copied boxed sets; profile concurrency and impose a real bound.
+- [x] Keep Roaring/primitive delete membership through filtering instead of expanding
+  dense vectors into copied boxed sets.
+- [ ] Profile concurrent delete readers and impose a retained-state budget; memory
+  reservations alone are not a query/node-global bound.
 - [ ] Bound change-feed startup memory/time while retaining cross-window update pairing.
 - [ ] Fetch all predicate-column file statistics in a bounded planning query instead
   of repeated active-file scans; unknown statistics must continue to keep files.

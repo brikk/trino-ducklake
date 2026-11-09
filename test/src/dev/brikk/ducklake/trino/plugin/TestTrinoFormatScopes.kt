@@ -12,10 +12,12 @@ package dev.brikk.ducklake.trino.plugin
 
 import dev.brikk.ducklake.corpus.CorpusRunner
 import dev.brikk.ducklake.corpus.OracleAttachment
+import dev.brikk.ducklake.corpus.RecordOutcome
 import dev.brikk.ducklake.corpus.ReplayOracleSqlBinder
 import dev.brikk.ducklake.corpus.ReplayReadEngine
 import dev.brikk.ducklake.corpus.ReplaySetupFormat
 import org.assertj.core.api.Assertions.assertThat
+import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Test
 import java.nio.file.Files
 import java.nio.file.Path
@@ -54,5 +56,33 @@ class TestTrinoFormatScopes {
             assertThat(executedSql.any { it.contains("CREATE SCHEMA", ignoreCase = true) }).isFalse()
         }
         assertThat(MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(fixture))).isEqualTo(before)
+    }
+
+    @Test
+    fun implicit11RefusalHaltsTheFileAfterItsExpectedRefusalPassesInThe10Lane() {
+        val root = Path.of(System.getProperty("ducklake.corpus.root", "ducklake/test/sql"))
+        val fixture = root.resolve("partitioning/epoch_version_gate.test")
+        TrinoReplayEngine().use { engine ->
+            val executedSql = mutableListOf<String>()
+            val binder = ReplayOracleSqlBinder { sql, context ->
+                executedSql.add(sql)
+                engine.oracleSqlBinder.bind(sql, context)
+            }
+            val report = CorpusRunner(root, engine = engine, metadataRewriter = engine.metadataRewriter,
+                setupFormat = ReplaySetupFormat.DUCKLAKE_1_0,
+                mirrorFormatScope = setOf(ReplaySetupFormat.DUCKLAKE_1_0),
+                executionFormatScope = setOf(ReplaySetupFormat.DUCKLAKE_1_0), oracleSqlBinder = binder).run(listOf(fixture))
+            val file = report.files.single()
+            assertThat(report.failures).withFailMessage { report.summary() }.isEmpty()
+            assertThat(report.ranFiles).isEmpty()
+            assertThat(report.haltedFiles).containsExactly(file)
+            assertThat(file.fileSkipReason).startsWith("format-out-of-scope: catalog pinned at DuckLake 1.0; " +
+                "file requires 1.1 feature the epoch_day partition transform at line 43")
+            assertThat(file.outcomes.single { it.record?.line == 25 }).isInstanceOf(RecordOutcome.Pass::class.java)
+            assertThat(file.skipped.map { it.record?.line }).containsExactly(43)
+            assertThat(executedSql.none { it.contains("INSERT INTO t", ignoreCase = true) }).isTrue()
+            assertThat(report.totalMirrorPasses).isZero()
+            assertThatThrownBy { report.requireMirrorPasses(1) }.isInstanceOf(IllegalStateException::class.java)
+        }
     }
 }

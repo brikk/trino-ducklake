@@ -15,6 +15,7 @@ current contracts are linked from the [developer index](../README.md), open work
 
 ## catalog-adoptions
 
+- [0.18 snapshot adoption](catalog-adoptions/CATALOG-0.18-SNAPSHOT-ADOPTION.md): replay halts at DuckDB's implicit 1.1 refusals.
 - [0.17 snapshot trial](catalog-adoptions/CATALOG-0.17-TRIAL.md): bounds/write-guard checks before Central 0.17.0.
 - [0.16 local trial](catalog-adoptions/CATALOG-0.16-LOCAL-TRIAL.md): PgBouncer pool controls before Central 0.16.0.
 - [0.15.0 adoption](catalog-adoptions/CATALOG-0.15.0-ADOPTION.md) and its [snapshot trial](catalog-adoptions/CATALOG-0.15-TRIAL.md): resumable expiry cleanup.

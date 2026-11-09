@@ -13,13 +13,13 @@ group = "dev.brikk.ducklake"
 // the other supported target with -PtrinoVersion=484, including its matching BOM.
 val trinoVersion = providers.gradleProperty("trinoVersion").getOrElse(libs.versions.trino.get())
 require(trinoVersion in setOf("483", "484")) { "Supported Trino targets: 483, 484 (got $trinoVersion)" }
-require(!providers.gradleProperty("catalogTrialVersion").isPresent) {
-    "The snapshot trial is retired; normal builds now use Maven Central catalog 0.17.0"
-}
 val catalogVersion = libs.versions.ducklake.catalog.get()
+require(!providers.gradleProperty("catalogTrialVersion").isPresent) {
+    "The catalog trial selector is retired; normal builds use catalog $catalogVersion"
+}
 val r07CatalogCandidate = providers.gradleProperty("r07CatalogCandidate").orNull
 require(r07CatalogCandidate == null || r07CatalogCandidate in setOf("", catalogVersion)) {
-    "Use -Pr07CatalogCandidate (or =$catalogVersion) for experimental planning on the released catalog; local bundles and snapshots are not accepted"
+    "Use -Pr07CatalogCandidate (or =$catalogVersion) for experimental planning on the pinned catalog; other versions and local bundles are not accepted"
 }
 kotlin.sourceSets.main { kotlin.srcDir("trino-$trinoVersion/src") }
 kotlin.sourceSets.test { kotlin.srcDir("trino-$trinoVersion/test") }
@@ -45,8 +45,21 @@ repositories {
     mavenCentral()
 }
 
-// Both planning modes consume the same released artifacts; only final-1.1 planning is opt-in.
+// Both planning modes consume the same published artifacts; only final-1.1 planning is opt-in.
 val r07Modules = setOf("ducklake-catalog", "slt-format", "ducklake-test-corpus-replay")
+// A timestamped catalog snapshot comes only from the Central Portal snapshots repo, so neither
+// mavenLocal nor a later snapshot can stand in for the bytes the SHA-256 receipt pins.
+if (Regex("""\d+\.\d+\.\d+-\d{8}\.\d{6}-\d+""").matches(catalogVersion)) {
+    repositories.exclusiveContent {
+        forRepository {
+            repositories.maven {
+                name = "publishedCatalogSnapshot"
+                url = uri("https://central.sonatype.com/repository/maven-snapshots/")
+            }
+        }
+        filter { r07Modules.forEach { includeModule("dev.brikk.ducklake", it) } }
+    }
+}
 kotlin.sourceSets.main { kotlin.srcDir(if (r07CatalogCandidate != null) "candidate/src" else "released/src") }
 dependencies {
     constraints {

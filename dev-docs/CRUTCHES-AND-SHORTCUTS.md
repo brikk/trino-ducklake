@@ -207,23 +207,41 @@ deletion queue (DuckLake 1.0) and none for inlined rows.
 
 ## Corpus replay runs DuckLake 1.0 only
 
-- **Shortcut:** the normal corpus suite scopes mirror and execution to 1.0. Files that
-  explicitly use 1.1 halt after their stored format is inspected: earlier results stand, the rest
-  is not executed, and halted files never count as passed. Replay uses
-  `ReplaySetupFormat.DUCKLAKE_1_0` without rewriting corpus SQL or goldens. Published replay
-  0.17.0 does not apply that halt to DuckDB's own `DuckLake 1.0 does not support <feature> -
-  attach with AUTOMATIC_MIGRATION set to TRUE` refusal: implicit 1.1 fixtures fail and continue
-  into cascades. Oracle execution and halting belong to the replay library; its SQL binder
-  runs before execution and cannot classify oracle errors.
-- **Cost:** no 1.1 corpus mirrors, and misleading failures/passes after an implicit-format
-  refusal. The qualification lane has native 1.1/migration fixtures but its replay engine
-  still registers only 1.0 Trino catalogs.
-- **Real fix:** a replay-library release that halts on that exact unexpected oracle refusal
-  in the 1.0-only execution scope, preserving expected-error controls and prior outcomes;
-  then explicit 1.1 engine configuration and full-file corpus tests in qualification.
+- **Shortcut:** the normal corpus suite scopes mirror and execution to 1.0. A file halts
+  either after its stored format is inspected as 1.1 (explicit fixtures) or at DuckDB's own
+  unexpected `DuckLake 1.0 does not support <feature> - attach with AUTOMATIC_MIGRATION set to
+  TRUE` refusal (implicit fixtures; the replay library records one `format-out-of-scope:` skip
+  naming the feature verbatim). Earlier results stand, the rest is not executed, and halted
+  files never count as passed. A refusal that a `statement error` record expects still passes
+  and continues. Replay uses `ReplaySetupFormat.DUCKLAKE_1_0` without rewriting corpus SQL or
+  goldens. The implicit halt currently stops these 16 files: `add_files/{add_file_epoch_partitioned,
+  add_files_null_type}`, `alter/promote_null_type`, `data_inlining/{data_inlining_epoch_partitions,
+  data_inlining_null_type}`, `geo/null_to_geometry_promotion_stats`, `macros/{null_default_version_gate,
+  test_null_default,typed_null_default}`, `partitioning/{epoch_timestamptz,epoch_transforms,
+  epoch_version_gate,partition_null_type,update_partition_epoch}`,
+  `types/{null_type,null_type_version_gate}` (all `.test`). The bare `COMMENT ON COLUMN for views`
+  refusal has no migration suffix and still fails.
+- **Cost:** no 1.1 corpus mirrors; the post-refusal content of those 16 files (epoch partition
+  transforms, the NULL type) has no Trino coverage in the normal lane. The qualification lane has
+  native 1.1/migration fixtures but its replay engine still registers only 1.0 Trino catalogs.
+- **Real fix:** explicit 1.1 engine configuration and full-file corpus tests in qualification
+  (TODO "Upstream waits").
 - **Removal criterion:** 1.1 reads are admitted in the normal build.
 - **Owner:** published `ducklake-test-corpus-replay` (`ReplayDriver`),
-  `test/src/.../TestTrinoCorpusReplay.kt`, `TrinoReplayEngine.kt`, `qualification/src/`.
+  `test/src/.../TestTrinoCorpusReplay.kt`, `TestTrinoFormatScopes.kt`, `TrinoReplayEngine.kt`,
+  `qualification/src/`.
+
+## Catalog pinned to a timestamped snapshot
+
+- **Shortcut:** both lanes depend on published snapshot `0.18.0-20261109.223927-4`, not a
+  Maven Central release. `build.gradle.kts` resolves the three `dev.brikk.ducklake` modules only
+  from the Central Portal snapshots repository and `verifyCatalogRelease` checks all four JARs
+  against `gradle/catalog-release.sha256` before tests.
+- **Cost:** a plugin release built now would ship a snapshot catalog; the snapshot repository
+  may prune old timestamps, breaking clean builds.
+- **Real fix:** adopt the formal 0.18.0 release from Maven Central with its receipt.
+- **Removal criterion:** formal 0.18.0 is published; before any plugin release.
+- **Owner:** `gradle/libs.versions.toml`, `build.gradle.kts`, `gradle/catalog-release.sha256`.
 
 ## Corpus engine-error classification reads some message text
 

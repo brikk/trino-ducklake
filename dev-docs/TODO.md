@@ -327,8 +327,8 @@ APIs or fixes needed in `ducklake-catalog` before the connector can close an ite
 - [ ] E-N3, E-N8: catalog-owned comment re-checks (primary-key name protection; redundant
   schema-version filter).
 - [ ] Inlined rows of a table with an added GEOMETRY column cannot be read on a 1.0 lake: the
-  0.17.0 default validation (`Final11InlineDefaults` -> `Final11InlineTypes`) has no `geometry`
-  scalar and throws `Final-1.1 inline type geometry is not qualified`. Corpus:
+  catalog's default validation (`Spec11InlineDefaults` -> `Spec11InlineTypes`) has no `geometry`
+  scalar and throws `Final-1.1 inline type geometry is not supported`. Corpus:
   `data_inlining/data_inlining_alter_geometry.test:42` `SELECT i, v, g FROM t1 ORDER BY i`
   (oracle `1 hello NULL`, ...), and `:57, :96`. Needs the catalog to qualify GEOMETRY defaults.
 
@@ -347,9 +347,11 @@ APIs or fixes needed in `ducklake-catalog` before the connector can close an ite
   opt-in 1.1 catalog format (normal default unchanged), use oracle setup 1.1, mirror scope
   1.1 and execution scope {1.0,1.1}. The latter preserves `epoch_version_gate`'s intentional
   initial 1.0 refusal before its migration. Assert full-file completion, measured positive
-  mirrors and stored 1.1; no new fixture infrastructure is needed. A focused native replay
-  already runs all four unmodified files to completion (137 records / 42 golden queries,
-  no failures or skips), but this is oracle-only evidence, not Trino qualification.
+  mirrors and stored 1.1; no new fixture infrastructure is needed. In the normal 1.0 lane these
+  four files (and `update_partition_epoch.test`) halt at DuckDB's 1.0 refusal. Under 1.1 the
+  four pass natively: a focused native replay with that setup/scope runs them unmodified to
+  completion (137 records / 42 golden queries, no failures, skips or halts), but this is
+  oracle-only evidence, not Trino qualification.
 - [ ] Recheck final-1.1 VARIANT, nested identity, exactness and row-group metadata against exact
   artifacts.
 - [ ] A cross-engine lease or lock contract for expiration versus long-running reads, and for
@@ -359,20 +361,9 @@ APIs or fixes needed in `ducklake-catalog` before the connector can close an ite
 
 ## Test, CI and release hygiene
 
-- [ ] Extend the published replay library's execution-format halt to DuckDB's own unexpected
-  `DuckLake 1.0 does not support <feature> - attach with AUTOMATIC_MIGRATION set to TRUE`
-  refusal when execution is scoped to 1.0. Preserve the feature verbatim in a
-  `format-out-of-scope:` record skip and file halt, earlier outcomes, expected-error controls,
-  and all unrelated failures; check halts after queries as well as statements, including
-  loops/conditionals. Halted files must not count as ran-to-end. This belongs in
-  `ducklake-test-corpus-replay`'s `ReplayDriver`, not Trino error classification:
-  released 0.17.0 has no oracle-error callback. Await the catalog agent's release rather
-  than shadowing classes, rewriting finished results or substituting local JARs. Add library
-  classification/halt regressions and consumer integration tests on adoption. The full
-  oracle audit found 38 refusals across 16 files: add_files (2), alter (1), data_inlining (2),
-  geo (1), macros (3), partitioning (5, including `update_partition_epoch.test`), types (2).
-  `partitioning` baseline remains 723/88/1 records and 123/82/40 attempted/passed/failed
-  mirrors; the 40 mirror failures stay open under promoted-column reads and `'nan'` casts.
+- [ ] Adopt formal catalog 0.18.0 from Maven Central once published, replacing the pinned
+  `0.18.0-20261109.223927-4` snapshot and its receipt (CRUTCHES "Catalog pinned to a
+  timestamped snapshot"); required before the next plugin release.
 - [ ] Corpus `merge` is green with 4 verified mirrors; its remaining open reads are DuckDB
   FROM-first queries (`FROM Stock ORDER BY item_id` in `merge_update_insert.test`, `FROM
   my_timeseries` in `merge_partition.test`), which `TrinoCorpusDialect` refuses as "not a read"
@@ -402,12 +393,10 @@ APIs or fixes needed in `ducklake-catalog` before the connector can close an ite
   the skip list.
 - [ ] Add shared replay support for `require-env`: the pinned native metadata-logging fixture
   is a visible unsupported-directive file-skip, even with `DUCKLAKE_CI=1`.
-- [ ] Resolve the existing `types` corpus oracle/setup failures: `all_types.test:32,42,49`
-  cannot convert a JDBC TIME cell, and `null_type.test` uses NULL types refused by the fixed
-  DuckLake 1.0 oracle, with cascading setup failures (the replay-library format-halt item
-  above addresses the latter, not the TIME conversion; 66 record failures before `USE` scoping;
-  68 after it, the two new ones being the VARIANT mirror failures listed above). Do not
-  skip-list these files to make the directory green.
+- [ ] Resolve the existing `types` corpus oracle failure: `all_types.test:32,42,49` cannot
+  convert a JDBC TIME cell. With `null_type.test` and `null_type_version_gate.test` now halting
+  at the 1.0 refusal, the directory has 5 record failures: these 3 and the two VARIANT mirror
+  failures listed above. Do not skip-list these files to make the directory green.
 - [ ] RV-28a-c: require meaningful mirror coverage per selected corpus directory (the test asserts
   `totalPassed > 50` and one mirror pass overall); return the dialect gate's refusal reason
   instead of a Boolean; make unexpected timeouts fail. Add negative controls (all queries

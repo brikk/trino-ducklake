@@ -2,20 +2,20 @@
 
 ## Current selection
 
-Both builds consume released **0.17.0** from Maven Central, with DuckDB JDBC
-**2.0.0.1** and test-only Java Quack JDBC **0.13.0**. This adopts the released
-library, not default-on final-1.1 planning. The historical timestamp snapshot is
-retired. All three modules remain in lockstep:
+Both builds consume published snapshot **0.18.0-20261109.223927-4**, with DuckDB JDBC
+**2.0.0.1** and test-only Java Quack JDBC **0.13.0**. This adopts the library, not
+default-on final-1.1 planning; formal 0.18.0 replaces the snapshot before the next plugin
+release. All three modules remain in lockstep:
 
 - `dev.brikk.ducklake:ducklake-catalog`, including its test-fixtures variant;
 - `dev.brikk.ducklake:ducklake-test-corpus-replay`;
 - `dev.brikk.ducklake:slt-format`.
 
-Repository: `https://repo.maven.apache.org/maven2/`.
-All three modules have strict release pins, including fixture self-dependencies.
+Repository: `https://central.sonatype.com/repository/maven-snapshots/`, exclusive for the
+three modules. All three have strict pins, including fixture self-dependencies.
 All four JARs are checked in both builds against
 [the tracked SHA-256 receipt](../gradle/catalog-release.sha256).
-No sibling build, copied JAR, snapshot or `mavenLocal` substitution is used.
+No sibling build, copied JAR, other snapshot or `mavenLocal` substitution is used.
 
 ```sh
 ./gradlew verifyCatalogRelease
@@ -24,7 +24,7 @@ No sibling build, copied JAR, snapshot or `mavenLocal` substitution is used.
 ```
 
 The flag without a value, or with the exact pinned version as its value, selects
-`candidate/src` and adds `qualification/src` tests. Old snapshot/bundle-path values fail
+`candidate/src` and adds `qualification/src` tests. Other versions and bundle paths fail
 explicitly. Outputs carry `-r07`, separate from ordinary plugin outputs. Omitting
 the flag selects `released/src` and normal 1.0 planning, with identical dependencies.
 

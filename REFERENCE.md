@@ -171,17 +171,32 @@ Common mappings used by the supported read/write paths:
 | `varchar`, `blob` | `VARCHAR`, `VARBINARY` |
 | `date` | `DATE` |
 | `timestamp_s`, `timestamp_ms`, `timestamp`, `timestamp_ns` | `TIMESTAMP(0)`, `(3)`, `(6)`, `(9)` |
+| `timestamptz` | `TIMESTAMP(6) WITH TIME ZONE` |
+| `time`, `timetz` | `TIME(6)`, `TIME(6) WITH TIME ZONE` |
+| `uuid` | `UUID` |
 | `list`, `struct`, `map` | `ARRAY`, `ROW`, `MAP` with supported element/field types |
 | `json` | Native `JSON`; top-level JSON writes use UTF-8 Parquet storage |
 
 Important physical boundaries:
 
-- The Parquet writer cannot write UUID, TIME, TIMETZ, `TIMESTAMP(0)` or
-  TIMESTAMP WITH TIME ZONE columns. A successful type mapping or CREATE TABLE is
-  not evidence that INSERT/CTAS/row rewrites can write those schemas. TIME/TIMETZ
-  and timestamp-with-zone mappings use microsecond precision where applicable;
-  mapping them does not remove the physical writer/reader restrictions.
-  DELETE can also encounter writer construction through its MERGE path on an affected schema.
+- `TIME(6)`, `TIMESTAMP(6) WITH TIME ZONE` and `UUID` are written, top-level or inside
+  ROW/ARRAY/MAP, with the Parquet encodings DuckDB uses: INT64 `TIME(MICROS)`, INT64
+  `TIMESTAMP(MICROS)` adjusted to UTC, and 16-byte `UUID`. Their file statistics and
+  bucket partition values, and TIMESTAMP WITH TIME ZONE identity partition values, match
+  DuckDB's. DuckLake stores `timestamptz` in microseconds, so CREATE TABLE and CTAS store
+  a TIMESTAMP WITH TIME ZONE of lower precision as precision 6; a CTAS of a higher
+  precision fails rather than rounding.
+  Identity partitions on UUID and TIME columns are not supported.
+- Two mapped types cannot be written to Parquet. CREATE TABLE accepts them, but INSERT,
+  CTAS and row rewrites fail before writing a file, and DELETE/UPDATE/MERGE can fail the
+  same way because they open a writer for the table:
+  - `TIME WITH TIME ZONE`: Parquet has no time-with-time-zone type. DuckDB stores
+    `timetz` as a UTC-normalized `TIME(MICROS)` without its offset, and Trino's Parquet
+    reader cannot read such a column either.
+  - `TIMESTAMP(0)`: DuckDB stores `timestamp_s` as `TIMESTAMP(MICROS)`, and the Trino
+    Parquet library has no writer for `TIMESTAMP(0)` yet.
+- Inlined `time` values (rows still in the catalog, not yet in a file) cannot be read,
+  so reads of those rows and `flush_inlined_data` fail.
 - Unsigned mappings widen `uint8/16/32/64` to `SMALLINT/INTEGER/BIGINT/DECIMAL(20,0)`.
   Top-level writes validate the original unsigned range; values nested inside
   ROW/ARRAY/MAP are not range-checked. DuckDB-written unsigned Parquet files can

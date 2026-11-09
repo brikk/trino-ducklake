@@ -143,6 +143,22 @@ open class DucklakeTypeConverter @Inject constructor(private val typeManager: Ty
         else -> SCALAR_DUCKLAKE_TYPES[trinoType] ?: jsonDucklakeType(trinoType)
     }
 
+    /**
+     * The type a CREATE TABLE or CTAS column of [trinoType] is stored as, for
+     * `ConnectorMetadata.getSupportedType`. DuckLake timestamptz holds microseconds, so a shorter
+     * TIMESTAMP WITH TIME ZONE widens losslessly to precision 6 and a CTAS source is cast to the
+     * type the Parquet writer encodes. Longer precisions are left alone: narrowing would round.
+     */
+    open fun storageType(trinoType: Type): Type = when (trinoType) {
+        is TimestampWithTimeZoneType ->
+            if (trinoType.precision < TimestampWithTimeZoneType.TIMESTAMP_TZ_MICROS.precision) TimestampWithTimeZoneType.TIMESTAMP_TZ_MICROS
+            else trinoType
+        is ArrayType -> ArrayType(storageType(trinoType.elementType))
+        is MapType -> MapType(storageType(trinoType.keyType), storageType(trinoType.valueType), typeManager.typeOperators)
+        is RowType -> RowType.from(trinoType.fields.map { RowType.Field(it.name, storageType(it.type)) })
+        else -> trinoType
+    }
+
     private fun timestampDucklakeType(precision: Int): String = when (precision) {
         0 -> "timestamp_s"
         3 -> "timestamp_ms"

@@ -21,7 +21,6 @@ import io.airlift.slice.Slice
 import io.airlift.slice.Slices
 import io.trino.filesystem.Location
 import io.trino.filesystem.TrinoFileSystem
-import io.trino.parquet.writer.ParquetSchemaConverter
 import io.trino.parquet.writer.ParquetWriter
 import io.trino.parquet.writer.ParquetWriterOptions
 import io.trino.plugin.hive.parquet.ParquetWriterConfig
@@ -115,20 +114,14 @@ class DucklakePageSink(
         if (FORMAT_PARQUET.equals(fileFormat, ignoreCase = true)) {
             // Lineage mode appends the synthetic rowid column LAST so all
             // catalog-derived leaf stats indexes stay valid.
-            // JSON is physically a UTF-8 VARCHAR column in parquet (ParquetSchemaConverter rejects
-            // JsonType; DuckDB stores JSON the same way) — the catalog type stays 'json'.
-            val converterTypes =
-                    (if (writeRowLineage) columnTypes + io.trino.spi.type.BigintType.BIGINT else columnTypes)
-                            .map { DucklakeJsonSupport.toParquetWriteType(it) }
-            val converterNames =
-                    if (writeRowLineage) columnNames + LINEAGE_COLUMN_NAME else columnNames
-            val schemaConverter = ParquetSchemaConverter(
-                    converterTypes, converterNames, false, false)
-            this.primitiveTypes = schemaConverter.primitiveTypes
+            val writeSchema = DucklakeParquetWriteSchema(
+                    if (writeRowLineage) columnTypes + BIGINT else columnTypes,
+                    if (writeRowLineage) columnNames + LINEAGE_COLUMN_NAME else columnNames)
+            this.primitiveTypes = writeSchema.primitiveTypes
             this.messageType = DucklakeParquetSchemaBuilder.buildMessageType(
                     handle.columns,
                     handle.allCatalogColumns,
-                    schemaConverter.messageType,
+                    writeSchema.messageType,
                     if (writeRowLineage) {
                         mapOf(LINEAGE_COLUMN_NAME to DucklakeDeleteFileReader.ROW_ID_PARQUET_FIELD_ID.toLong())
                     } else {

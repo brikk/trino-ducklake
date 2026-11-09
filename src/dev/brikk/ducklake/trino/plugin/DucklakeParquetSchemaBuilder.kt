@@ -25,8 +25,8 @@ import org.apache.parquet.schema.Types
  *
  * DuckLake's spec states that `ducklake_column.column_id` corresponds to the Parquet
  * `field_id`. DuckDB uses these IDs for column mapping when reading Parquet files.
- * Trino's standard [io.trino.parquet.writer.ParquetSchemaConverter] does not set field IDs,
- * so we rebuild the schema with IDs after conversion.
+ * [DucklakeParquetWriteSchema] does not set field IDs, so we rebuild the schema with IDs after
+ * conversion.
  */
 class DucklakeParquetSchemaBuilder private constructor() {
     companion object {
@@ -35,7 +35,7 @@ class DucklakeParquetSchemaBuilder private constructor() {
          *
          * @param topLevelColumns top-level column handles with columnId (in schema field order)
          * @param allColumns all catalog columns including nested (flat list with parentColumn references)
-         * @param sourceMessageType the MessageType from ParquetSchemaConverter (without field IDs)
+         * @param sourceMessageType the write schema without field IDs
          * @param extraTopLevelFieldIds synthetic non-catalog columns to annotate (name -> field_id),
          *        e.g. the embedded row-lineage column `_ducklake_internal_row_id` -> 2147483540
          * @return a new MessageType with field_id set on each field

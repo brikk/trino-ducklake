@@ -21,6 +21,7 @@ import io.trino.spi.type.DateType
 import io.trino.spi.type.DecimalType
 import io.trino.spi.type.DoubleType
 import io.trino.spi.type.IntegerType
+import io.trino.spi.type.MapType
 import io.trino.spi.type.RealType
 import io.trino.spi.type.RowType
 import io.trino.spi.type.SmallintType
@@ -193,6 +194,24 @@ class TestDucklakeTypeConverter {
                     .`as`("tstz precision %d", precision)
                     .isEqualTo("timestamptz")
         }
+    }
+
+    @Test
+    fun shorterTimestampTzIsStoredAsMicrosAndLongerIsLeftAlone() {
+        val tz = TimestampWithTimeZoneType::createTimestampWithTimeZoneType
+        for (precision in 0..5) {
+            assertThat(converter.storageType(tz(precision))).isEqualTo(TimestampWithTimeZoneType.TIMESTAMP_TZ_MICROS)
+        }
+        assertThat(converter.storageType(tz(6))).isEqualTo(tz(6))
+        assertThat(converter.storageType(tz(9))).isEqualTo(tz(9))
+
+        val nested = RowType.from(listOf(
+                RowType.field("a", ArrayType(tz(3))),
+                RowType.field("m", MapType(tz(0), tz(9), TESTING_TYPE_MANAGER.typeOperators))))
+        assertThat(converter.storageType(nested)).isEqualTo(RowType.from(listOf(
+                RowType.field("a", ArrayType(tz(6))),
+                RowType.field("m", MapType(tz(6), tz(9), TESTING_TYPE_MANAGER.typeOperators)))))
+        assertThat(converter.storageType(TimeType.TIME_MILLIS)).isEqualTo(TimeType.TIME_MILLIS)
     }
 
     @Test

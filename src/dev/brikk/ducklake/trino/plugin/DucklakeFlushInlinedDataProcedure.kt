@@ -36,7 +36,6 @@ import io.airlift.log.Logger
 import io.trino.filesystem.Location
 import io.trino.filesystem.TrinoFileSystem
 import io.trino.parquet.ParquetReaderOptions
-import io.trino.parquet.writer.ParquetSchemaConverter
 import io.trino.parquet.writer.ParquetWriter
 import io.trino.parquet.writer.ParquetWriterOptions
 import io.trino.plugin.base.metrics.FileFormatDataSourceStats
@@ -364,15 +363,13 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
             beginSnapshots: List<Long>): DucklakeWriteFragment {
         val columnNames: List<String> = columnHandles.map { it.columnName }
         // Physical write layout = catalog columns + trailing BIGINT lineage/snapshot columns.
-        // JSON columns are physically UTF-8 VARCHAR in parquet (catalog type stays 'json').
         val writeNames: List<String> = columnNames + listOf(
                 DucklakePageSink.LINEAGE_COLUMN_NAME,
                 DucklakeDeleteFileReader.INTERNAL_SNAPSHOT_ID_COLUMN)
         val writeTypes: List<Type> = columnTypes + listOf(BIGINT, BIGINT)
-        val schemaConverter = ParquetSchemaConverter(
-                writeTypes.map { DucklakeJsonSupport.toParquetWriteType(it) }, writeNames, false, false)
+        val writeSchema = DucklakeParquetWriteSchema(writeTypes, writeNames)
         val messageType = DucklakeParquetSchemaBuilder.buildMessageType(
-                columnHandles, allCatalogColumns, schemaConverter.messageType,
+                columnHandles, allCatalogColumns, writeSchema.messageType,
                 mapOf(
                         DucklakePageSink.LINEAGE_COLUMN_NAME
                                 to DucklakeDeleteFileReader.ROW_ID_PARQUET_FIELD_ID.toLong(),
@@ -386,7 +383,7 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
         val parquetWriter = ParquetWriter(
                 outputStream,
                 messageType,
-                schemaConverter.primitiveTypes,
+                writeSchema.primitiveTypes,
                 writerOptions,
                 CompressionCodec.ZSTD,
                 trinoVersion,

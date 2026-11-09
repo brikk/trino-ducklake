@@ -75,8 +75,8 @@ Wrong values, unsafe behaviour, or a supported operation that fails.
   (`DECIMAL(10,2)` unscaled `12345` imported as `DECIMAL(12,4)` gives `1.2345`).
 - [ ] RV-20c: BCE and five-digit-year temporal bounds compare lexically. Add a test; compare
   chronologically.
-- [ ] RV-21a-c: bucket partitions hash microseconds for every timestamp precision, raw UUID
-  bytes, and the widened signed value of unsigned types; DuckLake hashes the stored
+- [ ] RV-21a-c: bucket partitions hash microseconds for every timestamp precision and the
+  widened signed value of unsigned types; DuckLake hashes the stored
   representation (`ducklake_murmur3.cpp`). Match per storage type and verify against DuckDB.
 - [ ] RV-22b-e: `DucklakeDeleteFileReader` skips NULL origin markers (rows stay visible), skips
   NULL positions/snapshots outside the change feed, detects legacy schemas by the first integer
@@ -95,7 +95,8 @@ Wrong values, unsafe behaviour, or a supported operation that fails.
   backend-sensitive (typed CAST strings); only 1.1 catalogs use the decoded API
   (`DucklakeInlinedRowCodec`). Move both to decoded catalog values.
 - [ ] RV-18i: 1.0 inline TIME/TIMETZ values fall back to a UTF-8 slice
-  (`DucklakeInlinedValueConverter`). Convert to Trino's native values.
+  (`DucklakeInlinedValueConverter`), so reads of inlined TIME rows and `flush_inlined_data` fail
+  with a ClassCastException. Convert to Trino's native values.
 - [ ] RV-18j: ALTER allows integer `-> REAL/DOUBLE`, but old integer files have no reader
   coercion. Add one or disallow the promotion.
 - [ ] Files written before a DuckDB `ALTER ... TYPE` to HUGEINT or TIMESTAMP cannot be read:
@@ -190,10 +191,15 @@ Unsupported capability that fails loudly, missing work bounds, or missing covera
 
 ### Types
 
-- [ ] RV-18a: writers for `UUID`, `TIME(6)`, `TIME(6) WITH TIME ZONE`, `TIMESTAMP(0)` and
-  `TIMESTAMP(6) WITH TIME ZONE`. DDL accepts them; INSERT into `TIMESTAMP(0)`,
-  `TIMESTAMP(6) WITH TIME ZONE` and `UUID` columns fails in Trino's Parquet writer. Implement, or
-  refuse before any DDL or write side effect.
+- [ ] RV-18a: `TIMESTAMP(0)` writer. DuckDB stores `timestamp_s` as INT64
+  `TIMESTAMP(MICROS, isAdjustedToUTC=false)`, and Trino's `TIMESTAMP(0)` blocks already hold epoch
+  microseconds, but trino-parquet annotates `TIMESTAMP(0)` as MILLIS and `ParquetWriters` has no
+  value writer for it, so `DucklakeParquetWriteSchema` refuses it. Annotate it MICROS there and
+  give the leaf a writer that emits the block's microseconds; verify footer, stats and values
+  against DuckDB as `TestDucklakeCrossEngineWriterTypes` does. DDL still accepts the type.
+- [ ] RV-18a2: `TIME WITH TIME ZONE` stays unwritable: Parquet has no time-with-zone logical type
+  and DuckDB's `TIME(MICROS, isAdjustedToUTC=true)` drops the offset. Needs RV-18g and an agreed
+  offset contract first. DDL still accepts the type; refuse it there or keep the write-time error.
 - [ ] RV-18g: read DuckLake `timetz` from Parquet `INT64 TIME(MICROS, isAdjustedToUTC=true)`.
   The connector maps it to `time(6) with time zone`, which Trino's Parquet reader cannot decode:
   `Unsupported Trino column type (time(6) with time zone) for Parquet column ([col1] optional

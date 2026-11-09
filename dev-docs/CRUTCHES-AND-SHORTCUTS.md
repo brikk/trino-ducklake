@@ -105,9 +105,9 @@ deletion queue (DuckLake 1.0) and none for inlined rows.
   predicate through `findDataFileIdsInRange`, with bounds rendered by
   `DucklakeStatsPredicateNormalizer`. Only columns whose Trino type is the connector's own mapping
   of the stored type prune (integers, `float32`/`float64`, `decimal(p,s)`, `date`,
-  `timestamp[_s|_ms|_ns]`, `timestamptz`, `varchar`, `boolean`); unsigned/hugeint promotions,
-  VARCHAR degradations, UUID, binary, time and nested columns keep every file. A domain that
-  admits NULL never prunes. Exclusive bounds are sent as inclusive. A file whose
+  `timestamp[_s|_ms|_ns]`, `timestamptz`, `time`, `uuid`, `varchar`, `boolean`); unsigned/hugeint
+  promotions, VARCHAR degradations, binary, `timetz` and nested columns keep every file. A
+  domain that admits NULL never prunes. Exclusive bounds are sent as inclusive. A file whose
   `begin_snapshot` precedes the column's current version is never excluded by that column,
   because catalog 0.17.0 keeps bounds verbatim across promotions (REAL-era `0.1` reads as a
   smaller DOUBLE than the widened value). The opt-in 1.1 lane skips catalog-stats pruning on 1.1

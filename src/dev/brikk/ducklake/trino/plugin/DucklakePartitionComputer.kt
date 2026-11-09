@@ -32,6 +32,7 @@ import io.trino.spi.type.LongTimestamp
 import io.trino.spi.type.LongTimestampWithTimeZone
 import io.trino.spi.type.RealType.REAL
 import io.trino.spi.type.SmallintType.SMALLINT
+import io.trino.spi.type.TimeType.TIME_MICROS
 import io.trino.spi.type.TimestampType
 import io.trino.spi.type.TimestampWithTimeZoneType
 import io.trino.spi.type.Timestamps.MICROSECONDS_PER_SECOND
@@ -129,11 +130,11 @@ object DucklakePartitionComputer {
         }
         return when (type) {
             is DecimalType -> encodeDecimal(type, block, position)
-            is TimestampType, is TimestampWithTimeZoneType ->
-                // extractLocalDateTime normalizes all four short/long timestamp[tz] forms to a UTC
-                // LocalDateTime; render `yyyy-MM-dd HH:mm:ss[.fraction]`, which the parser accepts
-                // (it swaps the space for 'T' before LocalDateTime/OffsetDateTime.parse).
-                extractLocalDateTime(type, block, position).format(IDENTITY_TIMESTAMP_FORMAT)
+            // extractLocalDateTime normalizes all four short/long timestamp[tz] forms to a UTC
+            // LocalDateTime. DuckDB's `Value::ToString` renders a timestamptz in UTC with a `+00`
+            // suffix; without it DuckDB would read the value in its session time zone.
+            is TimestampType -> extractLocalDateTime(type, block, position).format(IDENTITY_TIMESTAMP_FORMAT)
+            is TimestampWithTimeZoneType -> extractLocalDateTime(type, block, position).format(IDENTITY_TIMESTAMP_FORMAT) + "+00"
             is VarcharType -> type.getSlice(block, position).toStringUtf8()
             // Everything else (VARBINARY, UUID, CHAR, TIME, …) has no canonical identity-partition
             // text the read side can parse back — fail loud rather than write a value that reads
@@ -195,6 +196,7 @@ object DucklakePartitionComputer {
             val longTz: LongTimestampWithTimeZone =
                     columnType.getObject(block, position) as LongTimestampWithTimeZone
             return Instant.ofEpochMilli(longTz.epochMillis)
+                    .plusNanos(longTz.picosOfMilli / PICOS_PER_NANO)
                     .atOffset(ZoneOffset.UTC)
                     .toLocalDateTime()
         }
@@ -245,7 +247,9 @@ object DucklakePartitionComputer {
     /**
      * Iceberg-compatible bucket hash: `(murmur3_32(serialized_v) & INT_MAX) % N`.
      * Iceberg widens int/date to long before hashing; UTF-8 bytes for VARCHAR; raw bytes
-     * for VARBINARY; UUID hashed as two 8-byte halves (msb then lsb).
+     * for VARBINARY. DuckLake's `murmur3_32` (`ducklake_murmur3.cpp`) hashes 64-bit physical
+     * values as longs (TIME as its microseconds) and any other type as its VARCHAR cast, so a
+     * UUID hashes its lowercase hyphenated text, not Iceberg's 16 bytes.
      *
      * FLOAT / DOUBLE / BOOLEAN are intentionally unsupported, matching Iceberg's spec.
      * Caller should reject these at table-property validation time; this is a defensive
@@ -257,27 +261,7 @@ object DucklakePartitionComputer {
     }
 
     private fun murmur3Hash(type: Type, block: Block, position: Int): Int {
-        if (type == TINYINT) {
-            return murmur3_32_fixed().hashLong(TINYINT.getLong(block, position)).asInt()
-        }
-        if (type == SMALLINT) {
-            return murmur3_32_fixed().hashLong(SMALLINT.getLong(block, position)).asInt()
-        }
-        if (type == INTEGER) {
-            return murmur3_32_fixed().hashLong(INTEGER.getInt(block, position).toLong()).asInt()
-        }
-        if (type == BIGINT) {
-            return murmur3_32_fixed().hashLong(BIGINT.getLong(block, position)).asInt()
-        }
-        if (type == DATE) {
-            return murmur3_32_fixed().hashLong(DATE.getInt(block, position).toLong()).asInt()
-        }
-        if (type is TimestampType) {
-            return murmur3_32_fixed().hashLong(timestampEpochMicros(type, block, position)).asInt()
-        }
-        if (type is TimestampWithTimeZoneType) {
-            return murmur3_32_fixed().hashLong(timestampTzEpochMicros(type, block, position)).asInt()
-        }
+        hashedLong(type, block, position)?.let { return murmur3_32_fixed().hashLong(it).asInt() }
         if (type is VarcharType) {
             val slice: Slice = type.getSlice(block, position)
             return murmur3_32_fixed().hashString(slice.toStringUtf8(), StandardCharsets.UTF_8).asInt()
@@ -287,15 +271,24 @@ object DucklakePartitionComputer {
             return murmur3_32_fixed().hashBytes(slice.byteArray(), slice.byteArrayOffset(), slice.length()).asInt()
         }
         if (type is UuidType) {
-            // Iceberg hashes UUID as 16 bytes big-endian (msb, lsb) — Trino stores the same
-            // 16 bytes packed in a slice via UuidType.javaUuidToTrinoUuid.
-            val slice: Slice = UuidType.UUID.getSlice(block, position)
-            return murmur3_32_fixed().hashBytes(slice.byteArray(), slice.byteArrayOffset(), slice.length()).asInt()
+            val text = UuidType.trinoUuidToJavaUuid(UuidType.UUID.getSlice(block, position)).toString()
+            return murmur3_32_fixed().hashString(text, StandardCharsets.UTF_8).asInt()
         }
         if (type == REAL || type == DOUBLE || type == BOOLEAN) {
             throw IllegalArgumentException("bucket(N) is not defined for type $type (Iceberg spec)")
         }
         throw IllegalArgumentException("bucket(N) does not yet support type: $type")
+    }
+
+    /** The long a bucket hashes for an integral, date, time or timestamp value; null for other types. */
+    private fun hashedLong(type: Type, block: Block, position: Int): Long? = when {
+        type == TINYINT || type == SMALLINT || type == BIGINT -> type.getLong(block, position)
+        type == INTEGER -> INTEGER.getInt(block, position).toLong()
+        type == DATE -> DATE.getInt(block, position).toLong()
+        type == TIME_MICROS -> TIME_MICROS.getLong(block, position) / PICOS_PER_MICRO
+        type is TimestampType -> timestampEpochMicros(type, block, position)
+        type is TimestampWithTimeZoneType -> timestampTzEpochMicros(type, block, position)
+        else -> null
     }
 
     private fun timestampEpochMicros(type: TimestampType, block: Block, position: Int): Long =
@@ -309,4 +302,7 @@ object DucklakePartitionComputer {
         val tz: LongTimestampWithTimeZone = type.getObject(block, position) as LongTimestampWithTimeZone
         return tz.epochMillis * 1_000L + tz.picosOfMilli / 1_000_000L
     }
+
+    private const val PICOS_PER_NANO = 1_000L
+    private const val PICOS_PER_MICRO = 1_000_000L
 }

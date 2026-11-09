@@ -233,15 +233,12 @@ internal class DucklakeWriteMetadata(
             ?: throw TrinoException(GENERIC_INTERNAL_ERROR, "Table was not created: $tableName")
         unpublishedCreatedTables[table.tableId] = tableName
 
-        // For the WRITE handle, a column's type must match the blocks the engine will stream
-        // from the CTAS source — not the catalog round-trip. The two agree for every type
-        // EXCEPT timestamptz: DuckLake stores it micros-only, so the round-trip always reports
-        // precision 6 (a long / Fixed12 tstz), but a CTAS streams the source's actual precision
-        // (e.g. the default precision-3 short / LongArray tstz). Use the originally-declared type so
-        // the writer's isShort branch matches the block; the stored value still widens to micros
-        // and reads back as precision 6.
+        // The write handle carries the types of the blocks the CTAS streams. getSupportedType
+        // widens TIMESTAMP WITH TIME ZONE below precision 6 to the stored micros, but a longer
+        // precision keeps its declared type although the catalog reports timestamptz as precision
+        // 6; the Parquet writer then refuses it instead of rounding the streamed values.
         val declaredTstzByName: Map<String, Type> = tableMetadata.columns
-                .filter { it.type is TimestampWithTimeZoneType }
+                .filter { containsTimestampWithTimeZone(it.type) }
                 .associate { it.name to it.type }
         val catalogColumns: List<DucklakeColumn> = catalog.getTableColumns(table.tableId, snapshotId)
         val allCatalogColumns: List<DucklakeColumn> = catalog.getAllColumnsWithParentage(table.tableId, snapshotId)
@@ -276,6 +273,14 @@ internal class DucklakeWriteMetadata(
                 // rare case a sort spec is already visible at this snapshot.
                 resolveWriteSortColumns(
                         table.tableId, snapshotId, columnHandles, activePartitionSpec, fileFormat))
+    }
+
+    private fun containsTimestampWithTimeZone(type: Type): Boolean = when (type) {
+        is TimestampWithTimeZoneType -> true
+        is ArrayType -> containsTimestampWithTimeZone(type.elementType)
+        is MapType -> containsTimestampWithTimeZone(type.keyType) || containsTimestampWithTimeZone(type.valueType)
+        is RowType -> type.fields.any { containsTimestampWithTimeZone(it.type) }
+        else -> false
     }
 
     fun finishCreateTable(handle: DucklakeWritableTableHandle, fragments: Collection<Slice>)

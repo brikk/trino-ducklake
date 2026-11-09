@@ -27,15 +27,19 @@ import io.trino.spi.type.LongTimestamp
 import io.trino.spi.type.LongTimestampWithTimeZone
 import io.trino.spi.type.RealType.REAL
 import io.trino.spi.type.SmallintType.SMALLINT
+import io.trino.spi.type.TimeType.TIME_MICROS
 import io.trino.spi.type.TimestampType
 import io.trino.spi.type.TimestampWithTimeZoneType
 import io.trino.spi.type.TinyintType.TINYINT
 import io.trino.spi.type.Type
+import io.trino.spi.type.UuidType.UUID
+import io.trino.spi.type.UuidType.trinoUuidToJavaUuid
 import io.trino.spi.type.VarcharType
 import java.math.BigDecimal
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
+import java.time.LocalTime
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -50,16 +54,20 @@ import java.util.Locale
  *    so the shortest round-trip text of the float/double yields the same key as any spelling of it
  *    in the file stats;
  *  - temporal types parse to an epoch-nanosecond key (ISO and DuckDB spellings, explicit offsets
- *    applied), so ISO text with nanosecond fraction, and `Z` for `timestamptz`, is exact;
- *  - `varchar` compares by code point, which is Trino's UTF-8 byte order.
+ *    applied), so ISO text with nanosecond fraction, and `Z` for `timestamptz`, is exact; `time`
+ *    parses to nanoseconds since midnight;
+ *  - `varchar` compares by code point, which is Trino's UTF-8 byte order;
+ *  - `uuid` compares by code point, and lowercase hyphenated text, the spelling of DuckDB's and
+ *    this connector's file stats, orders like the unsigned big-endian bytes Trino compares.
  *
  * Pruning is supported only when the Trino type is the one the connector itself maps the stored
  * DuckLake type to *and* back ([supports]); unsigned/hugeint promotions, VARCHAR degradations
- * (`uint128`, `variant`, `interval`), UUID, binary, time and nested types are not, and their
- * columns never exclude a file.
+ * (`uint128`, `variant`, `interval`), binary, time with time zone and nested types are not, and
+ * their columns never exclude a file.
  */
 internal object DucklakeStatsPredicateNormalizer {
     private val DECIMAL_TYPE = Regex("decimal\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*\\)")
+    private val ISO_TIME_NANOS: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss.SSSSSSSSS", Locale.ROOT)
     private val ISO_NANOS: DateTimeFormatter = DateTimeFormatter.ofPattern("uuuu-MM-dd'T'HH:mm:ss.SSSSSSSSS", Locale.ROOT)
     private const val MAX_FOUR_DIGIT_YEAR = 9999
     private val SCALAR_STORED_TYPES: Map<Type, String> = mapOf(
@@ -87,6 +95,8 @@ internal object DucklakeStatsPredicateNormalizer {
             is TimestampType -> stored == TIMESTAMP_STORED_TYPES[trinoType.precision]
             is TimestampWithTimeZoneType -> stored == "timestamptz"
             is VarcharType -> stored == "varchar"
+            TIME_MICROS -> stored == "time"
+            UUID -> stored == "uuid"
             else -> stored == SCALAR_STORED_TYPES[trinoType]
         }
     }
@@ -106,6 +116,8 @@ internal object DucklakeStatsPredicateNormalizer {
         is TimestampType -> timestampText(type, value)
         is TimestampWithTimeZoneType -> timestampWithTimeZoneText(type, value)
         is VarcharType -> (value as Slice).toStringUtf8().takeIf { Slices.utf8Slice(it) == value }
+        TIME_MICROS -> ISO_TIME_NANOS.format(LocalTime.ofNanoOfDay((value as Long) / PICOS_PER_NANO))
+        UUID -> trinoUuidToJavaUuid(value as Slice).toString()
         else -> null
     }
 

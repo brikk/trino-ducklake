@@ -606,6 +606,9 @@ class DucklakeMetadata(
         return Optional.empty()
     }
 
+    override fun getSupportedType(session: ConnectorSession, tableProperties: Map<String, Any>, type: Type): Optional<Type> =
+            Optional.of(typeConverter.storageType(type)).filter { it != type }
+
     override fun beginCreateTable(
             session: ConnectorSession,
             tableMetadata: ConnectorTableMetadata,

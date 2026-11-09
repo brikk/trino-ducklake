@@ -30,7 +30,6 @@ import io.airlift.slice.Slices.utf8Slice
 import io.airlift.units.DataSize
 import io.trino.filesystem.Location
 import io.trino.filesystem.TrinoFileSystem
-import io.trino.parquet.writer.ParquetSchemaConverter
 import io.trino.parquet.writer.ParquetWriter
 import io.trino.parquet.writer.ParquetWriterOptions
 import io.trino.spi.NodeVersion
@@ -399,13 +398,9 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
             val names = columnHandles.map { it.columnName } +
                     listOf(DucklakeDeleteFileReader.INTERNAL_SNAPSHOT_ID_COLUMN) +
                     listOf(DucklakePageSink.LINEAGE_COLUMN_NAME)
-            // JSON columns are physically UTF-8 VARCHAR in parquet (catalog type stays 'json').
-            val types = columnTypes.map { DucklakeJsonSupport.toParquetWriteType(it) } +
-                    listOf<Type>(BIGINT) +
-                    listOf<Type>(BIGINT)
-            val schemaConverter = ParquetSchemaConverter(types, names, false, false)
+            val writeSchema = DucklakeParquetWriteSchema(columnTypes + listOf<Type>(BIGINT, BIGINT), names)
             val messageType = DucklakeParquetSchemaBuilder.buildMessageType(
-                    columnHandles, allCatalogColumns, schemaConverter.messageType,
+                    columnHandles, allCatalogColumns, writeSchema.messageType,
                     mapOf(DucklakePageSink.LINEAGE_COLUMN_NAME to
                             DucklakeDeleteFileReader.ROW_ID_PARQUET_FIELD_ID.toLong(),
                         DucklakeDeleteFileReader.INTERNAL_SNAPSHOT_ID_COLUMN to
@@ -413,7 +408,7 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
             val fileName = "ducklake-${UUID.randomUUID()}.parquet"
             val location = Location.of(tableDataPath).appendPath(fileName)
             val outputStream = fileSystem.newOutputFile(location).create()
-            val parquetWriter = ParquetWriter(outputStream, messageType, schemaConverter.primitiveTypes, writerOptions,
+            val parquetWriter = ParquetWriter(outputStream, messageType, writeSchema.primitiveTypes, writerOptions,
                     CompressionCodec.ZSTD, trinoVersion, Optional.empty(), Optional.empty())
             writer = ParquetFileWriter(parquetWriter, outputStream, fileSystem, location, fileName,
                     group.partitionValues, group.partitionId, columnHandles, allCatalogColumns, messageType)

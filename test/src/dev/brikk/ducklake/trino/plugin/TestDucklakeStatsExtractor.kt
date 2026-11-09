@@ -21,8 +21,12 @@ import io.trino.spi.type.DecimalType
 import io.trino.spi.type.DoubleType.DOUBLE
 import io.trino.spi.type.IntegerType.INTEGER
 import io.trino.spi.type.RealType.REAL
+import io.trino.spi.type.TimeType.TIME_MICROS
+import io.trino.spi.type.TimeType.TIME_MILLIS
+import io.trino.spi.type.TimeType.TIME_NANOS
 import io.trino.spi.type.TimestampType
 import io.trino.spi.type.TimestampWithTimeZoneType.TIMESTAMP_TZ_MICROS
+import io.trino.spi.type.UuidType.UUID
 import io.trino.spi.type.VarcharType.VARCHAR
 import org.apache.parquet.format.ColumnChunk
 import org.apache.parquet.format.ColumnMetaData
@@ -33,6 +37,10 @@ import org.apache.parquet.format.RowGroup
 import org.apache.parquet.format.SchemaElement
 import org.apache.parquet.format.Statistics
 import org.apache.parquet.format.Type
+import org.apache.parquet.schema.LogicalTypeAnnotation
+import org.apache.parquet.schema.LogicalTypeAnnotation.TimeUnit
+import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName
+import org.apache.parquet.schema.Types
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import java.math.BigInteger
@@ -63,6 +71,42 @@ internal class TestDucklakeStatsExtractor {
         assertThat(DucklakeStatsExtractor.convertStatValue(
                 longBytes(123_456L), TIMESTAMP_TZ_MICROS, Type.INT64))
                 .isEqualTo("1970-01-01 00:00:00.123456+00")
+    }
+
+    @Test
+    fun timeStatsUseThePhysicalUnitAndDuckdbText() {
+        val schema = Types.buildMessage()
+                .addField(Types.optional(PrimitiveTypeName.INT64).`as`(LogicalTypeAnnotation.timeType(false, TimeUnit.MICROS)).named("micros"))
+                .addField(Types.optional(PrimitiveTypeName.INT32).`as`(LogicalTypeAnnotation.timeType(false, TimeUnit.MILLIS)).named("millis"))
+                .addField(Types.optional(PrimitiveTypeName.INT64).`as`(LogicalTypeAnnotation.timeType(false, TimeUnit.NANOS)).named("nanos"))
+                .named("root")
+        val file = fileMetaData(rowGroup(2,
+                column(Type.INT64, longBytes(45_296_000_000L), longBytes(86_399_999_999L), 0),
+                column(Type.INT32, intBytes(0), intBytes(45_296_500), 0),
+                column(Type.INT64, longBytes(1L), longBytes(45_296_123_456_789L), 0)))
+
+        val stats = DucklakeStatsExtractor.extractStats(
+                file,
+                listOf(LeafStatsTarget(1L, TIME_MICROS, 0), LeafStatsTarget(2L, TIME_MILLIS, 1), LeafStatsTarget(3L, TIME_NANOS, 2)),
+                schema)
+
+        assertThat(stats.map { it.minValue to it.maxValue }).containsExactly(
+                "12:34:56" to "23:59:59.999999",
+                "00:00:00" to "12:34:56.5",
+                "00:00:00.000000001" to "12:34:56.123456789")
+        assertThat(DucklakeStatsExtractor.convertStatValue(longBytes(0L), TIME_MICROS, Type.INT64))
+                .`as`("a TIME leaf without its annotation has no known unit")
+                .isNull()
+    }
+
+    @Test
+    fun uuidStatsAreDuckdbsLowercaseText() {
+        for (text in listOf("550e8400-e29b-41d4-a716-446655440000", "ffffffff-0000-0000-8000-00000000000a")) {
+            val uuid = java.util.UUID.fromString(text)
+            val bytes = ByteBuffer.allocate(16).putLong(uuid.mostSignificantBits).putLong(uuid.leastSignificantBits).array()
+            assertThat(DucklakeStatsExtractor.convertStatValue(bytes, UUID, Type.FIXED_LEN_BYTE_ARRAY)).isEqualTo(text)
+        }
+        assertThat(DucklakeStatsExtractor.convertStatValue(ByteArray(15), UUID, Type.FIXED_LEN_BYTE_ARRAY)).isNull()
     }
 
     @Test

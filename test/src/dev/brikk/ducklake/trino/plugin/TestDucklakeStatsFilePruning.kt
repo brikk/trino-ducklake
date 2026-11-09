@@ -139,6 +139,61 @@ class TestDucklakeStatsFilePruning : AbstractDucklakeCrossEngineTest() {
     }
 
     @Test
+    fun timestampWithTimeZonePrunesOnTheInstant() {
+        withFiles(
+                "prune_tstz6",
+                "TIMESTAMP(6) WITH TIME ZONE",
+                "TIMESTAMP '1900-01-01 00:00:00.000001 UTC', TIMESTAMP '2024-01-01 10:00:00.123455 UTC'",
+                "TIMESTAMP '2024-01-01 11:00:00.123456 +01:00', TIMESTAMP '2024-01-01 10:00:00.123457 UTC'",
+                "TIMESTAMP '2024-01-01 10:00:00.123458 UTC', TIMESTAMP '2025-01-01 00:00:00.000000 UTC'") { t ->
+            assertScan("SELECT count(*) FROM $t WHERE c = TIMESTAMP '2024-01-01 19:00:00.123456 Asia/Tokyo'", rows = 1, splits = 1)
+            assertScan("SELECT count(*) FROM $t WHERE c >= TIMESTAMP '2024-01-01 10:00:00.123457 UTC'", rows = 3, splits = 2)
+            assertScan("SELECT count(*) FROM $t WHERE c < TIMESTAMP '1970-01-01 00:00:00 UTC'", rows = 1, splits = 1)
+        }
+        // Stored as microseconds, like every DuckLake timestamptz; bounds sit on the millisecond.
+        withFiles(
+                "prune_tstz3",
+                "TIMESTAMP(3) WITH TIME ZONE",
+                "TIMESTAMP '2024-01-01 00:00:00.000 UTC', TIMESTAMP '2024-01-01 10:00:00.122 UTC'",
+                "TIMESTAMP '2024-01-01 10:00:00.123 UTC', TIMESTAMP '2024-01-01 10:00:00.124 UTC'",
+                "TIMESTAMP '2024-01-01 10:00:00.125 UTC', TIMESTAMP '2024-01-02 00:00:00.000 UTC'") { t ->
+            assertScan("SELECT count(*) FROM $t WHERE c = TIMESTAMP '2024-01-01 10:00:00.124 UTC'", rows = 1, splits = 1)
+            assertScan("SELECT count(*) FROM $t WHERE c <= TIMESTAMP '2024-01-01 10:00:00.123 UTC'", rows = 3, splits = 2)
+        }
+    }
+
+    @Test
+    fun timePrunesOnTimeOfDay() {
+        withFiles(
+                "prune_time",
+                "TIME(6)",
+                "TIME '00:00:00', TIME '09:59:59.999999'",
+                "TIME '10:00:00', TIME '10:00:00.5'",
+                "TIME '10:00:00.500001', TIME '23:59:59.999999'") { t ->
+            assertScan("SELECT count(*) FROM $t WHERE c = TIME '10:00:00.500000'", rows = 1, splits = 1)
+            assertScan("SELECT count(*) FROM $t WHERE c >= TIME '10:00:00.5'", rows = 3, splits = 2)
+            assertScan("SELECT count(*) FROM $t WHERE c <= TIME '09:59:59.999999'", rows = 2, splits = 1)
+        }
+    }
+
+    @Test
+    fun uuidPrunesInUnsignedByteOrder() {
+        // Trino and the catalog both order UUIDs by their unsigned big-endian bytes, so a UUID with
+        // the high bit set sorts last rather than first.
+        withFiles(
+                "prune_uuid",
+                "UUID",
+                "UUID '00000000-0000-0000-0000-000000000001', UUID '0fffffff-ffff-ffff-ffff-ffffffffffff'",
+                "UUID '550e8400-e29b-41d4-a716-446655440000', UUID '7fffffff-ffff-ffff-ffff-ffffffffffff'",
+                "UUID '80000000-0000-0000-0000-000000000000', UUID 'ffffffff-ffff-ffff-ffff-ffffffffffff'") { t ->
+            assertScan("SELECT count(*) FROM $t WHERE c = UUID '550e8400-e29b-41d4-a716-446655440000'", rows = 1, splits = 1)
+            assertScan("SELECT count(*) FROM $t WHERE c >= UUID '7fffffff-ffff-ffff-ffff-ffffffffffff'", rows = 3, splits = 2)
+            assertScan("SELECT count(*) FROM $t WHERE c > UUID 'ffffffff-ffff-ffff-ffff-fffffffffff0'", rows = 1, splits = 1)
+            assertScan("SELECT count(*) FROM $t WHERE c = UUID '10000000-0000-0000-0000-000000000000'", rows = 0, splits = 0)
+        }
+    }
+
+    @Test
     fun varcharPrunesInCodePointOrder() {
         // U+FB00 sorts after the surrogate pair of U+1F600 in UTF-16 but before it by code point,
         // which is the order of both Trino and the catalog.
@@ -191,17 +246,19 @@ class TestDucklakeStatsFilePruning : AbstractDucklakeCrossEngineTest() {
                 "ts_ns" to "TIMESTAMP_NS",
                 "tz" to "TIMESTAMPTZ",
                 "s" to "VARCHAR",
-                "b" to "BOOLEAN")
+                "b" to "BOOLEAN",
+                "t" to "TIME",
+                "u" to "UUID")
         val files = listOf(
                 "(1, 0.1, 0.1, 1.001, DATE '2024-01-01', TIMESTAMP '2024-01-01 00:00:00.000001', TIMESTAMP_S '2024-01-01 00:00:00', " +
                         "TIMESTAMP_MS '2024-01-01 00:00:00.001', '2024-01-01 00:00:00.000000001'::TIMESTAMP_NS, " +
-                        "TIMESTAMPTZ '2024-01-01 02:00:00.000001+02', 'apple', false)",
+                        "TIMESTAMPTZ '2024-01-01 02:00:00.000001+02', 'apple', false, TIME '01:00:00', UUID '00000000-0000-0000-0000-000000000001')",
                 "(2, 1.1, 1.1, 2.002, DATE '2024-01-02', TIMESTAMP '2024-01-02 00:00:00.000002', TIMESTAMP_S '2024-01-02 00:00:01', " +
                         "TIMESTAMP_MS '2024-01-02 00:00:00.002', '2024-01-02 00:00:00.000000002'::TIMESTAMP_NS, " +
-                        "TIMESTAMPTZ '2024-01-02 03:00:00.000002+03', 'banana', true)",
+                        "TIMESTAMPTZ '2024-01-02 03:00:00.000002+03', 'banana', true, TIME '02:00:00.5', UUID '7fffffff-0000-0000-0000-000000000000')",
                 "(3, 2.1, 2.1, 3.003, DATE '2024-01-03', TIMESTAMP '2024-01-03 00:00:00.000003', TIMESTAMP_S '2024-01-03 00:00:02', " +
                         "TIMESTAMP_MS '2024-01-03 00:00:00.003', '2024-01-03 00:00:00.000000003'::TIMESTAMP_NS, " +
-                        "TIMESTAMPTZ '2024-01-03 00:00:00.000003+00', 'cherry', true)")
+                        "TIMESTAMPTZ '2024-01-03 00:00:00.000003+00', 'cherry', true, TIME '03:00:00', UUID 'ffffffff-0000-0000-0000-000000000000')")
         withDuckdbFiles("duck_types", columns.entries.joinToString(", ") { "${it.key} ${it.value}" }, files) { t ->
             val secondFile = mapOf(
                     "i" to "BIGINT '2'",
@@ -214,7 +271,9 @@ class TestDucklakeStatsFilePruning : AbstractDucklakeCrossEngineTest() {
                     "ts_ms" to "TIMESTAMP '2024-01-02 00:00:00.002'",
                     "ts_ns" to "TIMESTAMP '2024-01-02 00:00:00.000000002'",
                     "tz" to "TIMESTAMP '2024-01-02 09:00:00.000002 Asia/Tokyo'",
-                    "s" to "'banana'")
+                    "s" to "'banana'",
+                    "t" to "TIME '02:00:00.5'",
+                    "u" to "UUID '7fffffff-0000-0000-0000-000000000000'")
             for ((column, literal) in secondFile) {
                 assertScan("SELECT count(*) FROM $t WHERE $column = $literal", rows = 1, splits = 1)
             }
@@ -226,16 +285,35 @@ class TestDucklakeStatsFilePruning : AbstractDucklakeCrossEngineTest() {
     }
 
     @Test
-    fun unsupportedTypesRetainAllFiles() {
-        withDuckdbFiles(
-                "duck_uuid",
-                "u UUID",
-                listOf(
-                        "(UUID '00000000-0000-0000-0000-000000000001')",
-                        "(UUID '00000000-0000-0000-0000-000000000002')",
-                        "(UUID '00000000-0000-0000-0000-000000000003')")) { t ->
-            assertScan("SELECT count(*) FROM $t WHERE u = UUID '00000000-0000-0000-0000-000000000002'", rows = 1, splits = 3)
+    fun duckdbUuidBucketsPruneOnDuckLakesHash() {
+        // DuckLake buckets a UUID by murmur3 of its text; hashing the 16 bytes picks another bucket
+        // and would drop the matching file.
+        val table = "test_schema.duck_uuid_bucket"
+        try {
+            createDuckdbConnection().use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.execute("CREATE TABLE ducklake_db.$table (u UUID)")
+                    statement.execute("CALL ducklake_db.set_option('data_inlining_row_limit', 0, " +
+                            "schema => 'test_schema', table_name => 'duck_uuid_bucket')")
+                    statement.execute("ALTER TABLE ducklake_db.$table SET PARTITIONED BY (bucket(16, u))")
+                    for (i in 1..4) {
+                        statement.execute("INSERT INTO ducklake_db.$table VALUES (UUID '00000000-0000-0000-0000-00000000000$i')")
+                    }
+                }
+            }
+            assertFileCount(table, 4)
+            for (i in 1..4) {
+                assertScan("SELECT count(*) FROM $table WHERE u = UUID '00000000-0000-0000-0000-00000000000$i'",
+                        rows = 1, splits = 1)
+            }
         }
+        finally {
+            tryDropTable(table)
+        }
+    }
+
+    @Test
+    fun unsupportedTypesRetainAllFiles() {
         withDuckdbFiles("duck_uint", "u UTINYINT", listOf("(1)", "(100)", "(200)")) { t ->
             assertScan("SELECT count(*) FROM $t WHERE u = SMALLINT '100'", rows = 1, splits = 3)
         }

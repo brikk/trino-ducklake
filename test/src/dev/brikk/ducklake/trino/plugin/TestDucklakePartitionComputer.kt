@@ -16,10 +16,16 @@ package dev.brikk.ducklake.trino.plugin
 import dev.brikk.ducklake.catalog.DucklakePartitionTransform
 import io.trino.spi.block.Block
 import io.trino.spi.type.BigintType.BIGINT
+import io.trino.spi.type.DateTimeEncoding.packDateTimeWithZone
 import io.trino.spi.type.DateType.DATE
 import io.trino.spi.type.DoubleType.DOUBLE
 import io.trino.spi.type.IntegerType.INTEGER
+import io.trino.spi.type.LongTimestampWithTimeZone
+import io.trino.spi.type.TimeZoneKey.UTC_KEY
+import io.trino.spi.type.TimeZoneKey.getTimeZoneKey
 import io.trino.spi.type.TimestampType.TIMESTAMP_MICROS
+import io.trino.spi.type.TimestampWithTimeZoneType.TIMESTAMP_TZ_MICROS
+import io.trino.spi.type.TimestampWithTimeZoneType.TIMESTAMP_TZ_MILLIS
 import io.trino.spi.type.VarcharType.VARCHAR
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
@@ -73,6 +79,24 @@ internal class TestDucklakePartitionComputer {
                 DucklakePartitionTransform.IDENTITY, DucklakeTemporalPartitionEncoding.CALENDAR)
         assertThat(value).isEqualTo("2024-01-03 10:30:15.123456")
         assertThat(DucklakePartitionValueParser.parseIdentity(TIMESTAMP_MICROS, value!!)).isEqualTo(epochMicros)
+    }
+
+    @Test
+    fun identityTimestampWithTimeZoneIsDuckdbsUtcTextWithMicros() {
+        val micros = LongTimestampWithTimeZone.fromEpochMillisAndFraction(1_704_110_400_123L, 456_000_000, getTimeZoneKey("America/New_York"))
+        val builder = TIMESTAMP_TZ_MICROS.createBlockBuilder(null, 1)
+        TIMESTAMP_TZ_MICROS.writeObject(builder, micros)
+        val value = DucklakePartitionComputer.computePartitionValue(
+                TIMESTAMP_TZ_MICROS, builder.build(), 0, DucklakePartitionTransform.IDENTITY, DucklakeTemporalPartitionEncoding.CALENDAR)
+        assertThat(value).isEqualTo("2024-01-01 12:00:00.123456+00")
+        assertThat(DucklakePartitionValueParser.parseIdentity(TIMESTAMP_TZ_MICROS, value!!))
+                .isEqualTo(LongTimestampWithTimeZone.fromEpochMillisAndFraction(1_704_110_400_123L, 456_000_000, UTC_KEY))
+
+        val millisBuilder = TIMESTAMP_TZ_MILLIS.createBlockBuilder(null, 1)
+        TIMESTAMP_TZ_MILLIS.writeLong(millisBuilder, packDateTimeWithZone(-1L, UTC_KEY))
+        assertThat(DucklakePartitionComputer.computePartitionValue(
+                TIMESTAMP_TZ_MILLIS, millisBuilder.build(), 0, DucklakePartitionTransform.IDENTITY, DucklakeTemporalPartitionEncoding.CALENDAR))
+                .isEqualTo("1969-12-31 23:59:59.999+00")
     }
 
     @Test

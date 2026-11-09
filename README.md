@@ -182,9 +182,9 @@ columns and change feeds.
 
 - **Type mapping is not a physical compatibility guarantee.** Common numeric,
   string, binary, date and timestamp types, plus supported ARRAY/ROW/MAP shapes,
-  have read/write paths. UUID, TIME, `TIMESTAMP(0)` and the time-zone types cannot
-  be written to Parquet. Unsigned, huge-integer, interval and VARIANT encodings have additional
-  restrictions. Check the [type boundaries](REFERENCE.md#types) for your schema;
+  have read/write paths, including UUID, `TIME(6)` and `TIMESTAMP(6) WITH TIME ZONE`.
+  `TIME WITH TIME ZONE` and `TIMESTAMP(0)` cannot be written to Parquet. Unsigned,
+  huge-integer, interval and VARIANT encodings have additional restrictions. Check the [type boundaries](REFERENCE.md#types) for your schema;
   successful DDL alone does not prove that a type can be written or read exactly.
 - JSON writes support top-level JSON columns; nested JSON writes are not supported.
   Geometry is exposed as binary data, without spatial operators.

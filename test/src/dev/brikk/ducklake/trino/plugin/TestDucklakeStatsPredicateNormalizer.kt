@@ -15,6 +15,9 @@ package dev.brikk.ducklake.trino.plugin
 
 import dev.brikk.ducklake.catalog.DucklakeStatTypes
 import io.airlift.slice.Slices
+import io.trino.spi.function.InvocationConvention.InvocationArgumentConvention.NEVER_NULL
+import io.trino.spi.function.InvocationConvention.InvocationReturnConvention.FAIL_ON_NULL
+import io.trino.spi.function.InvocationConvention.simpleConvention
 import io.trino.spi.type.BigintType.BIGINT
 import io.trino.spi.type.BooleanType.BOOLEAN
 import io.trino.spi.type.DateTimeEncoding.packDateTimeWithZone
@@ -28,6 +31,7 @@ import io.trino.spi.type.LongTimestampWithTimeZone
 import io.trino.spi.type.RealType.REAL
 import io.trino.spi.type.SmallintType.SMALLINT
 import io.trino.spi.type.TimeType.TIME_MICROS
+import io.trino.spi.type.TimeWithTimeZoneType.TIME_TZ_MICROS
 import io.trino.spi.type.TimeZoneKey.UTC_KEY
 import io.trino.spi.type.TimeZoneKey.getTimeZoneKey
 import io.trino.spi.type.TimestampType.TIMESTAMP_MICROS
@@ -37,7 +41,9 @@ import io.trino.spi.type.TimestampWithTimeZoneType.TIMESTAMP_TZ_MICROS
 import io.trino.spi.type.TimestampWithTimeZoneType.TIMESTAMP_TZ_MILLIS
 import io.trino.spi.type.TinyintType.TINYINT
 import io.trino.spi.type.Type
+import io.trino.spi.type.TypeOperators
 import io.trino.spi.type.UuidType.UUID
+import io.trino.spi.type.UuidType.javaUuidToTrinoUuid
 import io.trino.spi.type.VarbinaryType.VARBINARY
 import io.trino.spi.type.VarcharType.VARCHAR
 import org.assertj.core.api.Assertions.assertThat
@@ -58,6 +64,8 @@ class TestDucklakeStatsPredicateNormalizer {
         assertThat(DucklakeStatsPredicateNormalizer.supports(createDecimalType(10, 2), "decimal(10, 2)")).isTrue()
         assertThat(DucklakeStatsPredicateNormalizer.supports(TIMESTAMP_NANOS, "timestamp_ns")).isTrue()
         assertThat(DucklakeStatsPredicateNormalizer.supports(TIMESTAMP_TZ_MICROS, "TIMESTAMPTZ")).isTrue()
+        assertThat(DucklakeStatsPredicateNormalizer.supports(TIME_MICROS, "time")).isTrue()
+        assertThat(DucklakeStatsPredicateNormalizer.supports(UUID, "uuid")).isTrue()
 
         // Unsigned and hugeint promotions, VARCHAR degradations, and mismatched precision.
         assertThat(DucklakeStatsPredicateNormalizer.supports(SMALLINT, "uint8")).isFalse()
@@ -72,9 +80,9 @@ class TestDucklakeStatsPredicateNormalizer {
         assertThat(DucklakeStatsPredicateNormalizer.supports(DOUBLE, "float32")).isFalse()
 
         // Types whose comparison is not provably exact.
-        assertThat(DucklakeStatsPredicateNormalizer.supports(UUID, "uuid")).isFalse()
         assertThat(DucklakeStatsPredicateNormalizer.supports(VARBINARY, "blob")).isFalse()
-        assertThat(DucklakeStatsPredicateNormalizer.supports(TIME_MICROS, "time")).isFalse()
+        assertThat(DucklakeStatsPredicateNormalizer.supports(TIME_TZ_MICROS, "timetz")).isFalse()
+        assertThat(DucklakeStatsPredicateNormalizer.supports(UUID, "varchar")).isFalse()
     }
 
     @Test
@@ -168,10 +176,38 @@ class TestDucklakeStatsPredicateNormalizer {
     }
 
     @Test
+    fun timesMatchTheDuckDbSpelling() {
+        assertSameKey(TIME_MICROS, "time", 0L, "00:00:00")
+        assertSameKey(TIME_MICROS, "time", 45_296_500_000_000_000L, "12:34:56.5")
+        assertSameKey(TIME_MICROS, "time", 86_399_999_999_000_000L, "23:59:59.999999")
+        assertThat(compareKeys(TIME_MICROS, "time", 45_296_000_000_000_000L, 45_296_000_001_000_000L)).isNegative()
+    }
+
+    @Test
+    fun uuidsOrderLikeTheirUnsignedBytes() {
+        val text = "7fffffff-0000-0000-8000-00000000000a"
+        assertSameKey(UUID, "uuid", javaUuidToTrinoUuid(java.util.UUID.fromString(text)), text)
+        val ordered = listOf(
+                "00000000-0000-0000-0000-000000000000",
+                "00000000-0000-0000-0000-000000000001",
+                "7fffffff-ffff-ffff-ffff-ffffffffffff",
+                "80000000-0000-0000-0000-000000000000",
+                "ffffffff-ffff-ffff-ffff-ffffffffffff")
+                .map { javaUuidToTrinoUuid(java.util.UUID.fromString(it)) }
+        ordered.zipWithNext().forEach { (low, high) ->
+            assertThat(uuidComparison.invokeWithArguments(low, high) as Long).`as`("Trino UUID order").isNegative()
+            assertThat(compareKeys(UUID, "uuid", low, high)).isNegative()
+        }
+    }
+
+    @Test
     fun varcharIsTheUtf8Text() {
         assertSameKey(VARCHAR, "varchar", Slices.utf8Slice("😀 ﬀ"), "😀 ﬀ")
         assertThat(DucklakeStatsPredicateNormalizer.toStatText(VARCHAR, Slices.wrappedBuffer(0xC3.toByte()))).isNull()
     }
+
+    private val uuidComparison = TypeOperators().getComparisonUnorderedLastOperator(
+            UUID, simpleConvention(FAIL_ON_NULL, NEVER_NULL, NEVER_NULL))
 
     private fun assertSameKey(type: Type, ducklakeType: String, value: Any, writerText: String) {
         val text = DucklakeStatsPredicateNormalizer.toStatText(type, value)

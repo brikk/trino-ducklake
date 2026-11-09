@@ -23,6 +23,7 @@ import io.trino.spi.type.DoubleType
 import io.trino.spi.type.IntegerType
 import io.trino.spi.type.RealType
 import io.trino.spi.type.SmallintType
+import io.trino.spi.type.TimeType
 import io.trino.spi.type.TimestampType
 import io.trino.spi.type.TimestampWithTimeZoneType
 import io.trino.spi.type.TinyintType
@@ -31,6 +32,7 @@ import io.trino.spi.type.UuidType
 import io.trino.spi.type.VarbinaryType
 import io.trino.spi.type.VarcharType
 import org.apache.parquet.format.FileMetaData
+import org.apache.parquet.schema.LogicalTypeAnnotation.TimeLogicalTypeAnnotation
 import org.apache.parquet.schema.LogicalTypeAnnotation.TimeUnit
 import org.apache.parquet.schema.LogicalTypeAnnotation.TimestampLogicalTypeAnnotation
 import org.apache.parquet.schema.MessageType
@@ -42,8 +44,10 @@ import java.nio.ByteOrder
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
+import java.time.LocalTime
 import java.time.ZoneOffset
 import java.util.Locale
+import java.util.UUID
 
 /**
  * Aggregates per-row-group parquet statistics into one [DucklakeFileColumnStats]
@@ -117,7 +121,7 @@ object DucklakeStatsExtractor {
                 minBytes: ByteArray,
                 maxBytes: ByteArray) {
             val physicalType = physicalType(physicalLeaf, columnMeta)
-            val timeUnit = timestampUnit(physicalLeaf, target.leafType)
+            val timeUnit = temporalUnit(physicalLeaf, target.leafType)
             val groupMin = convertStatValue(minBytes, target.leafType, physicalType, timeUnit)
             val groupMax = convertStatValue(maxBytes, target.leafType, physicalType, timeUnit)
             if (groupMin == null || groupMax == null) {
@@ -152,15 +156,16 @@ object DucklakeStatsExtractor {
             value: ByteArray?,
             type: Type,
             physicalType: org.apache.parquet.format.Type?,
-            timestampUnit: TimeUnit?): String? {
+            temporalUnit: TimeUnit?): String? {
         if (value == null || value.isEmpty()) {
             return null
         }
         return try {
             when (type) {
                 is DateType -> LocalDate.ofEpochDay(littleEndianInt(value).toLong()).toString()
-                is TimestampType -> convertTimestamp(value, type, physicalType, timestampUnit)
-                is TimestampWithTimeZoneType -> convertTimestampTz(value, physicalType, timestampUnit)
+                is TimestampType -> convertTimestamp(value, type, physicalType, temporalUnit)
+                is TimestampWithTimeZoneType -> convertTimestampTz(value, physicalType, temporalUnit)
+                is TimeType -> temporalUnit?.let { convertTime(value, physicalType, it) }
                 is DecimalType -> BigDecimal(decodeDecimalUnscaled(value, physicalType), type.scale).toPlainString()
                 else -> convertBasic(value, type)
             }
@@ -177,7 +182,8 @@ object DucklakeStatsExtractor {
         type is RealType -> littleEndianFloat(value).takeUnless { it.isNaN() }?.toString()
         type is DoubleType -> littleEndianDouble(value).takeUnless { it.isNaN() }?.toString()
         type is VarcharType -> String(value, Charsets.UTF_8)
-        type is VarbinaryType || type is UuidType -> null
+        type is UuidType -> if (value.size == UUID_BYTES) uuidText(value) else null
+        type is VarbinaryType -> null
         else -> null
     }
 
@@ -202,6 +208,29 @@ object DucklakeStatsExtractor {
         }
         val instant = timestampInstant(littleEndianLong(value), unit ?: TimeUnit.MICROS)
         return formatTimestamp(LocalDateTime.ofInstant(instant, ZoneOffset.UTC)) + "+00"
+    }
+
+    /** DuckDB `Time::ToString`: mandatory seconds, trimmed fraction. */
+    private fun convertTime(value: ByteArray, physicalType: org.apache.parquet.format.Type?, unit: TimeUnit): String? {
+        val units = when (physicalType) {
+            org.apache.parquet.format.Type.INT32 -> littleEndianInt(value).toLong()
+            org.apache.parquet.format.Type.INT64 -> littleEndianLong(value)
+            else -> return null
+        }
+        val nanosPerUnit = when (unit) {
+            TimeUnit.MILLIS -> 1_000_000L
+            TimeUnit.MICROS -> 1_000L
+            TimeUnit.NANOS -> 1L
+        }
+        val time = LocalTime.ofNanoOfDay(Math.multiplyExact(units, nanosPerUnit))
+        val base = String.format(Locale.ROOT, "%02d:%02d:%02d", time.hour, time.minute, time.second)
+        return if (time.nano == 0) base else "$base.${time.nano.toString().padStart(9, '0').trimEnd('0')}"
+    }
+
+    /** Parquet UUID is 16 big-endian bytes; DuckDB renders its stats lowercase and hyphenated. */
+    private fun uuidText(value: ByteArray): String {
+        val buffer = ByteBuffer.wrap(value)
+        return UUID(buffer.getLong(), buffer.getLong()).toString()
     }
 
     private fun littleEndianInt(value: ByteArray): Int =
@@ -266,9 +295,12 @@ object DucklakeStatsExtractor {
                 columnMeta.statistics.isSetMin_value &&
                 columnMeta.statistics.isSetMax_value
 
-    private fun timestampUnit(leaf: PrimitiveType?, type: Type): TimeUnit? =
-        (leaf?.logicalTypeAnnotation as? TimestampLogicalTypeAnnotation)?.unit
-            ?: if (type is TimestampType) inferredTimestampUnit(type) else null
+    private fun temporalUnit(leaf: PrimitiveType?, type: Type): TimeUnit? =
+        when (val annotation = leaf?.logicalTypeAnnotation) {
+            is TimestampLogicalTypeAnnotation -> annotation.unit
+            is TimeLogicalTypeAnnotation -> annotation.unit
+            else -> if (type is TimestampType) inferredTimestampUnit(type) else null
+        }
 
     private fun inferredTimestampUnit(type: TimestampType): TimeUnit = when {
         type.precision <= 3 -> TimeUnit.MILLIS
@@ -300,6 +332,8 @@ object DucklakeStatsExtractor {
         }
         return "$base.${value.nano.toString().padStart(9, '0').trimEnd('0')}"
     }
+
+    private const val UUID_BYTES = 16
 
     private fun isNumericTrinoType(type: Type): Boolean {
         return type is TinyintType

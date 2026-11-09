@@ -381,7 +381,6 @@ APIs or fixes needed in `ducklake-catalog` before the connector can close an ite
 - [ ] RV-27c1/c2, RV-D07: the release workflow does not check the tag against the project
   version or require a revision that passed CI; its example tag (`v483-1-ALPHA`) predates the
   `v0.5.x` scheme.
-- [ ] RV-D04: `.gitmodules` still lists `ducklake-web` with no gitlink; `release.yml` mentions it.
 - [ ] RV-D06: unused entries and stale comments in `gradle/libs.versions.toml` (`lance-core`,
   arrow/adbc/jooq/terpal).
 - [ ] RV-D08: reproduce the Compose workbench from a fresh clone; it builds from a sibling

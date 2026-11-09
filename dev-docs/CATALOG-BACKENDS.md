@@ -14,7 +14,7 @@ DuckDB metadata backend does not embed DuckDB as the production query/data engin
 | Native/direct-Java Quack | Experimental fixtures and scoped candidate checks; not normal deployment qualification |
 | SQLite/Turso | Not a supported Trino deployment configuration |
 
-Normal catalog/replay dependencies are pinned snapshot **0.18.0-20261109.223927-4**. The
+Normal catalog/replay dependencies are release **0.18.0**. The
 separately selected [experimental planning mode](CATALOG-CANDIDATE.md) uses the same pinned
 artifacts, not a moving API floor.
 Current user configuration is in [REFERENCE.md](../REFERENCE.md#catalog-configuration).

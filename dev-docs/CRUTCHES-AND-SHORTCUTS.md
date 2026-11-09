@@ -231,18 +231,6 @@ deletion queue (DuckLake 1.0) and none for inlined rows.
   `test/src/.../TestTrinoCorpusReplay.kt`, `TestTrinoFormatScopes.kt`, `TrinoReplayEngine.kt`,
   `qualification/src/`.
 
-## Catalog pinned to a timestamped snapshot
-
-- **Shortcut:** both lanes depend on published snapshot `0.18.0-20261109.223927-4`, not a
-  Maven Central release. `build.gradle.kts` resolves the three `dev.brikk.ducklake` modules only
-  from the Central Portal snapshots repository and `verifyCatalogRelease` checks all four JARs
-  against `gradle/catalog-release.sha256` before tests.
-- **Cost:** a plugin release built now would ship a snapshot catalog; the snapshot repository
-  may prune old timestamps, breaking clean builds.
-- **Real fix:** adopt the formal 0.18.0 release from Maven Central with its receipt.
-- **Removal criterion:** formal 0.18.0 is published; before any plugin release.
-- **Owner:** `gradle/libs.versions.toml`, `build.gradle.kts`, `gradle/catalog-release.sha256`.
-
 ## Corpus engine-error classification reads some message text
 
 - **Shortcut:** `TrinoReplayEngine.classifyEngineError` turns a mirror error into an engine-skip

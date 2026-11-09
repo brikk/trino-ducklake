@@ -2,7 +2,7 @@
 
 ## Current selection
 
-Both builds consume published snapshot **0.18.0-20261109.223927-4**, with DuckDB JDBC
+Both builds consume released catalog **0.18.0**, with DuckDB JDBC
 **2.0.0.1** and test-only Java Quack JDBC **0.13.0**. This adopts the library, not
 default-on final-1.1 planning; formal 0.18.0 replaces the snapshot before the next plugin
 release. All three modules remain in lockstep:

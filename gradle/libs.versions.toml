@@ -16,7 +16,7 @@ trino = "483"
 # Published DuckLake catalog + corpus-replay coordinates (dev.brikk.ducklake). Bump in lockstep
 # when consuming a new catalog release. A timestamped snapshot resolves only from the Central
 # Portal snapshots repo and must match gradle/catalog-release.sha256 (see build.gradle.kts).
-ducklake-catalog = "0.18.0-20261109.223927-4"
+ducklake-catalog = "0.18.0"
 postgres = "42.7.8"
 mysql = "9.7.0"
 minio = "8.6.0"

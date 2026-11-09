@@ -1,6 +1,6 @@
-# Published snapshot 0.18.0-20261109.223927-4, source a4332aab275f7bbdbfbf3be17a296cb7fa4fbffb.
-# https://central.sonatype.com/repository/maven-snapshots/ ; no local JARs.
-33a6c410e21d5c54c0d2a7cf24155876b10d97c113f2ead8b1101b4488e47c4b  ducklake-catalog-0.18.0-20261109.223927-4.jar
-dd8eea0415dfa9a0c7f02ed270e4aa66d87c329d03469579f91c2d5361f0a9bd  ducklake-catalog-0.18.0-20261109.223927-4-test-fixtures.jar
-72146c7e5c5c10e6a4f828d76e6507e92eacb3f1db21c8d8072375fe67a2577f  ducklake-test-corpus-replay-0.18.0-20261109.223927-4.jar
-d48d254b5b422e44e64b21e90902e53f5fd372f0df9dc2da8633985776c5a3d1  slt-format-0.18.0-20261109.223927-4.jar
+# Maven Central release 0.18.0 (tag v0.18.0, release commit e8d39a12cd7fa7ef7f412177e585ecafd89ea03f,
+# implementation a4332aab275f7bbdbfbf3be17a296cb7fa4fbffb). Byte-identical to snapshot 0.18.0-20261109.223927-4.
+33a6c410e21d5c54c0d2a7cf24155876b10d97c113f2ead8b1101b4488e47c4b  ducklake-catalog-0.18.0.jar
+dd8eea0415dfa9a0c7f02ed270e4aa66d87c329d03469579f91c2d5361f0a9bd  ducklake-catalog-0.18.0-test-fixtures.jar
+72146c7e5c5c10e6a4f828d76e6507e92eacb3f1db21c8d8072375fe67a2577f  ducklake-test-corpus-replay-0.18.0.jar
+d48d254b5b422e44e64b21e90902e53f5fd372f0df9dc2da8633985776c5a3d1  slt-format-0.18.0.jar

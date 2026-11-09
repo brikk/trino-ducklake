@@ -10,7 +10,7 @@ backend for a Trino cluster or a lake shared with DuckDB.
 | --- | --- |
 | Trino | **483 or 484**, with a separate plugin archive for each version |
 | DuckLake catalog format | **1.0** read/write, subject to the limits below |
-| Catalog library | **0.17.0**; this library version is not the DuckLake format version |
+| Catalog library | **0.18.0**; this library version is not the DuckLake format version |
 | DuckDB interoperability | **DuckDB 2.0.0**, JDBC **2.0.0.1**; initialize DuckLake **1.0** explicitly |
 | Data and delete files | Parquet data; Parquet positional deletes and Puffin deletion vectors |
 

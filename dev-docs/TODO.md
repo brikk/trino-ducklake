@@ -361,9 +361,6 @@ APIs or fixes needed in `ducklake-catalog` before the connector can close an ite
 
 ## Test, CI and release hygiene
 
-- [ ] Adopt formal catalog 0.18.0 from Maven Central once published, replacing the pinned
-  `0.18.0-20261109.223927-4` snapshot and its receipt (CRUTCHES "Catalog pinned to a
-  timestamped snapshot"); required before the next plugin release.
 - [ ] Corpus `merge` is green with 4 verified mirrors; its remaining open reads are DuckDB
   FROM-first queries (`FROM Stock ORDER BY item_id` in `merge_update_insert.test`, `FROM
   my_timeseries` in `merge_partition.test`), which `TrinoCorpusDialect` refuses as "not a read"

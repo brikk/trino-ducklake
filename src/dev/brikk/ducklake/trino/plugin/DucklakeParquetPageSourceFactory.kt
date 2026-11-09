@@ -484,7 +484,7 @@ internal class DucklakeParquetPageSourceFactory(
         {
             if (hasNameMap) {
                 return split.fieldIdToParquetSourceName[column.columnId]
-                        ?.let { messageColumnIO.getChild(it) }
+                        ?.let { DucklakeParquetTypeUtils.childByName(messageColumnIO, it) }
             }
             // Field identity is authoritative whenever present. Name-first binding swaps values
             // after rename cycles and lets a re-added name bind the dropped field's bytes.
@@ -496,13 +496,13 @@ internal class DucklakeParquetPageSourceFactory(
                 }
                 val eraName: String? = eraColumns.firstOrNull { it.columnId == column.columnId }?.columnName
                 if (eraName != null && !eraName.equals(column.columnName, ignoreCase = true)) {
-                    messageColumnIO.getChild(eraName)?.let { return it }
+                    DucklakeParquetTypeUtils.childByName(messageColumnIO, eraName)?.let { return it }
                 }
             }
             // Name fallback is for legacy files without field ids, but only when this identity
             // existed in the file's era. Otherwise a dropped/re-added name belongs to another id.
             if (eraColumns.isEmpty() || eraColumns.any { it.columnId == column.columnId }) {
-                return messageColumnIO.getChild(column.columnName)
+                return DucklakeParquetTypeUtils.childByName(messageColumnIO, column.columnName)
             }
             return null
         }

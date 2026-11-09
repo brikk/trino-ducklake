@@ -41,8 +41,10 @@ import java.util.concurrent.atomic.AtomicInteger
  * (`ducklake.catalog.database-url`) and the oracle's data path, so oracle and
  * engine read the exact same lake, including intermediate states.
  *
- * `accepts` gate: alias-qualified reads only (`<alias>.<table>` — bare names may be the oracle's
- * in-memory temp tables, not the lake) AND [TrinoCorpusDialect] returns a `Run`. The dialect is
+ * `accepts` gate: reads of the lake AND [TrinoCorpusDialect] returns a `Run`. A lake read names the
+ * alias (`<alias>.<table>`), or uses an unqualified name while the query's oracle connection has
+ * `USE`d the lake; [oracleSqlBinder] observes those `USE`s because the engine seam only sees
+ * reads, so a runner replaying several files must call [beginFile] before each. The dialect is
  * transpile-first (brikk-sql translates DuckDB→Trino and keys off the transpiler's own
  * unmappable/unsupported/verify signals). [executeQuery] runs the transpiled SQL (after the
  * corpus-specific alias→catalog rewrite).
@@ -89,7 +91,25 @@ class TrinoReplayEngine : ReplayReadEngine {
         server.getDuckDbAttachUri(db).removePrefix("ducklake:")
     }
 
+    /** DuckDB name-resolution defaults per oracle connection label (null = root) in the current file. */
+    private val oracleNames: MutableMap<String?, TrinoReplayBindings.OracleNames> = HashMap()
+
+    /** The last SQL the oracle bound and its connection; the driver mirrors a query right after binding it. */
+    private var lastBound: Pair<String, String?>? = null
+
+    /** Forget the previous corpus file's `USE` targets and temp relations. */
+    fun beginFile() {
+        oracleNames.clear()
+        lastBound = null
+    }
+
     val oracleSqlBinder = ReplayOracleSqlBinder { sql, context ->
+        lastBound = sql to context.connection
+        TrinoReplayBindings.observe(sql, oracleNames.getOrPut(context.connection) { TrinoReplayBindings.OracleNames() }) { catalog, schema ->
+            val alias = currentAlias
+            val config = currentConfig
+            alias != null && config != null && TrinoReplayBindings.sameIdentifier(alias, catalog) && lakeHasSchema(config, schema)
+        }
         val schemas = context.lakes.filter {
             it.rewritten && it.explicitMetadataSchema == null && it.attachment.metadataUri.startsWith("postgres:")
         }.associate { it.metadataCatalog to "public" }
@@ -156,8 +176,49 @@ class TrinoReplayEngine : ReplayReadEngine {
     override fun accepts(sql: String): Boolean {
         val alias = currentAlias ?: return false
         val run = gateFor(sql) as? TrinoCorpusDialect.Run ?: return false
-        return TrinoReplayBindings.referencesLake(run.trinoSql, alias)
+        return TrinoReplayBindings.referencesLake(run.trinoSql, alias, lakeDefaultFor(sql, alias))
     }
+
+    /** The lake default for [sql]'s unqualified names, when its oracle connection has `USE`d the connected lake. */
+    private fun lakeDefaultFor(sql: String, alias: String): TrinoReplayBindings.LakeDefault? {
+        val (boundSql, connection) = lastBound ?: return null
+        if (boundSql != sql) return null
+        val config = currentConfig ?: return null
+        val relations = HashMap<Pair<String, String>, Boolean>()
+        return oracleNames[connection]?.lakeDefault(alias) { schema, name ->
+            relations.getOrPut(schema to name) { lakeHasRelation(config, schema, name) }
+        }
+    }
+
+    private fun lakeHasRelation(config: DucklakeCatalogConfig, schema: String, name: String): Boolean =
+        DriverManager.getConnection(config.catalogDatabaseUrl, config.catalogDatabaseUser, config.catalogDatabasePassword)
+            .use { connection ->
+                connection.prepareStatement(
+                    """
+                    SELECT 1 FROM ducklake_table t JOIN ducklake_schema s ON t.schema_id = s.schema_id
+                    WHERE lower(s.schema_name) = lower(?) AND lower(t.table_name) = lower(?)
+                      AND s.end_snapshot IS NULL AND t.end_snapshot IS NULL
+                    UNION ALL
+                    SELECT 1 FROM ducklake_view v JOIN ducklake_schema s ON v.schema_id = s.schema_id
+                    WHERE lower(s.schema_name) = lower(?) AND lower(v.view_name) = lower(?)
+                      AND s.end_snapshot IS NULL AND v.end_snapshot IS NULL
+                    """.trimIndent(),
+                ).use { statement ->
+                    listOf(schema, name, schema, name).forEachIndexed { i, value -> statement.setString(i + 1, value) }
+                    statement.executeQuery().use { it.next() }
+                }
+            }
+
+    private fun lakeHasSchema(config: DucklakeCatalogConfig, schema: String): Boolean =
+        DriverManager.getConnection(config.catalogDatabaseUrl, config.catalogDatabaseUser, config.catalogDatabasePassword)
+            .use { connection ->
+                connection.prepareStatement(
+                    "SELECT 1 FROM ducklake_schema WHERE lower(schema_name) = lower(?) AND end_snapshot IS NULL",
+                ).use { statement ->
+                    statement.setString(1, schema)
+                    statement.executeQuery().use { it.next() }
+                }
+            }
 
     override fun executeQuery(sql: String): List<List<String?>> {
         val session = currentSession ?: error("connect() was not called")
@@ -166,11 +227,11 @@ class TrinoReplayEngine : ReplayReadEngine {
         // The transpiled Trino SQL (DuckDB-isms translated, time travel mapped, ORDER BY ALL
         // handled) — accepts() already confirmed this is a Run. First resolve the corpus
         // alias→catalog names, then apply the schema-aware MAP access rewrite below:
-        // <alias>.<schema>.<t> → <catalog>.<schema>.<t>; then <alias>.<t> (no further dot) →
-        // <catalog>.main.<t>.
+        // <alias>.<schema>.<t> → <catalog>.<schema>.<t>; <alias>.<t> → <catalog>.main.<t>; under a
+        // `USE` of the lake, <schema>.<t> → <catalog>.<schema>.<t> and <t> → <catalog>.<used schema>.<t>.
         val run = gateFor(sql) as? TrinoCorpusDialect.Run
             ?: error("executeQuery on a non-runnable query: ${gateFor(sql)}")
-        val s = TrinoReplayBindings.rewrite(run.trinoSql, alias, catalog)
+        val s = TrinoReplayBindings.rewrite(run.trinoSql, alias, catalog, lakeDefaultFor(sql, alias))
         var executedSql = s
         val result =
             try {

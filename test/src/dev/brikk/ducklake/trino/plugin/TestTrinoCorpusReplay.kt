@@ -102,11 +102,15 @@ class TestTrinoCorpusReplay {
     private fun replay(files: List<Path>): List<FileResult> =
         files.chunked(CHUNK_SIZE).flatMap { chunk ->
             TrinoReplayEngine().use { engine ->
-                CorpusRunner(corpusRoot, skipList, engine = engine, metadataRewriter = engine.metadataRewriter,
+                val runner = CorpusRunner(corpusRoot, skipList, engine = engine, metadataRewriter = engine.metadataRewriter,
                     setupFormat = ReplaySetupFormat.DUCKLAKE_1_0,
                     mirrorFormatScope = setOf(ReplaySetupFormat.DUCKLAKE_1_0),
                     executionFormatScope = setOf(ReplaySetupFormat.DUCKLAKE_1_0),
-                    oracleSqlBinder = engine.oracleSqlBinder).run(chunk).files
+                    oracleSqlBinder = engine.oracleSqlBinder)
+                chunk.flatMap { file ->
+                    engine.beginFile()
+                    runner.run(listOf(file)).files
+                }
             }
         }
 

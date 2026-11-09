@@ -18,43 +18,35 @@ import dev.brikk.ducklake.corpus.ReplayReadEngine
 import dev.brikk.ducklake.corpus.ReplaySetupFormat
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
 
 class TestTrinoGeometryReplay {
-    @TempDir
-    lateinit var directory: Path
-
     @Test
     fun nestedGeometryPassesGoldenAndActualTrinoMirrorComparison() {
         val root = Path.of(System.getProperty("ducklake.corpus.root", "ducklake/test/sql"))
         TrinoReplayEngine().use { engine ->
             for ((kind, table) in mapOf("list" to "t1", "map" to "t3", "struct" to "t2")) {
-                // The original fixtures USE ducklake, then query bare table names. The adapter's
-                // general bare-name gate cannot distinguish those from oracle-local temp tables.
-                // Explicitly qualify this known lake read in a test-local copy, preserving all
-                // upstream setup and goldens, so this regression proves actual Trino comparison.
-                val source = Files.readString(root.resolve("geo/ducklake_geometry_nested_$kind.test"))
-                val originalQuery = "select * from $table;"
-                val qualifiedQuery = "select * from ducklake.$table;"
-                assertThat(source).contains(originalQuery)
-                val fixture = directory.resolve("$kind.test")
-                Files.writeString(fixture, source.replace(originalQuery, qualifiedQuery))
+                // The upstream fixtures `USE ducklake`, then read the table by its bare name.
+                val fixture = root.resolve("geo/ducklake_geometry_nested_$kind.test")
+                val bareQuery = "select * from $table"
+                assertThat(Files.readString(fixture)).contains("$bareQuery;")
                 var mirrored = false
                 val executed = mutableListOf<String>()
                 val observer = object : ReplayReadEngine by engine {
                     override fun executeQuery(sql: String): List<List<String?>> {
                         val result = engine.executeQuery(sql)
                         executed.add(sql)
-                        if (sql.trim().removeSuffix(";").equals(qualifiedQuery.removeSuffix(";"), ignoreCase = true)) mirrored = true
+                        if (sql.trim().removeSuffix(";").equals(bareQuery, ignoreCase = true)) mirrored = true
                         return result
                     }
                 }
-                val runner = CorpusRunner(directory, emptyMap(), engine = observer, metadataRewriter = engine.metadataRewriter,
+                engine.beginFile()
+                val runner = CorpusRunner(root, emptyMap(), engine = observer, metadataRewriter = engine.metadataRewriter,
                     setupFormat = ReplaySetupFormat.DUCKLAKE_1_0,
                     mirrorFormatScope = setOf(ReplaySetupFormat.DUCKLAKE_1_0),
-                    executionFormatScope = setOf(ReplaySetupFormat.DUCKLAKE_1_0))
+                    executionFormatScope = setOf(ReplaySetupFormat.DUCKLAKE_1_0),
+                    oracleSqlBinder = engine.oracleSqlBinder)
                 val report = runner.run(listOf(fixture))
                 assertThat(report.failures).withFailMessage { report.summary() }.isEmpty()
                 assertThat(report.crashes).withFailMessage { report.summary() }.isEmpty()

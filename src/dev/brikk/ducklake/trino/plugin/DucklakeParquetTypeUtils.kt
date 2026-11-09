@@ -31,12 +31,19 @@ import org.apache.parquet.io.GroupColumnIO
 import org.apache.parquet.io.PrimitiveColumnIO
 import org.apache.parquet.schema.Type.Repetition.OPTIONAL
 import org.apache.parquet.schema.Type.Repetition.REPEATED
+import java.util.Locale
 import java.util.Optional
 
 /**
  * Utility class for converting between Ducklake/Trino types and Parquet Field objects.
  */
 object DucklakeParquetTypeUtils {
+    /**
+     * trino-parquet lowercases every file schema name (`ParquetMetadata`, `Locale.ENGLISH`), while
+     * catalog column names and DuckLake name-map source names keep the case DuckDB recorded.
+     */
+    fun childByName(group: GroupColumnIO, name: String): ColumnIO? = group.getChild(name.lowercase(Locale.ENGLISH))
+
     /**
      * Construct a Parquet Field from a Trino type and Parquet ColumnIO.
      * Recursively handles all nested types (ROW, MAP, ARRAY).
@@ -108,7 +115,7 @@ object DucklakeParquetTypeUtils {
             val fieldName = rowField.name
                     .orElseThrow { IllegalArgumentException("ROW type field must have a name") }
             val childIdentity = identityChildren.getOrNull(index)
-            val childColumnIO = if (childIdentity == null || context == null) columnIO.getChild(fieldName)
+            val childColumnIO = if (childIdentity == null || context == null) childByName(columnIO, fieldName)
                     else context.resolveChild(columnIO, childIdentity)
             val childField = constructField(rowField.type, childColumnIO, childIdentity, context)
             hasAnyField = hasAnyField or childField.isPresent
@@ -201,7 +208,7 @@ object DucklakeParquetTypeUtils {
 
         fun resolveChild(group: GroupColumnIO, child: DucklakeColumn): ColumnIO? {
             sourceNamesByFieldId[child.columnId]?.let { sourceName ->
-                return group.getChild(sourceName)
+                return childByName(group, sourceName)
             }
             if (!hasNameMap) {
                 directChildWithFieldId(group, child.columnId)?.let { return it }
@@ -212,10 +219,10 @@ object DucklakeParquetTypeUtils {
                 }
                 val era = eraById[child.columnId]
                 if (era != null) {
-                    group.getChild(era.columnName)?.let { return it }
+                    childByName(group, era.columnName)?.let { return it }
                 }
                 if (eraColumnsAbsent() || era != null) {
-                    return group.getChild(child.columnName)
+                    return childByName(group, child.columnName)
                 }
                 return null
             }
@@ -223,7 +230,7 @@ object DucklakeParquetTypeUtils {
             // final-1.1 evolution requires authoritative nested stable IDs.
             if (missingField != null) throw TrinoException(NOT_SUPPORTED,
                 "Final-1.1 nested name-map file evolution requires authoritative nested stable IDs")
-            return group.getChild(child.columnName)
+            return childByName(group, child.columnName)
         }
 
         private fun eraColumnsAbsent(): Boolean = eraById.isEmpty()

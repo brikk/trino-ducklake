@@ -233,6 +233,26 @@ deletion queue (DuckLake 1.0) and none for inlined rows.
 - **Removal criterion:** both exist.
 - **Owner:** `test/src/.../TrinoReplayEngine.kt`.
 
+## Corpus `USE` scoping is inferred from oracle SQL
+
+- **Shortcut:** the replay engine seam only sees reads, so `TrinoReplayEngine` watches every
+  oracle statement through the oracle-SQL hook and applies DuckDB's rules with the brikk-sql
+  AST: `USE x` (a schema of the current lake first, else a database with schema `main`),
+  `USE x.s`, `CREATE TEMP TABLE/VIEW` and `DROP`. Under a `USE` of the connected lake, a bare
+  name that is not a CTE or temp relation becomes `<catalog>.<schema>.<t>` when the lake's
+  current snapshot holds that relation (otherwise DuckDB reads it as a file), and `s.t` binds to
+  the lake when the lake holds `s.t`. A mirrored query is paired with its oracle connection by
+  matching the SQL the hook last saw. `TestTrinoCorpusReplay` calls `beginFile` before each file.
+- **Cost:** the hook runs before execution, so a `USE` that fails in the oracle is still
+  applied. Temp relations created another way, and schemas of a non-lake current database, are
+  not known. A `USE` statement brikk-sql cannot parse makes the connection's default unknown,
+  and a bare-name time-travel read of a since-dropped relation is not mirrored; both only lose
+  coverage.
+- **Real fix:** the replay library passes the query's connection and the oracle's resolved
+  default catalog/schema (or the relations a query reads) to the engine.
+- **Removal criterion:** the engine seam carries that information.
+- **Owner:** `test/src/.../TrinoReplayEngine.kt`, `TrinoReplayBindings.kt`.
+
 ## Test-only MAP access rewriting
 
 - **Shortcut:** DuckDB string-key MAP access such as `s.i` is ROW access in Trino.
@@ -245,16 +265,6 @@ deletion queue (DuckLake 1.0) and none for inlined rows.
 - **Removal criterion:** a released transpiler handles these accesses and their value types.
   A global text replacement of dotted names is not a substitute.
 - **Owner:** `test/src/.../TrinoMapAccessRewriter.kt`.
-
-## Test-local geometry fixtures
-
-- **Shortcut:** the three upstream nested-geometry corpus files use bare table names, which the
-  adapter's lake-alias gate excludes, so they pass on goldens alone. `TestTrinoGeometryReplay`
-  runs test-local copies that qualify their lake SELECTs and asserts Trino returned rows.
-- **Cost:** the copies can drift from upstream.
-- **Real fix:** the replay library reports oracle namespace/temporary-table binding.
-- **Removal criterion:** that information exists. Qualifying arbitrary bare names is not a fix.
-- **Owner:** `test/src/.../TestTrinoGeometryReplay.kt`.
 
 ## Test-only PostgreSQL metadata schema binding
 

@@ -94,6 +94,33 @@ class TestDucklakeAddFilesCrossEngine : AbstractDucklakeCrossEngineTest() {
     }
 
     @Test
+    fun duckdbAddedFileWithUpperCaseNamesReadsItsValues() {
+        val outputDir = getIsolatedCatalog().dataDir.parent.resolve("add_files_upper_case_xengine")
+        java.nio.file.Files.createDirectories(outputDir)
+        val parquetPath = outputDir.resolve("upper.parquet").toAbsolutePath()
+        val table = "test_schema.xengine_upper_case_add_files"
+        createDuckdbConnection().use { duckdb ->
+            duckdb.createStatement().use { statement ->
+                statement.execute(
+                        "COPY (SELECT 7 AS \"BLOCK_NUMBER\", TIMESTAMP '2022-10-16 21:53:59' AS \"BLOCK_TIMESTAMP\", " +
+                                "{'DisplayName': 'Alice'} AS \"Payload\") TO '$parquetPath' (FORMAT PARQUET)")
+                statement.execute("CREATE TABLE ducklake_db.$table " +
+                        "(BLOCK_NUMBER INTEGER, BLOCK_TIMESTAMP TIMESTAMP, Payload STRUCT(DisplayName VARCHAR))")
+                statement.execute("CALL ducklake_add_data_files('ducklake_db', 'xengine_upper_case_add_files', " +
+                        "'$parquetPath', schema => 'test_schema')")
+            }
+        }
+        try {
+            assertThat(computeActual("SELECT block_number, block_timestamp, payload.displayname FROM $table")
+                    .materializedRows.single().fields)
+                    .containsExactly(7, java.time.LocalDateTime.parse("2022-10-16T21:53:59"), "Alice")
+        }
+        finally {
+            tryDropTable(table)
+        }
+    }
+
+    @Test
     fun nestedNameMapSurvivesTargetFieldRenames() {
         val outputDir = getIsolatedCatalog().dataDir.parent.resolve("add_files_nested_xengine")
         java.nio.file.Files.createDirectories(outputDir)

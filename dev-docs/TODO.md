@@ -84,8 +84,13 @@ Wrong values, unsafe behaviour, or a supported operation that fails.
   `pos` / legacy `row_id` explicitly, and resolve markers by field ID.
 - [ ] RV-18c/d: DuckDB-written UINT32/UINT64 Parquet has no unsigned decoding (`uint32 -> BIGINT`;
   `uint64 -> DECIMAL(20,0)` expects a decimal annotation). Add fixtures above the signed limit;
-  decode or refuse.
+  decode or refuse. Corpus: `compaction/merge_adjacent_target_size_heuristics.test:64`
+  `SELECT count(*), count(DISTINCT i) FROM t` (oracle `1000 1000`) fails with `Unsupported Trino
+  column type (decimal(20,0)) for Parquet column ([i] required int64 i (INTEGER(64,false)))`.
 - [ ] RV-18f: Parquet INTERVAL bytes reach VARCHAR undecoded. Decode months/days/millis or refuse.
+  Silently wrong in the corpus: `add_files/add_files_legacy_parquet_types.test:86`
+  `SELECT iv FROM intervals ORDER BY iv` gives oracle `[1 day], [3 months]`, Trino two
+  12-byte zero strings.
 - [ ] RV-G08: 1.0 inline reads and `flush_inlined_data` still parse raw JDBC values, which is
   backend-sensitive (typed CAST strings); only 1.1 catalogs use the decoded API
   (`DucklakeInlinedRowCodec`). Move both to decoded catalog values.
@@ -93,6 +98,15 @@ Wrong values, unsafe behaviour, or a supported operation that fails.
   (`DucklakeInlinedValueConverter`). Convert to Trino's native values.
 - [ ] RV-18j: ALTER allows integer `-> REAL/DOUBLE`, but old integer files have no reader
   coercion. Add one or disallow the promotion.
+- [ ] Files written before a DuckDB `ALTER ... TYPE` to HUGEINT or TIMESTAMP cannot be read:
+  trino-parquet has no reader from the old physical type to the promoted Trino type and the
+  scan fails with `Unsupported Trino column type (decimal(38,0)) for Parquet column ([c] optional
+  int32 c (INTEGER(32,true)))` (also `int64 INTEGER(64,true)` and `double`), or `(timestamp(6))`
+  for `int32 c (DATE)`. Corpus: `partitioning/bucket_pruning_type_promotion.test:34` `SELECT k
+  FROM h WHERE c = 5` after `ALTER TABLE h ALTER c TYPE HUGEINT` (oracle `1`), and `:39, :48,
+  :54, :114, :141, :172, :232`; `partitioning/bucket_pruning_promoted_column.test:68, :74, :79,
+  :84, :90` (`SELECT c, k FROM d` after DATE -> TIMESTAMP, oracle `2020-01-05 00:00:00 1`).
+  Add reader coercions for DuckDB's allowed promotions, as for RV-18j.
 - [ ] RV-18k: `TIMESTAMP -> TIMESTAMPTZ` ALTER accepts any precision; `TIMESTAMP(9)` is truncated
   to microseconds. Allow only lossless precisions.
 - [ ] RV-19a: unsigned range checks cover top-level columns only; `STRUCT(u UTINYINT)` exposed as
@@ -139,6 +153,9 @@ Wrong values, unsafe behaviour, or a supported operation that fails.
 
 ### Risks to reproduce before fixing
 
+- [ ] trino-parquet lowercases file schema names, so a Parquet file with two columns that differ
+  only in case (`A`, `a`) resolves both catalog names to one child. Reproduce with a DuckDB
+  `add_files` of such a file and refuse ambiguous names instead of binding one.
 - [ ] RV-X01: change feeds check SELECT only; row filters and column masks are neither enforced
   nor refused. Reproduce with a restricted user, then refuse or enforce.
 - [ ] RV-X02: worker reads open their own sessions and `rewrite_data_files` selects candidates
@@ -303,14 +320,18 @@ APIs or fixes needed in `ducklake-catalog` before the connector can close an ite
   nodes, and bounded view/tag/comment/setting APIs.
 - [ ] E-N3, E-N8: catalog-owned comment re-checks (primary-key name protection; redundant
   schema-version filter).
+- [ ] Inlined rows of a table with an added GEOMETRY column cannot be read on a 1.0 lake: the
+  0.17.0 default validation (`Final11InlineDefaults` -> `Final11InlineTypes`) has no `geometry`
+  scalar and throws `Final-1.1 inline type geometry is not qualified`. Corpus:
+  `data_inlining/data_inlining_alter_geometry.test:42` `SELECT i, v, g FROM t1 ORDER BY i`
+  (oracle `1 hello NULL`, ...), and `:57, :96`. Needs the catalog to qualify GEOMETRY defaults.
 
 ## Upstream (DuckDB/DuckLake) waits
 
-- [ ] Corpus directories `merge` and `partitioning` are red on the DuckDB native-oracle side,
-  not in the connector: `merge` has no accepted alias-qualified lake reads and fails minimum
-  mirror coverage; `partitioning` has implicit newer-format fixtures (epoch transforms, NULL
-  type) the fixed DuckLake 1.0 oracle rejects. Both reproduce on `d92f048`. Do not skip-list
-  them; recheck when upstream fixes land.
+- [ ] Corpus directory `partitioning` has oracle failures from implicit newer-format fixtures
+  (epoch transforms, NULL type) the fixed DuckLake 1.0 oracle rejects. Do not skip-list it;
+  recheck when upstream fixes land. Its new mirror failures are listed under connector gaps
+  (promoted-column reads) and test hygiene (`'nan'` casts).
 - [ ] DuckLake 1.1 writes stay disabled, including development-format writes. Before any 1.1
   write admission, qualify schema migration, hierarchy, exactness, row-group metadata, ABI/wire,
   rollback and mixed versions. A version string or parsed signature is not proof.
@@ -326,6 +347,26 @@ APIs or fixes needed in `ducklake-catalog` before the connector can close an ite
 
 ## Test, CI and release hygiene
 
+- [ ] Corpus `merge` is green with 4 verified mirrors; its remaining open reads are DuckDB
+  FROM-first queries (`FROM Stock ORDER BY item_id` in `merge_update_insert.test`, `FROM
+  my_timeseries` in `merge_partition.test`), which `TrinoCorpusDialect` refuses as "not a read"
+  although brikk-sql transpiles them to `SELECT * FROM ...`. Admit FROM-first reads in the gate.
+  The other merge refusals are correct: `MERGE ... RETURNING` is a write, `GLOB` has no Trino
+  function, and `meta.ducklake_file_partition_value` is the oracle's local metadata catalog.
+- [ ] Mirror failures from brikk-sql translations that certify but Trino rejects; report them
+  upstream and keep them failing (no skip-list entries):
+  - a HAVING reference to a select alias: `compaction/merge_adjacent_after_add_files_schema_evolution.test:114`
+    and `:143`, `... GROUP BY id HAVING c > 1` with `COUNT(*) c` (oracle `0`), Trino `Column 'c'
+    cannot be resolved`;
+  - DuckDB VARIANT field access, which the translation keeps as ROW dereference while the
+    connector exposes VARIANT as VARCHAR: `types/variant.test:52` `SELECT COUNT(*) FROM
+    variant_tbl WHERE v.c=84` (oracle `1`), Trino `Expression v is not of type ROW`; also
+    `stats/variant_float_and_nested_shredded_stats.test:43, :49, :97, :103`,
+    `stats/variant_shredded_stats.test:181, :203, :229`, `stats/variant_stats_quote_rewrite.test:39`;
+  - lowercase NaN literals: `partitioning/bucket_pruning_nan.test:34` `SELECT k FROM f WHERE d =
+    'nan'::REAL ORDER BY k` (oracle `1`), Trino `Cannot cast 'nan' to REAL`; also `:40, :46, :52`
+    and `:185, :191` (DOUBLE).
+
 - [ ] Repair the opt-in qualification fixtures' format selection. 40 tests in the
   `-Pr07CatalogCandidate` suite fail on the current fixtures (measured in WP9); every failure
   is a catalog format-admission refusal caused by the fixture, e.g. legacy
@@ -337,8 +378,8 @@ APIs or fixes needed in `ducklake-catalog` before the connector can close an ite
   is a visible unsupported-directive file-skip, even with `DUCKLAKE_CI=1`.
 - [ ] Resolve the existing `types` corpus oracle/setup failures: `all_types.test:32,42,49`
   cannot convert a JDBC TIME cell, and `null_type.test` uses NULL types refused by the fixed
-  DuckLake 1.0 oracle, with cascading setup failures. The follow-up comparison on `e374bae`
-  and its remediation both had 66 record failures and zero Trino mirror failures; do not
+  DuckLake 1.0 oracle, with cascading setup failures (66 record failures before `USE` scoping;
+  68 after it, the two new ones being the VARIANT mirror failures listed above). Do not
   skip-list these files to make the directory green.
 - [ ] RV-28a-c: require meaningful mirror coverage per selected corpus directory (the test asserts
   `totalPassed > 50` and one mirror pass overall); return the dialect gate's refusal reason

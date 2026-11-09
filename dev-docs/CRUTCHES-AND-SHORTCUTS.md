@@ -457,3 +457,21 @@ deliberately narrower than the stats allow:
 **Removal criterion:** the catalog rewrites or clears bounds on promotions whose text does not
 reread exactly (as upstream does), and exposes per-file stats type provenance; the range API
 accepts exclusive endpoints and null-admitting predicates.
+
+## Unbounded maintenance catalog reads
+
+ducklake-catalog 0.17.0 has keyset pages for data/delete file references but none for the
+deletion queue (DuckLake 1.0) and none for inlined rows, so two procedures still load a catalog
+result whole. The APIs that would remove these are in TODO.md under "Writes and maintenance".
+
+- `remove_orphan_files` loads every referenced path via `listAllReferencedFiles()` and holds it
+  as a set. Our own side is bounded: dataset-directory ownership is an O(path depth) set probe,
+  and one call lists until it has `MAX_ORPHANS_PER_CALL` (10,000) orphans, deletes those and
+  asks for a repeat. Removal criterion: the queue page exists; then page all three reference
+  kinds under `ducklake.cleanup.max-reference-files`, as `cleanup_old_files` does.
+- `flush_inlined_data` loads each inlined schema version's rows with `getInlinedChangesBetween`.
+  Before loading it refuses (`GENERIC_USER_ERROR`, nothing written) when the rows live at the
+  read snapshot exceed `ducklake.read.max-physical-rows`. Rows deleted but never flushed are
+  loaded too and are not counted, because the catalog cannot count them. Inlined data is not
+  bounded by construction: every DuckDB insert under `data_inlining_row_limit` adds rows until
+  someone flushes. Removal criterion: a paged inlined change read streamed into the writer.

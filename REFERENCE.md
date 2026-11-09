@@ -244,7 +244,7 @@ Call `CALL <catalog>.system.<procedure>(...)`. Named arguments make scope explic
 | `add_files` | `schema_name`, `table_name`, `files`, optional `allow_missing=false`, `ignore_extra_columns=false`, `hive_partitioning=false`, `file_format='parquet'` |
 | `flush_inlined_data` | Optional `schema_name`, `table_name`; both selects one table, schema alone selects that schema, neither selects the catalog |
 | `rewrite_data_files` | `schema_name`, `table_name`, optional `file_size_threshold`, `target_file_size` (default `512MB`), `reclaim_sources_immediately=false` |
-| `remove_orphan_files` | Optional schema/table scope, `retention_threshold='7d'`, `dry_run=false` |
+| `remove_orphan_files` | Optional schema/table scope, `retention_threshold='7d'`, `dry_run=false`; at most 10,000 files per call, repeat to continue |
 | `expire_snapshots` | Catalog-wide; age-based `retention_threshold='7d'` or explicit `snapshot_ids`, plus `dry_run=false` |
 | `cleanup_old_files` | Catalog-wide; `retention_threshold='7d'`, `dry_run=false`; one bounded batch per call |
 
@@ -257,7 +257,9 @@ outcomes rather than returning structured result tables.
   over supplied file paths. Do not assume per-table access checks are enforced by
   the procedure's EXECUTE permission.
 - Flush inlined rows before DELETE/UPDATE/MERGE. Explicit flush of an unsupported
-  partitioned table errors; wider flush scopes skip partitioned tables.
+  partitioned table errors; wider flush scopes skip partitioned tables. A table whose
+  live inlined rows exceed `ducklake.read.max-physical-rows` is refused before anything
+  is written.
 - Imported files are registered in place, not copied. Hive partition imports support
   identity partitions; transformed hive partition imports are rejected. Missing
   nested fields and physical type mismatches have additional limits.

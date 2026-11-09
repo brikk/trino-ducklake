@@ -13,7 +13,6 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
-import com.google.common.collect.ImmutableList
 import com.google.inject.Inject
 import com.google.inject.Provider
 import dev.brikk.ducklake.catalog.DucklakeCatalog
@@ -21,9 +20,10 @@ import dev.brikk.ducklake.catalog.DucklakeColumn
 import dev.brikk.ducklake.catalog.DucklakeFileColumnStats
 import dev.brikk.ducklake.catalog.DucklakePartitionSpec
 import dev.brikk.ducklake.catalog.DucklakePartitionTransform
-import dev.brikk.ducklake.catalog.DucklakeSchema
-import dev.brikk.ducklake.catalog.DucklakeTable
-import dev.brikk.ducklake.catalog.TransactionConflictException
+import dev.brikk.ducklake.trino.plugin.DucklakeProcedureSupport.requireArg
+import dev.brikk.ducklake.trino.plugin.DucklakeProcedureSupport.resolveTable
+import dev.brikk.ducklake.trino.plugin.DucklakeProcedureSupport.systemProcedure
+import dev.brikk.ducklake.trino.plugin.DucklakeProcedureSupport.translatingConflicts
 import io.airlift.slice.Slices.utf8Slice
 import io.trino.filesystem.Location
 import io.trino.filesystem.TrinoFileSystem
@@ -40,9 +40,6 @@ import io.trino.plugin.hive.parquet.ParquetPageSourceFactory.createDataSource
 import io.trino.plugin.hive.parquet.ParquetReaderConfig
 import io.trino.spi.StandardErrorCode.INVALID_PROCEDURE_ARGUMENT
 import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
-import io.trino.spi.StandardErrorCode.SCHEMA_NOT_FOUND
-import io.trino.spi.StandardErrorCode.TABLE_NOT_FOUND
-import io.trino.spi.StandardErrorCode.TRANSACTION_CONFLICT
 import io.trino.spi.TrinoException
 import io.trino.spi.connector.ConnectorSession
 import io.trino.spi.predicate.TupleDomain
@@ -51,10 +48,6 @@ import io.trino.spi.type.ArrayType
 import io.trino.spi.type.BooleanType.BOOLEAN
 import io.trino.spi.type.VarcharType.VARCHAR
 import java.io.IOException
-import java.lang.invoke.MethodHandle
-import java.lang.invoke.MethodHandles
-import java.lang.invoke.MethodType
-import java.sql.SQLException
 import java.util.Optional
 import java.util.OptionalLong
 
@@ -89,10 +82,9 @@ class DucklakeAddFilesProcedure @Inject constructor(
     private val parquetReaderOptions: ParquetReaderOptions = parquetReaderConfig.toParquetReaderOptions()
 
     override fun get(): Procedure =
-        Procedure(
-                "system",
+        systemProcedure(
                 "add_files",
-                ImmutableList.of(
+                listOf(
                         Procedure.Argument("SCHEMA_NAME", VARCHAR),
                         Procedure.Argument("TABLE_NAME", VARCHAR),
                         Procedure.Argument("FILES", ArrayType(VARCHAR)),
@@ -100,8 +92,15 @@ class DucklakeAddFilesProcedure @Inject constructor(
                         Procedure.Argument("IGNORE_EXTRA_COLUMNS", BOOLEAN, false, false),
                         Procedure.Argument("HIVE_PARTITIONING", BOOLEAN, false, false),
                         Procedure.Argument("FILE_FORMAT", VARCHAR, false, utf8Slice("parquet"))),
-                ADD_FILES.bindTo(this),
-                true)
+                this,
+                "addFiles",
+                String::class.java,
+                String::class.java,
+                List::class.java,
+                java.lang.Boolean.TYPE,
+                java.lang.Boolean.TYPE,
+                java.lang.Boolean.TYPE,
+                String::class.java)
 
     @Suppress("unused") // invoked via MethodHandle
     fun addFiles(
@@ -114,12 +113,8 @@ class DucklakeAddFilesProcedure @Inject constructor(
             hivePartitioning: Boolean,
             fileFormat: String?,
     ) {
-        if (schemaName.isNullOrEmpty()) {
-            throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "schema_name is required")
-        }
-        if (tableName.isNullOrEmpty()) {
-            throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "table_name is required")
-        }
+        val schemaArg = requireArg(schemaName, "schema_name")
+        val tableArg = requireArg(tableName, "table_name")
         if (fileList.isNullOrEmpty()) {
             throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "files must be a non-empty array")
         }
@@ -131,12 +126,7 @@ class DucklakeAddFilesProcedure @Inject constructor(
 
         val filePaths = extractStringArray(fileList)
         val snapshotId = catalog.currentSnapshotId
-        if (catalog.getSchema(schemaName, snapshotId) == null) {
-            throw TrinoException(SCHEMA_NOT_FOUND, "Schema not found: $schemaName")
-        }
-        val tableInfo: DucklakeTable = catalog.getTable(schemaName, tableName, snapshotId)
-            ?: throw TrinoException(TABLE_NOT_FOUND, "Table not found: $schemaName.$tableName")
-        val tableId = tableInfo.tableId
+        val tableId = resolveTable(catalog, schemaArg, tableArg, snapshotId).second.tableId
 
         // getTableColumns returns top-level columns with type strings already resolved
         // ("struct(j integer, i integer)" rather than the catalog row's literal "struct"),
@@ -154,7 +144,7 @@ class DucklakeAddFilesProcedure @Inject constructor(
                     throw TrinoException(NOT_SUPPORTED, String.format(
                             "add_files on a partitioned table currently supports identity partition transforms only; "
                                     + "table \"%s.%s\" has transform %s",
-                            schemaName, tableName, field.transform))
+                            schemaArg, tableArg, field.transform))
                 }
             }
         }
@@ -175,8 +165,8 @@ class DucklakeAddFilesProcedure @Inject constructor(
             fragments.add(buildFragment(
                     fileSystem,
                     filePath,
-                    schemaName,
-                    tableName,
+                    schemaArg,
+                    tableArg,
                     allColumns,
                     topLevelColumns,
                     activePartitionSpec,
@@ -185,12 +175,7 @@ class DucklakeAddFilesProcedure @Inject constructor(
                     hivePartitioning))
         }
 
-        try {
-            catalog.commitAddFiles(tableId, fragments)
-        }
-        catch (e: TransactionConflictException) {
-            throw TrinoException(TRANSACTION_CONFLICT, e.message, e)
-        }
+        translatingConflicts { catalog.commitAddFiles(tableId, fragments) }
     }
 
     private fun buildFragment(
@@ -232,14 +217,10 @@ class DucklakeAddFilesProcedure @Inject constructor(
                     parquetReaderOptions,
                     memoryContext,
                     fileFormatDataSourceStats)
-            // Read the file tail exactly once and reuse it for both the footer_size probe and
-            // MetadataReader.readFooter. readFooter reads min(fileSize, footerReadSize) from the
-            // end and derives the metadata length from the same post-script we need; previously
-            // readFooterLengthFromPostScript then issued a *second*, uncached readTail(8) — an
-            // extra object-store round trip per file in the batch. We pre-read the tail at the
-            // size readFooter would use, parse footer_size from its post-script, and hand the
-            // bytes to readFooter via the single-shot prefetch wrapper (which falls through to
-            // the delegate if the footer turns out larger than this read, exactly as before).
+            // Read the tail once at the size MetadataReader.readFooter would use, parse
+            // footer_size from its post-script, and hand the bytes to readFooter through the
+            // single-shot prefetch wrapper (which falls through to the delegate if the footer is
+            // larger than this read), saving an object-store round trip per file.
             val tailReadSize = minOf(dataSource.estimatedSize, parquetReaderOptions.footerReadSize.toBytes())
             var footerSize = 0L
             var footerSource: ParquetDataSource = dataSource
@@ -392,29 +373,6 @@ class DucklakeAddFilesProcedure @Inject constructor(
     companion object {
         private const val FORMAT_PARQUET: String = "parquet"
 
-        private val ADD_FILES: MethodHandle
-
-        init {
-            try {
-                ADD_FILES = MethodHandles.lookup().findVirtual(
-                        DucklakeAddFilesProcedure::class.java,
-                        "addFiles",
-                        MethodType.methodType(
-                                Void.TYPE,
-                                ConnectorSession::class.java,
-                                String::class.java,
-                                String::class.java,
-                                List::class.java,
-                                java.lang.Boolean.TYPE,
-                                java.lang.Boolean.TYPE,
-                                java.lang.Boolean.TYPE,
-                                String::class.java))
-            }
-            catch (e: ReflectiveOperationException) {
-                throw AssertionError(e)
-            }
-        }
-
         private fun aggregateRecordCount(thriftMetadata: org.apache.parquet.format.FileMetaData): Long =
             thriftMetadata.getNum_rows()
 
@@ -438,8 +396,8 @@ class DucklakeAddFilesProcedure @Inject constructor(
          * is its last 8 bytes.
          *
          * Best-effort: any short slice, non-magic trailer, or parse error returns 0, in
-         * which case the read path falls back to its default blind tail read — i.e.
-         * the previous behavior. Correctness is unaffected.
+         * which case the read path falls back to its default blind tail read. Correctness is
+         * unaffected.
          */
         private fun footerLengthFromPostScript(tail: io.airlift.slice.Slice): Long {
             try {

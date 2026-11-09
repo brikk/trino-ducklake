@@ -13,7 +13,6 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
-import com.google.common.collect.ImmutableList
 import com.google.inject.Inject
 import com.google.inject.Provider
 import dev.brikk.ducklake.catalog.DucklakeCatalog
@@ -22,12 +21,14 @@ import dev.brikk.ducklake.catalog.DucklakeFileKind
 import dev.brikk.ducklake.catalog.DucklakeScheduledFileEntry
 import dev.brikk.ducklake.catalog.DucklakeTableFilePathRef
 import dev.brikk.ducklake.trino.plugin.DucklakeFilePathIdentity.Key
+import dev.brikk.ducklake.trino.plugin.DucklakeProcedureSupport.DEFAULT_RETENTION
+import dev.brikk.ducklake.trino.plugin.DucklakeProcedureSupport.parseRetention
+import dev.brikk.ducklake.trino.plugin.DucklakeProcedureSupport.systemProcedure
 import io.airlift.log.Logger
 import io.airlift.slice.Slices.utf8Slice
 import io.airlift.units.Duration
 import io.trino.filesystem.Location
 import io.trino.filesystem.TrinoFileSystem
-import io.trino.spi.StandardErrorCode.INVALID_PROCEDURE_ARGUMENT
 import io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR
 import io.trino.spi.StandardErrorCode.GENERIC_USER_ERROR
 import io.trino.spi.TrinoException
@@ -36,9 +37,6 @@ import io.trino.spi.procedure.Procedure
 import io.trino.spi.type.BooleanType.BOOLEAN
 import io.trino.spi.type.VarcharType.VARCHAR
 import java.io.IOException
-import java.lang.invoke.MethodHandle
-import java.lang.invoke.MethodHandles
-import java.lang.invoke.MethodType
 import java.time.Instant
 import java.util.TreeMap
 
@@ -76,14 +74,15 @@ class DucklakeCleanupOldFilesProcedure @Inject constructor(
     }
 
     override fun get(): Procedure =
-        Procedure(
-                "system",
+        systemProcedure(
                 "cleanup_old_files",
-                ImmutableList.of(
-                        Procedure.Argument("RETENTION_THRESHOLD", VARCHAR, false, utf8Slice("7d")),
+                listOf(
+                        Procedure.Argument("RETENTION_THRESHOLD", VARCHAR, false, utf8Slice(DEFAULT_RETENTION)),
                         Procedure.Argument("DRY_RUN", BOOLEAN, false, false)),
-                CLEANUP_OLD_FILES.bindTo(this),
-                true)
+                this,
+                "cleanupOldFiles",
+                String::class.java,
+                java.lang.Boolean.TYPE)
 
     @Suppress("unused") // invoked via MethodHandle
     fun cleanupOldFiles(
@@ -91,7 +90,8 @@ class DucklakeCleanupOldFilesProcedure @Inject constructor(
             retentionThreshold: String?,
             dryRun: Boolean,
     ) {
-        val retention = parseRetention(retentionThreshold)
+        val retention = parseRetention(retentionThreshold, minRetention, "ducklake.maintenance.min-retention",
+                "refusing to delete recently-scheduled files")
         val cutoff: Instant = Instant.now().minusMillis(retention.toMillis())
         val fileSystem = fileSystemFactory.create(session)
         val plan = try {
@@ -229,32 +229,7 @@ class DucklakeCleanupOldFilesProcedure @Inject constructor(
         val prefix: Key = key.directoryPrefix()
     }
 
-    private fun parseRetention(value: String?): Duration {
-        val raw = if (value.isNullOrBlank()) "7d" else value
-        val retention = try {
-            Duration.valueOf(raw)
-        }
-        catch (e: IllegalArgumentException) {
-            throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "Invalid retention_threshold '$raw': ${e.message}", e)
-        }
-        if (retention.compareTo(minRetention) < 0) {
-            throw TrinoException(INVALID_PROCEDURE_ARGUMENT,
-                    "retention_threshold $retention is below the minimum $minRetention "
-                            + "(set by ducklake.maintenance.min-retention); refusing to delete recently-scheduled files")
-        }
-        return retention
-    }
-
     companion object {
         private val log: Logger = Logger.get(DucklakeCleanupOldFilesProcedure::class.java)
-
-        private val CLEANUP_OLD_FILES: MethodHandle = MethodHandles.lookup().findVirtual(
-                DucklakeCleanupOldFilesProcedure::class.java,
-                "cleanupOldFiles",
-                MethodType.methodType(
-                        Void.TYPE,
-                        ConnectorSession::class.java,
-                        String::class.java,
-                        java.lang.Boolean.TYPE))
     }
 }

@@ -83,6 +83,21 @@ port, feature and release history is not an instruction to redo shipped work.
   the 483 SPI boundary. Current procedures log outcomes.
 - [ ] Qualify consistent missing-file cleanup versus real filesystem failures across
   backends; do not swallow errors under a generic not-found assumption.
+- [ ] Catalog library: page the deletion queue's path references on `DucklakeCatalog` for
+  DuckLake 1.0 catalogs, e.g. `listScheduledReferencePage(after: DucklakeScheduledPathCursor?,
+  limit: Int): List<DucklakeScheduledPathCursor>`, keyset-ordered by (data_file_id, exact path
+  bytes, path_is_relative), `limit` in 1..`DucklakeCleanupLimits.MAX_BATCH_SIZE`, honoring
+  `readSession`, with no age filter. This is `DucklakeHierarchyReader.listScheduledReferences`,
+  which 0.17.0 offers only to final-1.1 read sessions. With it, `remove_orphan_files` replaces
+  `listAllReferencedFiles()` with `listRetainedFileReferencePage(DATA|DELETE)` plus this page
+  under `ducklake.cleanup.max-reference-files` (RV-25g). Until then it materializes the whole
+  referenced set; see CRUTCHES "Unbounded maintenance catalog reads".
+- [ ] Catalog library: give `flush_inlined_data` a keyset-paged inlined change read, e.g.
+  `getInlinedChangesPage(tableId, schemaVersion, endSnapshot, afterRowId: Long?, limit,
+  columnIds)` returning the rows of `getInlinedChangesBetween(…, 0, endSnapshot, …)` in row-id
+  order, so the procedure streams rows into the Parquet writer instead of loading a schema
+  version at once. An exact count of those rows (ended rows included) would at least let the
+  up-front budget cover them; `countInlinedRows` counts only live rows.
 - [ ] Audit only remaining metadata namespaces: Trino view tags/dialect, snapshot
   `changes_made`, delete formats and connector options. Do not invent conflict vocabulary.
 

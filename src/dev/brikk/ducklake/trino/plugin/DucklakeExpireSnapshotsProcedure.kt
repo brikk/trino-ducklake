@@ -13,17 +13,18 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
-import com.google.common.collect.ImmutableList
 import com.google.inject.Inject
 import com.google.inject.Provider
 import dev.brikk.ducklake.catalog.DucklakeCatalog
 import dev.brikk.ducklake.catalog.ExpireSnapshotsResult
-import dev.brikk.ducklake.catalog.TransactionConflictException
+import dev.brikk.ducklake.trino.plugin.DucklakeProcedureSupport.DEFAULT_RETENTION
+import dev.brikk.ducklake.trino.plugin.DucklakeProcedureSupport.parseRetention
+import dev.brikk.ducklake.trino.plugin.DucklakeProcedureSupport.systemProcedure
+import dev.brikk.ducklake.trino.plugin.DucklakeProcedureSupport.translatingConflicts
 import io.airlift.log.Logger
 import io.airlift.slice.Slices.utf8Slice
 import io.airlift.units.Duration
 import io.trino.spi.StandardErrorCode.INVALID_PROCEDURE_ARGUMENT
-import io.trino.spi.StandardErrorCode.TRANSACTION_CONFLICT
 import io.trino.spi.TrinoException
 import io.trino.spi.connector.ConnectorSession
 import io.trino.spi.procedure.Procedure
@@ -31,9 +32,6 @@ import io.trino.spi.type.ArrayType
 import io.trino.spi.type.BigintType.BIGINT
 import io.trino.spi.type.BooleanType.BOOLEAN
 import io.trino.spi.type.VarcharType.VARCHAR
-import java.lang.invoke.MethodHandle
-import java.lang.invoke.MethodHandles
-import java.lang.invoke.MethodType
 import java.time.Instant
 
 /**
@@ -64,15 +62,17 @@ class DucklakeExpireSnapshotsProcedure @Inject constructor(
     private val minRetention: Duration = config.getMaintenanceMinRetention()
 
     override fun get(): Procedure =
-        Procedure(
-                "system",
+        systemProcedure(
                 "expire_snapshots",
-                ImmutableList.of(
-                        Procedure.Argument("RETENTION_THRESHOLD", VARCHAR, false, utf8Slice("7d")),
+                listOf(
+                        Procedure.Argument("RETENTION_THRESHOLD", VARCHAR, false, utf8Slice(DEFAULT_RETENTION)),
                         Procedure.Argument("SNAPSHOT_IDS", ArrayType(BIGINT), false, null),
                         Procedure.Argument("DRY_RUN", BOOLEAN, false, false)),
-                EXPIRE_SNAPSHOTS.bindTo(this),
-                true)
+                this,
+                "expireSnapshots",
+                String::class.java,
+                List::class.java,
+                java.lang.Boolean.TYPE)
 
     @Suppress("unused") // invoked via MethodHandle
     fun expireSnapshots(
@@ -98,7 +98,9 @@ class DucklakeExpireSnapshotsProcedure @Inject constructor(
             catalog.listExpirableSnapshots(null, explicit.toSet())
         }
         else {
-            val cutoff: Instant = Instant.now().minusMillis(parseRetention(retentionThreshold).toMillis())
+            val retention = parseRetention(retentionThreshold, minRetention, "ducklake.maintenance.min-retention",
+                    "refusing to expire recent snapshots. Pass an explicit snapshot_ids array to override.")
+            val cutoff: Instant = Instant.now().minusMillis(retention.toMillis())
             catalog.listExpirableSnapshots(cutoff, null)
         }
 
@@ -110,45 +112,13 @@ class DucklakeExpireSnapshotsProcedure @Inject constructor(
             log.info("expire_snapshots (dry_run): %d snapshot(s) would be expired: %s", expirable.size, expirable)
             return
         }
-        try {
-            val result: ExpireSnapshotsResult = catalog.expireSnapshots(expirable.toSet())
-            log.info("expire_snapshots: expired %d snapshot(s); scheduled %d file(s) for deletion "
-                    + "(run cleanup_old_files to reclaim the space)",
-                    result.expiredSnapshotCount, result.scheduledFileCount)
-        }
-        catch (e: TransactionConflictException) {
-            throw TrinoException(TRANSACTION_CONFLICT, e.message, e)
-        }
-    }
-
-    private fun parseRetention(value: String?): Duration {
-        val raw = if (value.isNullOrBlank()) "7d" else value
-        val retention = try {
-            Duration.valueOf(raw)
-        }
-        catch (e: IllegalArgumentException) {
-            throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "Invalid retention_threshold '$raw': ${e.message}", e)
-        }
-        if (retention.compareTo(minRetention) < 0) {
-            throw TrinoException(INVALID_PROCEDURE_ARGUMENT,
-                    "retention_threshold $retention is below the minimum $minRetention "
-                            + "(set by ducklake.maintenance.min-retention); refusing to expire recent snapshots. "
-                            + "Pass an explicit snapshot_ids array to override.")
-        }
-        return retention
+        val result: ExpireSnapshotsResult = translatingConflicts { catalog.expireSnapshots(expirable.toSet()) }
+        log.info("expire_snapshots: expired %d snapshot(s); scheduled %d file(s) for deletion "
+                + "(run cleanup_old_files to reclaim the space)",
+                result.expiredSnapshotCount, result.scheduledFileCount)
     }
 
     companion object {
         private val log: Logger = Logger.get(DucklakeExpireSnapshotsProcedure::class.java)
-
-        private val EXPIRE_SNAPSHOTS: MethodHandle = MethodHandles.lookup().findVirtual(
-                DucklakeExpireSnapshotsProcedure::class.java,
-                "expireSnapshots",
-                MethodType.methodType(
-                        Void.TYPE,
-                        ConnectorSession::class.java,
-                        String::class.java,
-                        List::class.java,
-                        java.lang.Boolean.TYPE))
     }
 }

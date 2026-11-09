@@ -424,7 +424,7 @@ class DucklakePageSink(
 
         val partitionId = partitioner?.getPartitionId()
         return ParquetFileWriter(
-                parquetWriter, outputStream, relativePath, partitionValues, partitionId,
+                parquetWriter, outputStream, fileSystem, filePath, relativePath, partitionValues, partitionId,
                 handle.columns, handle.allCatalogColumns, messageType)
     }
 

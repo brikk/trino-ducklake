@@ -13,7 +13,15 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
+import dev.brikk.ducklake.catalog.JdbcDucklakeCatalog
+import io.trino.plugin.base.metrics.FileFormatDataSourceStats
+import io.trino.plugin.hive.parquet.ParquetReaderConfig
+import io.trino.spi.NodeVersion
+import io.trino.spi.StandardErrorCode.GENERIC_USER_ERROR
 import io.trino.spi.StandardErrorCode.TABLE_NOT_FOUND
+import io.trino.spi.security.ConnectorIdentity
+import io.trino.testing.connector.TestingConnectorSession.SESSION
+import io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER
 import io.trino.testing.assertions.TrinoExceptionAssert.assertTrinoExceptionThrownBy
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
@@ -400,6 +408,37 @@ class TestDucklakeFlushInlinedData : AbstractDucklakeCrossEngineTest() {
         finally {
             tryDropTable("test_schema.$a")
             tryDropTable("test_schema.$b")
+        }
+    }
+
+    @Test
+    fun flushRefusesBeforeLoadingWhenLiveInlinedRowsExceedTheBudget() {
+        val table = "test_schema.flush_budget"
+        val bare = "flush_budget"
+        try {
+            computeActual("CREATE TABLE $table (id INTEGER)")
+            writeInlinedRows(bare, "(1)", "(2)", "(3)")
+            val isolated = getIsolatedCatalog()
+            val config = DucklakeConfig()
+                    .setCatalogDatabaseUrl(isolated.jdbcUrl)
+                    .setCatalogDatabaseUser(isolated.user)
+                    .setCatalogDatabasePassword(isolated.password)
+                    .setReadMaxRows(2)
+            JdbcDucklakeCatalog(config.toCatalogConfig()).use { catalog ->
+                val noStorage = object : DucklakeFileSystemFactory {
+                    override fun create(identity: ConnectorIdentity) = throw AssertionError("nothing may be written")
+                }
+                val procedure = DucklakeFlushInlinedDataProcedure(catalog, noStorage,
+                        DucklakeTypeConverter(TESTING_TYPE_MANAGER), DucklakePathResolver(catalog, config),
+                        ParquetReaderConfig(), FileFormatDataSourceStats(), NodeVersion("test"), config)
+                assertTrinoExceptionThrownBy { procedure.flushInlinedData(SESSION, "test_schema", bare) }
+                        .hasErrorCode(GENERIC_USER_ERROR)
+                        .hasMessageContaining("3 live inlined rows")
+            }
+            assertRowsStayedInlined(bare, 3L)
+        }
+        finally {
+            tryDropTable(table)
         }
     }
 

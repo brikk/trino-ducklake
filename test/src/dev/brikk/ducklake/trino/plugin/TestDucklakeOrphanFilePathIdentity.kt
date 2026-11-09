@@ -186,6 +186,42 @@ class TestDucklakeOrphanFilePathIdentity {
         assertThat(orphan).exists()
     }
 
+    @Test
+    fun referencedDirectoryProtectsItsMembersButNotSimilarlyNamedSiblings() {
+        val tableId = catalog.getTable("test_schema", "t", catalog.currentSnapshotId)!!.tableId
+        catalog.commitInsert(tableId, listOf(DucklakeWriteFragment("local:///warehouse/ducklake-ds.lance", false,
+                "parquet", 0L, 0L, 1L, emptyList(), emptyMap(), null, null)))
+        Files.createDirectories(warehouse.resolve("ducklake-ds.lance/data"))
+        val member = plantOrphan("ducklake-ds.lance/data/part-0.lance")
+        Files.createDirectories(warehouse.resolve("ducklake-ds.lance2"))
+        val sibling = plantOrphan("ducklake-ds.lance2/ducklake-sibling.parquet")
+        procedure(fileSystem).removeOrphanFiles(SESSION, "test_schema", "t", "7d", false)
+        assertThat(member).exists()
+        assertThat(sibling).doesNotExist()
+    }
+
+    @Test
+    fun deletesAtMostTheOrphanLimitPerCall() {
+        val aged = Instant.now().minus(8, ChronoUnit.DAYS)
+        val listed = DucklakeRemoveOrphanFilesProcedure.MAX_ORPHANS_PER_CALL + 5
+        var consumed = 0
+        val deleted = mutableListOf<Location>()
+        val manyOrphans = object : TrinoFileSystem by fileSystem {
+            override fun listFiles(location: Location): FileIterator = object : FileIterator {
+                override fun hasNext(): Boolean = consumed < listed
+                override fun next(): FileEntry =
+                        FileEntry(tableLocation.appendPath("ducklake-orphan-${consumed++}.parquet"), 3L, aged, Optional.empty())
+            }
+
+            override fun deleteFiles(locations: Collection<Location>) {
+                deleted += locations
+            }
+        }
+        procedure(manyOrphans).removeOrphanFiles(SESSION, "test_schema", "t", "7d", false)
+        assertThat(deleted).hasSize(DucklakeRemoveOrphanFilesProcedure.MAX_ORPHANS_PER_CALL)
+        assertThat(consumed).isEqualTo(DucklakeRemoveOrphanFilesProcedure.MAX_ORPHANS_PER_CALL)
+    }
+
     private fun procedure(delegate: TrinoFileSystem): DucklakeRemoveOrphanFilesProcedure {
         val factory = object : DucklakeFileSystemFactory {
             override fun create(identity: ConnectorIdentity): TrinoFileSystem = delegate

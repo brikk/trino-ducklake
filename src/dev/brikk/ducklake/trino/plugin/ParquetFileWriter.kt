@@ -17,7 +17,10 @@ import dev.brikk.ducklake.catalog.DucklakeColumn
 import dev.brikk.ducklake.catalog.DucklakeFileColumnStats
 import dev.brikk.ducklake.catalog.DucklakeWriteFragment
 import dev.brikk.ducklake.trino.plugin.DucklakeSessionProperties.Companion.FORMAT_PARQUET
+import io.airlift.log.Logger
 import io.airlift.slice.DynamicSliceOutput
+import io.trino.filesystem.Location
+import io.trino.filesystem.TrinoFileSystem
 import io.trino.parquet.writer.ParquetWriter
 import io.trino.spi.Page
 import io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR
@@ -54,6 +57,8 @@ internal fun parquetFooterSize(fileMetaData: FileMetaData, what: String): Long =
 class ParquetFileWriter(
     private val parquetWriter: ParquetWriter,
     private val outputStream: OutputStream,
+    private val fileSystem: TrinoFileSystem,
+    private val location: Location,
     private val relativePath: String,
     partitionValues: Map<Int, String?>,
     private val partitionId: Long?,
@@ -169,5 +174,15 @@ class ParquetFileWriter(
         catch (ignored: IOException) {
             // best-effort
         }
+        try {
+            fileSystem.deleteFile(location)
+        }
+        catch (e: IOException) {
+            log.warn(e, "Failed to delete partial Parquet file %s", location)
+        }
+    }
+
+    private companion object {
+        private val log: Logger = Logger.get(ParquetFileWriter::class.java)
     }
 }

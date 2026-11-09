@@ -13,18 +13,18 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
-import com.google.common.collect.ImmutableList
 import com.google.inject.Inject
 import com.google.inject.Provider
 import dev.brikk.ducklake.catalog.DucklakeCatalog
 import dev.brikk.ducklake.catalog.DucklakeColumn
 import dev.brikk.ducklake.catalog.DucklakeDataFile
 import dev.brikk.ducklake.catalog.DucklakeFilePartitionValue
-import dev.brikk.ducklake.catalog.DucklakeSchema
-import dev.brikk.ducklake.catalog.DucklakeTable
 import dev.brikk.ducklake.catalog.DucklakeWriteFragment
 import dev.brikk.ducklake.catalog.PartialMergedFile
-import dev.brikk.ducklake.catalog.TransactionConflictException
+import dev.brikk.ducklake.trino.plugin.DucklakeProcedureSupport.requireArg
+import dev.brikk.ducklake.trino.plugin.DucklakeProcedureSupport.resolveTable
+import dev.brikk.ducklake.trino.plugin.DucklakeProcedureSupport.systemProcedure
+import dev.brikk.ducklake.trino.plugin.DucklakeProcedureSupport.translatingConflicts
 import io.airlift.log.Logger
 import io.airlift.slice.Slices.utf8Slice
 import io.airlift.units.DataSize
@@ -37,9 +37,6 @@ import io.trino.spi.NodeVersion
 import io.trino.spi.Page
 import io.trino.spi.StandardErrorCode.INVALID_PROCEDURE_ARGUMENT
 import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
-import io.trino.spi.StandardErrorCode.SCHEMA_NOT_FOUND
-import io.trino.spi.StandardErrorCode.TABLE_NOT_FOUND
-import io.trino.spi.StandardErrorCode.TRANSACTION_CONFLICT
 import io.trino.spi.TrinoException
 import io.trino.spi.connector.ColumnHandle
 import io.trino.spi.connector.ConnectorPageSource
@@ -55,16 +52,13 @@ import io.trino.spi.type.Type
 import io.trino.spi.type.BooleanType.BOOLEAN
 import io.trino.spi.type.VarcharType.VARCHAR
 import org.apache.parquet.format.CompressionCodec
-import java.lang.invoke.MethodHandle
-import java.lang.invoke.MethodHandles
-import java.lang.invoke.MethodType
 import java.util.Optional
 import java.util.UUID
 
 /**
  * Implements `CALL <catalog>.system.rewrite_data_files(schema_name, table_name,
  * file_size_threshold => '100MB', target_file_size => '512MB', reclaim_sources_immediately =>
- * false)` — the compaction WRITER (dev-docs/DESIGN-maintenance.md § 7). It reads the live rows of a
+ * false)` — the compaction writer (see dev-docs/DESIGN-maintenance.md). It reads the live rows of a
  * table's small data files through the connector's **real read path** (so positional/parquet/puffin
  * delete files, `partial_max` snapshot filtering, and schema evolution all apply) and rewrites them
  * into fewer, larger Parquet files.
@@ -102,10 +96,9 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
     private val pageSourceProvider: DucklakePageSourceProvider = pageSourceProviderFactory.createPageSourceProvider()
 
     override fun get(): Procedure =
-        Procedure(
-                "system",
+        systemProcedure(
                 "rewrite_data_files",
-                ImmutableList.of(
+                listOf(
                         Procedure.Argument("SCHEMA_NAME", VARCHAR),
                         Procedure.Argument("TABLE_NAME", VARCHAR),
                         Procedure.Argument("FILE_SIZE_THRESHOLD", VARCHAR, false, utf8Slice("100MB")),
@@ -115,8 +108,14 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
                         // large table doesn't rewrite everything in one commit — mirrors
                         // upstream's max_compacted_files (ducklake main 8b8e0491).
                         Procedure.Argument("MAX_COMPACTED_FILES", BIGINT, false, 0L)),
-                REWRITE_DATA_FILES.bindTo(this),
-                true)
+                this,
+                "rewriteDataFiles",
+                String::class.java,
+                String::class.java,
+                String::class.java,
+                String::class.java,
+                java.lang.Boolean.TYPE,
+                java.lang.Long.TYPE)
 
     @Suppress("unused") // invoked via MethodHandle
     fun rewriteDataFiles(
@@ -133,7 +132,7 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
         val targetSize: Long = parseDataSize(targetFileSize, "target_file_size", "512MB")
 
         val snapshotId = catalog.currentSnapshotId
-        val (schema, table) = resolveTable(schemaArg, tableArg, snapshotId)
+        val (schema, table) = resolveTable(catalog, schemaArg, tableArg, snapshotId)
         val tableId = table.tableId
         val tableDataPath: String = pathResolver.resolveTableDataPath(schema, table)
 
@@ -202,7 +201,6 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
         commitRewrite(tableId, sourceIds, nonEmpty, snapshotId, reclaimSourcesImmediately, schemaArg, tableArg)
     }
 
-    /** Parquet data files below [threshold]; partial mode also requires clean, non-partial sources. */
     private fun filesWithInlinedDeletes(tableId: Long, snapshotId: Long, partial: Boolean): Set<Long> =
         if (partial) {
             catalog.getInlinedFileDeletesBetween(tableId, 0L, snapshotId)
@@ -239,6 +237,7 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
         return capped
     }
 
+    /** Parquet data files below [threshold]; partial mode also requires clean, non-partial sources. */
     private fun selectCandidates(
             dataFiles: List<DucklakeDataFile>,
             threshold: Long,
@@ -271,7 +270,7 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
             partial: Boolean,
             schemaArg: String,
             tableArg: String) {
-        try {
+        translatingConflicts {
             if (partial) {
                 catalog.rewriteDataFilesPartial(tableId, sourceIds,
                         outputs.map { PartialMergedFile(it.fragment, it.beginSnapshot, it.partialMax) }, snapshotId)
@@ -279,12 +278,9 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
             else {
                 catalog.rewriteDataFiles(tableId, sourceIds, outputs.map { it.fragment }, snapshotId)
             }
-            log.info("rewrite_data_files: %s.%s compacted %d files into %d (%d rows, partial=%b)",
-                    schemaArg, tableArg, sourceIds.size, outputs.size, outputs.sumOf { it.fragment.recordCount }, partial)
         }
-        catch (e: TransactionConflictException) {
-            throw TrinoException(TRANSACTION_CONFLICT, e.message, e)
-        }
+        log.info("rewrite_data_files: %s.%s compacted %d files into %d (%d rows, partial=%b)",
+                schemaArg, tableArg, sourceIds.size, outputs.size, outputs.sumOf { it.fragment.recordCount }, partial)
     }
 
     /** Drain the table's splits and keep the ones whose file matches a compaction candidate. */
@@ -328,14 +324,11 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
     /**
      * Streams one partition group's source rows through the real read path into one or more Parquet
      * files, rolling over to a new file at [targetSize]. Every merged file embeds the row-lineage
-     * column `_ducklake_internal_row_id` (field-id 2147483540) holding each surviving row's ORIGINAL
-     * rowid — sourced from the lineage-first `$row_id` read column, so recompaction of files that
-     * already carry lineage preserves the original ids; upstream compaction always writes this
-     * column, and rowids now survive compaction across engines. Every output also embeds the
-     * native per-row insert snapshot with its reserved field ID. In partial mode, separate
-     * begin/partial_max bounds retain SOURCE FILE visibility, not original row insertion times.
-     * Both internal columns are appended AFTER the data
-     * columns, so catalog stats (leaf targets built over the table columns only) are unaffected.
+     * column `_ducklake_internal_row_id` (field-id 2147483540), as upstream compaction does, holding
+     * each surviving row's original rowid, and the native per-row insert snapshot with its reserved
+     * field ID. In partial mode, separate begin/partial_max bounds retain source-file visibility,
+     * not original row insertion times. Both internal columns follow the data columns, so catalog
+     * stats (leaf targets built over the table columns only) are unaffected.
      */
     private inner class GroupWriter(
             private val fileSystem: TrinoFileSystem,
@@ -355,13 +348,8 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
         fun write(session: ConnectorSession, splits: List<DucklakeSplit>): List<MergedOutput> {
             var success = false
             try {
-                // Request the queryable $row_id virtual (LAST) alongside the data columns:
-                // it is lineage-first (a source's own embedded lineage wins over
-                // rowIdStart+position — recompaction preserves ORIGINAL ids) and injected
-                // BEFORE delete filtering, so each surviving row carries its true DuckLake
-                // rowid. The merged output embeds these as _ducklake_internal_row_id, the
-                // same column upstream compaction always writes — rowids survive compaction
-                // across engines.
+                // $row_id prefers a source's embedded lineage over rowIdStart+position, so
+                // recompaction keeps original ids, and is injected before delete filtering.
                 val readColumns = columnHandles + VirtualKind.ROW_SNAPSHOT_ID.columnHandle() + VirtualKind.ROW_ID.columnHandle()
                 for (split in splits) {
                     pageSource(session, tableHandle, split, readColumns).use { source ->
@@ -423,10 +411,11 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
                         DucklakeDeleteFileReader.INTERNAL_SNAPSHOT_ID_COLUMN to
                             DucklakeDeleteFileReader.SNAPSHOT_ID_PARQUET_FIELD_ID.toLong()))
             val fileName = "ducklake-${UUID.randomUUID()}.parquet"
-            val outputStream = fileSystem.newOutputFile(Location.of(tableDataPath).appendPath(fileName)).create()
+            val location = Location.of(tableDataPath).appendPath(fileName)
+            val outputStream = fileSystem.newOutputFile(location).create()
             val parquetWriter = ParquetWriter(outputStream, messageType, schemaConverter.primitiveTypes, writerOptions,
                     CompressionCodec.ZSTD, trinoVersion, Optional.empty(), Optional.empty())
-            writer = ParquetFileWriter(parquetWriter, outputStream, fileName,
+            writer = ParquetFileWriter(parquetWriter, outputStream, fileSystem, location, fileName,
                     group.partitionValues, group.partitionId, columnHandles, allCatalogColumns, messageType)
             minBegin = Long.MAX_VALUE
             maxBegin = Long.MIN_VALUE
@@ -442,13 +431,6 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
         }
     }
 
-    private fun requireArg(value: String?, name: String): String {
-        if (value.isNullOrEmpty()) {
-            throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "$name is required")
-        }
-        return value
-    }
-
     private fun parseDataSize(value: String?, argName: String, default: String): Long {
         val raw = if (value.isNullOrBlank()) default else value
         return try {
@@ -459,30 +441,9 @@ class DucklakeRewriteDataFilesProcedure @Inject constructor(
         }
     }
 
-    private fun resolveTable(schemaName: String, tableName: String, snapshotId: Long): Pair<DucklakeSchema, DucklakeTable> {
-        val schema: DucklakeSchema = catalog.getSchema(schemaName, snapshotId)
-            ?: throw TrinoException(SCHEMA_NOT_FOUND, "Schema not found: $schemaName")
-        val table: DucklakeTable = catalog.getTable(schemaName, tableName, snapshotId)
-            ?: throw TrinoException(TABLE_NOT_FOUND, "Table not found: $schemaName.$tableName")
-        return schema to table
-    }
-
     companion object {
         private val log: Logger = Logger.get(DucklakeRewriteDataFilesProcedure::class.java)
         private const val FORMAT_PARQUET: String = "parquet"
         private const val SPLIT_BATCH_SIZE: Int = 1000
-
-        private val REWRITE_DATA_FILES: MethodHandle = MethodHandles.lookup().findVirtual(
-                DucklakeRewriteDataFilesProcedure::class.java,
-                "rewriteDataFiles",
-                MethodType.methodType(
-                        Void.TYPE,
-                        ConnectorSession::class.java,
-                        String::class.java,
-                        String::class.java,
-                        String::class.java,
-                        String::class.java,
-                        java.lang.Boolean.TYPE,
-                        java.lang.Long.TYPE))
     }
 }

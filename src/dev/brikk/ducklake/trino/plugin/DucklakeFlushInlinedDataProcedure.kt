@@ -13,7 +13,6 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
-import com.google.common.collect.ImmutableList
 import com.google.inject.Inject
 import com.google.inject.Provider
 import dev.brikk.ducklake.catalog.DucklakeCatalog
@@ -26,7 +25,12 @@ import dev.brikk.ducklake.catalog.DucklakeSchema
 import dev.brikk.ducklake.catalog.DucklakeTable
 import dev.brikk.ducklake.catalog.DucklakeWriteFragment
 import dev.brikk.ducklake.catalog.FlushedInlinedFile
-import dev.brikk.ducklake.catalog.TransactionConflictException
+import dev.brikk.ducklake.trino.plugin.DucklakeProcedureSupport.requireSchemaForTable
+import dev.brikk.ducklake.trino.plugin.DucklakeProcedureSupport.resolveSchema
+import dev.brikk.ducklake.trino.plugin.DucklakeProcedureSupport.resolveTable
+import dev.brikk.ducklake.trino.plugin.DucklakeProcedureSupport.systemProcedure
+import dev.brikk.ducklake.trino.plugin.DucklakeProcedureSupport.translatingConflicts
+import io.airlift.log.Logger
 import io.trino.filesystem.Location
 import io.trino.filesystem.TrinoFileSystem
 import io.trino.parquet.ParquetReaderOptions
@@ -37,11 +41,8 @@ import io.trino.plugin.base.metrics.FileFormatDataSourceStats
 import io.trino.plugin.hive.parquet.ParquetReaderConfig
 import io.trino.spi.NodeVersion
 import io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR
-import io.trino.spi.StandardErrorCode.INVALID_PROCEDURE_ARGUMENT
+import io.trino.spi.StandardErrorCode.GENERIC_USER_ERROR
 import io.trino.spi.StandardErrorCode.NOT_SUPPORTED
-import io.trino.spi.StandardErrorCode.SCHEMA_NOT_FOUND
-import io.trino.spi.StandardErrorCode.TABLE_NOT_FOUND
-import io.trino.spi.StandardErrorCode.TRANSACTION_CONFLICT
 import io.trino.spi.TrinoException
 import io.trino.spi.connector.ConnectorSession
 import io.trino.spi.procedure.Procedure
@@ -49,9 +50,6 @@ import io.trino.spi.type.BigintType.BIGINT
 import io.trino.spi.type.Type
 import io.trino.spi.type.VarcharType.VARCHAR
 import org.apache.parquet.format.CompressionCodec
-import java.lang.invoke.MethodHandle
-import java.lang.invoke.MethodHandles
-import java.lang.invoke.MethodType
 import java.util.Optional
 import java.util.TreeMap
 import java.util.UUID
@@ -83,36 +81,35 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
         parquetReaderConfig: ParquetReaderConfig,
         private val fileFormatDataSourceStats: FileFormatDataSourceStats,
         nodeVersion: NodeVersion,
+        config: DucklakeConfig,
 ) : Provider<Procedure> {
+    private val maxLiveRows: Long = config.getReadMaxRows()
     private val trinoVersion: String = nodeVersion.toString()
     private val writerOptions: ParquetWriterOptions = ParquetWriterOptions.builder().build()
     private val parquetReaderOptions: ParquetReaderOptions = parquetReaderConfig.toParquetReaderOptions()
 
     override fun get(): Procedure =
-        Procedure(
-                "system",
+        systemProcedure(
                 "flush_inlined_data",
-                ImmutableList.of(
+                listOf(
                         // Optional: both → one table; schema only → the schema; neither → every
                         // table with inlined rows across the catalog.
                         Procedure.Argument("SCHEMA_NAME", VARCHAR, false, null),
                         Procedure.Argument("TABLE_NAME", VARCHAR, false, null)),
-                FLUSH_INLINED_DATA.bindTo(this),
-                true)
+                this,
+                "flushInlinedData",
+                String::class.java,
+                String::class.java)
 
     @Suppress("unused") // invoked via MethodHandle
     fun flushInlinedData(session: ConnectorSession, schemaName: String?, tableName: String?) {
-        if (!tableName.isNullOrEmpty() && schemaName.isNullOrEmpty()) {
-            throw TrinoException(INVALID_PROCEDURE_ARGUMENT,
-                    "table_name requires schema_name (a table can't be named without its schema)")
-        }
+        requireSchemaForTable(schemaName, tableName)
         val snapshotId = catalog.currentSnapshotId
         val explicitSingle = !schemaName.isNullOrEmpty() && !tableName.isNullOrEmpty()
         val targets: List<Pair<DucklakeSchema, DucklakeTable>> = when {
-            explicitSingle -> listOf(resolveTable(schemaName, tableName, snapshotId))
+            explicitSingle -> listOf(resolveTable(catalog, schemaName, tableName, snapshotId))
             !schemaName.isNullOrEmpty() -> {
-                val schema = catalog.getSchema(schemaName, snapshotId)
-                        ?: throw TrinoException(SCHEMA_NOT_FOUND, "Schema not found: $schemaName")
+                val schema = resolveSchema(catalog, schemaName, snapshotId)
                 catalog.listTables(schema.schemaId, snapshotId).map { schema to it }
             }
             else -> catalog.listSchemas(snapshotId).flatMap { schema ->
@@ -145,8 +142,9 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
             failOnPartitioned: Boolean,
     ): Boolean {
         val tableId = table.tableId
-        val versions = catalog.getInlinedDataInfos(tableId, snapshotId)
-                .mapNotNull { loadVersionRows(tableId, snapshotId, it) }
+        val infos = catalog.getInlinedDataInfos(tableId, snapshotId)
+        checkLiveRowBudget(schema, table, infos, snapshotId)
+        val versions = infos.mapNotNull { loadVersionRows(tableId, snapshotId, it) }
         val inlinedFileDeletes = catalog.getInlinedFileDeletesBetween(tableId, 0L, snapshotId)
         if (versions.isEmpty() && inlinedFileDeletes.isEmpty()) {
             return false
@@ -171,13 +169,28 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
         val existingFileDeletes = materializeExistingFileDeletes(
                 fileSystem, deleteWriter, tableDataPath, tableId, snapshotId, inlinedFileDeletes)
 
-        try {
-            catalog.flushInlinedDataWithSnapshots(tableId, files, existingFileDeletes, snapshotId)
-        }
-        catch (e: TransactionConflictException) {
-            throw TrinoException(TRANSACTION_CONFLICT, e.message, e)
-        }
+        translatingConflicts { catalog.flushInlinedDataWithSnapshots(tableId, files, existingFileDeletes, snapshotId) }
         return true
+    }
+
+    /**
+     * The catalog returns a version's inlined rows as one list (it has no paged read), so refuse
+     * before loading when the live rows exceed `ducklake.read.max-physical-rows`. Deleted rows that
+     * were never flushed are loaded too but cannot be counted up front; see CRUTCHES-AND-SHORTCUTS.
+     */
+    private fun checkLiveRowBudget(
+            schema: DucklakeSchema,
+            table: DucklakeTable,
+            infos: List<DucklakeInlinedDataInfo>,
+            snapshotId: Long) {
+        val liveRows = infos.filter { it.hasLiveRows }.fold(0L) { total, info ->
+            Math.addExact(total, catalog.countInlinedRows(table.tableId, info.schemaVersion, snapshotId))
+        }
+        if (liveRows > maxLiveRows) {
+            throw TrinoException(GENERIC_USER_ERROR,
+                    "flush_inlined_data: ${schema.schemaName}.${table.tableName} has $liveRows live inlined rows, " +
+                            "above ducklake.read.max-physical-rows=$maxLiveRows; nothing was written")
+        }
     }
 
     private data class VersionRows(
@@ -338,14 +351,6 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
         return if (location.scheme().isPresent) location else Location.of("file://$path")
     }
 
-    private fun resolveTable(schemaName: String, tableName: String, snapshotId: Long): Pair<DucklakeSchema, DucklakeTable> {
-        val schema: DucklakeSchema = catalog.getSchema(schemaName, snapshotId)
-            ?: throw TrinoException(SCHEMA_NOT_FOUND, "Schema not found: $schemaName")
-        val table: DucklakeTable = catalog.getTable(schemaName, tableName, snapshotId)
-            ?: throw TrinoException(TABLE_NOT_FOUND, "Table not found: $schemaName.$tableName")
-        return schema to table
-    }
-
     /**
      * Materialize [rows] into one Parquet data file and return its registration fragment. The
      * file carries trailing `_ducklake_internal_row_id` / `_ducklake_internal_snapshot_id` columns
@@ -392,8 +397,8 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
                 Optional.empty(),
                 Optional.empty())
         // Single unpartitioned file (partitioned tables are gated above).
-        val writer = ParquetFileWriter(
-                parquetWriter, outputStream, fileName, emptyMap(), null, columnHandles, allCatalogColumns, messageType)
+        val writer = ParquetFileWriter(parquetWriter, outputStream, fileSystem, filePath, fileName,
+                emptyMap(), null, columnHandles, allCatalogColumns, messageType)
 
         val rowsWithLineage: List<List<Any?>> = rows.mapIndexed { i, row ->
             row + rowIds[i] + beginSnapshots[i]
@@ -411,8 +416,7 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
             fragment = writer.finishAndBuildFragment()
         }
         finally {
-            // On any failure (fragment still null) abort to release the writer + output stream;
-            // a finally avoids a generic catch and never masks the original throwable.
+            // A finally instead of a catch so abort never masks the original throwable.
             if (fragment == null) {
                 writer.abort()
             }
@@ -421,24 +425,6 @@ class DucklakeFlushInlinedDataProcedure @Inject constructor(
     }
 
     companion object {
-        private val log: io.airlift.log.Logger = io.airlift.log.Logger.get(DucklakeFlushInlinedDataProcedure::class.java)
-
-        private val FLUSH_INLINED_DATA: MethodHandle
-
-        init {
-            try {
-                FLUSH_INLINED_DATA = MethodHandles.lookup().findVirtual(
-                        DucklakeFlushInlinedDataProcedure::class.java,
-                        "flushInlinedData",
-                        MethodType.methodType(
-                                Void.TYPE,
-                                ConnectorSession::class.java,
-                                String::class.java,
-                                String::class.java))
-            }
-            catch (e: ReflectiveOperationException) {
-                throw AssertionError(e)
-            }
-        }
+        private val log: Logger = Logger.get(DucklakeFlushInlinedDataProcedure::class.java)
     }
 }

@@ -13,41 +13,38 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
-import com.google.common.collect.ImmutableList
 import com.google.inject.Inject
 import com.google.inject.Provider
 import dev.brikk.ducklake.catalog.DucklakeCatalog
 import dev.brikk.ducklake.catalog.DucklakeReferencedFiles
-import dev.brikk.ducklake.catalog.DucklakeSchema
-import dev.brikk.ducklake.catalog.DucklakeTable
 import dev.brikk.ducklake.catalog.DucklakeTableFilePathRef
 import dev.brikk.ducklake.trino.plugin.DucklakeFilePathIdentity.Key
+import dev.brikk.ducklake.trino.plugin.DucklakeProcedureSupport.DEFAULT_RETENTION
+import dev.brikk.ducklake.trino.plugin.DucklakeProcedureSupport.parseRetention
+import dev.brikk.ducklake.trino.plugin.DucklakeProcedureSupport.requireSchemaForTable
+import dev.brikk.ducklake.trino.plugin.DucklakeProcedureSupport.resolveSchema
+import dev.brikk.ducklake.trino.plugin.DucklakeProcedureSupport.resolveTable
+import dev.brikk.ducklake.trino.plugin.DucklakeProcedureSupport.systemProcedure
 import io.airlift.log.Logger
 import io.airlift.slice.Slices.utf8Slice
 import io.airlift.units.Duration
+import io.trino.filesystem.FileEntry
 import io.trino.filesystem.Location
 import io.trino.filesystem.TrinoFileSystem
 import io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR
-import io.trino.spi.StandardErrorCode.INVALID_PROCEDURE_ARGUMENT
-import io.trino.spi.StandardErrorCode.SCHEMA_NOT_FOUND
-import io.trino.spi.StandardErrorCode.TABLE_NOT_FOUND
 import io.trino.spi.TrinoException
 import io.trino.spi.connector.ConnectorSession
 import io.trino.spi.procedure.Procedure
 import io.trino.spi.type.BooleanType.BOOLEAN
 import io.trino.spi.type.VarcharType.VARCHAR
 import java.io.IOException
-import java.lang.invoke.MethodHandle
-import java.lang.invoke.MethodHandles
-import java.lang.invoke.MethodType
 import java.time.Instant
 
 /**
  * Implements `CALL <catalog>.system.remove_orphan_files(schema_name => ..., table_name => ...,
  * retention_threshold => '7d', dry_run => false)` — deletes files under the target data path(s)
  * that **no catalog row references** and that are **older than the retention threshold**. Orphans
- * are the residue of failed/aborted commits (a data file written, then the catalog commit lost):
- * before this, Trino had no way to reclaim them.
+ * are the residue of failed/aborted commits (a data file written, then the catalog commit lost).
  *
  * Scope by argument presence (the more you supply, the narrower):
  *  - `schema_name` + `table_name` → one table's data path.
@@ -62,33 +59,25 @@ import java.time.Instant
  *  - Orphans have no catalog row, so this touches storage ONLY — no snapshot, no catalog mutation,
  *    no conflict matrix. The global "known set" is every path the catalog references at ANY
  *    snapshot (including dropped-but-unexpired tables/schemas) plus files already scheduled for
- *    deletion ([DucklakeCatalog.listAllReferencedFiles]); a listed file not in that set, and
- *    not inside a known dataset directory (lance/vortex dirs), is a candidate orphan.
- *  - **Type-scoped, not a blind diff**: only files that are recognizably DuckLake residue are
- *    deleted — a `ducklake-`-prefixed data/delete file (`.parquet`/`.puffin`/`.vortex`) or a
- *    member of a `ducklake-*.lance` dataset directory (see [isDucklakeManagedResidue]). Foreign
- *    files a user parked under the data path (`_SUCCESS`, `foo.txt`, `.crc`, their own
- *    non-`ducklake-` parquet) are never touched. This is broader than upstream DuckDB's
- *    `ducklake_delete_orphaned_files`, which sweeps `.parquet`/`.puffin` only as of DuckLake 1.5.5
- *    (`.puffin` added upstream in ducklake main `1e2e74ee`; before that it was `.parquet`-only) —
- *    it still abandons `.vortex`/`.lance` residue, which we reclaim — and narrower than a raw
- *    unreferenced-file sweep.
+ *    deletion ([DucklakeCatalog.listAllReferencedFiles]). A listed file not in that set and not
+ *    inside a referenced directory is a candidate orphan.
+ *  - **Type-scoped, not a blind diff**: only recognizably DuckLake-written files are deleted (see
+ *    [isDucklakeManagedResidue]); foreign files a user parked under the data path are never
+ *    touched. Upstream DuckLake's `ducklake_delete_orphaned_files` (1.5.5) sweeps
+ *    `.parquet`/`.puffin` only.
  *  - The retention threshold is the grace period that keeps the op safe without a global lock: a
  *    file young enough to still be referenced by an in-flight (possibly cross-engine) writer is
  *    never deleted. The argument is floored by `ducklake.remove-orphan-files.min-retention`
  *    (default 7d); a call below the floor is rejected so the op can't be turned into a foot-gun.
+ *  - At most [MAX_ORPHANS_PER_CALL] orphans are deleted per call; repeat the call to continue.
  *  - `dry_run => true` logs what would be deleted and removes nothing.
  *  - Directory shells are retained: recursively deleting a directory after an emptiness check
  *    can delete a concurrent writer's new files, bypassing ownership and retention checks.
  *  - Comparison uses verified native-local/S3 aliases, not raw path spelling. Unresolved mixed
  *    namespaces and noncanonical fallback paths abort the entire sweep before deletion.
  *
- * Modeled on upstream DuckLake's `ducklake_delete_orphaned_files` (filesystem set minus known set,
- * mtime-gated), scoped to one table's data path in the Trino procedure idiom — but type-scoped to
- * DuckLake-managed residue (see above) rather than upstream's `.parquet`/`.puffin`-only filter
- * (upstream added `.puffin` in DuckLake 1.5.5; still no `.vortex`/`.lance`). `.db` is deliberately
- * NOT eligible: DuckDB explicitly supports placing the metadata catalog under `data_path`, and a
- * `ducklake-*.db` catalog must never be mistaken for an orphan data file.
+ * `.db` is deliberately NOT eligible: DuckDB supports placing the metadata catalog under
+ * `data_path`, and a `ducklake-*.db` catalog must never be mistaken for an orphan data file.
  */
 class DucklakeRemoveOrphanFilesProcedure @Inject constructor(
         private val catalog: DucklakeCatalog,
@@ -100,18 +89,21 @@ class DucklakeRemoveOrphanFilesProcedure @Inject constructor(
     private val minRetention: Duration = config.getRemoveOrphanFilesMinRetention()
 
     override fun get(): Procedure =
-        Procedure(
-                "system",
+        systemProcedure(
                 "remove_orphan_files",
-                ImmutableList.of(
+                listOf(
                         // schema_name / table_name are OPTIONAL: the more you supply, the narrower
                         // the scope — table (both) → schema (schema only) → catalog-wide (neither).
                         Procedure.Argument("SCHEMA_NAME", VARCHAR, false, null),
                         Procedure.Argument("TABLE_NAME", VARCHAR, false, null),
-                        Procedure.Argument("RETENTION_THRESHOLD", VARCHAR, false, utf8Slice("7d")),
+                        Procedure.Argument("RETENTION_THRESHOLD", VARCHAR, false, utf8Slice(DEFAULT_RETENTION)),
                         Procedure.Argument("DRY_RUN", BOOLEAN, false, false)),
-                REMOVE_ORPHAN_FILES.bindTo(this),
-                true)
+                this,
+                "removeOrphanFiles",
+                String::class.java,
+                String::class.java,
+                String::class.java,
+                java.lang.Boolean.TYPE)
 
     @Suppress("unused") // invoked via MethodHandle
     fun removeOrphanFiles(
@@ -121,63 +113,49 @@ class DucklakeRemoveOrphanFilesProcedure @Inject constructor(
             retentionThreshold: String?,
             dryRun: Boolean,
     ) {
-        if (!tableName.isNullOrEmpty() && schemaName.isNullOrEmpty()) {
-            throw TrinoException(INVALID_PROCEDURE_ARGUMENT,
-                    "table_name requires schema_name (a table can't be named without its schema)")
-        }
-        val retention = parseRetention(retentionThreshold)
+        requireSchemaForTable(schemaName, tableName)
+        val retention = parseRetention(retentionThreshold, minRetention, "ducklake.remove-orphan-files.min-retention",
+                "refusing to delete recently-written files")
         val snapshotId = catalog.currentSnapshotId
         val fileSystem: TrinoFileSystem = fileSystemFactory.create(session)
         val cutoff: Instant = Instant.now().minusMillis(retention.toMillis())
 
-        // Resolve the target tables and the directory root(s) to scan by scope:
-        //   both args -> one table; schema only -> that schema; neither -> the whole catalog.
-        // Scan scope is narrowable, but the KNOWN set is always global. This is conservative and
-        // crucial after DROP: a retained table/schema row can still own files for time travel even
-        // though active-object listing no longer finds it.
-        val scanRoots: List<String>
-        val scopeLabel: String
-        when {
+        // Scan scope is narrowable, but the KNOWN set is always global: after DROP, a retained
+        // table/schema row can still own files for time travel even though active-object listing
+        // no longer finds it.
+        val (scanRoot, scopeLabel) = when {
             !schemaName.isNullOrEmpty() && !tableName.isNullOrEmpty() -> {
-                val (schema, table) = resolveTable(schemaName, tableName, snapshotId)
-                scanRoots = listOf(pathResolver.resolveTableDataPath(schema, table))
-                scopeLabel = "table $schemaName.$tableName"
+                val (schema, table) = resolveTable(catalog, schemaName, tableName, snapshotId)
+                pathResolver.resolveTableDataPath(schema, table) to "table $schemaName.$tableName"
             }
-            !schemaName.isNullOrEmpty() -> {
-                val schema = catalog.getSchema(schemaName, snapshotId)
-                        ?: throw TrinoException(SCHEMA_NOT_FOUND, "Schema not found: $schemaName")
-                scanRoots = listOf(pathResolver.resolveSchemaDataPath(schema))
-                scopeLabel = "schema $schemaName"
-            }
-            else -> {
-                scanRoots = listOf(pathResolver.rootDataPath())
-                scopeLabel = "catalog"
-            }
+            !schemaName.isNullOrEmpty() ->
+                pathResolver.resolveSchemaDataPath(resolveSchema(catalog, schemaName, snapshotId)) to "schema $schemaName"
+            else -> pathResolver.rootDataPath() to "catalog"
         }
 
         val knownPaths = resolveKnownPaths(catalog.listAllReferencedFiles())
-        pathIdentity.validateNamespaces(knownPaths + scanRoots.map(pathIdentity::key))
+        pathIdentity.validateNamespaces(knownPaths + pathIdentity.key(scanRoot))
 
-        sweep(fileSystem, scanRoots, knownPaths, cutoff, dryRun, scopeLabel)
+        sweep(fileSystem, scanRoot, knownPaths, cutoff, dryRun, scopeLabel)
     }
 
-    /** Finds + deletes (or, on dry-run, reports) DuckLake orphan residue under each of [scanRoots]. */
     private fun sweep(
             fileSystem: TrinoFileSystem,
-            scanRoots: List<String>,
+            scanRoot: String,
             knownPaths: Set<Key>,
             cutoff: Instant,
             dryRun: Boolean,
             scopeLabel: String,
     ) {
-        val orphans: List<Location> = scanRoots.flatMap { findOrphans(fileSystem, it, knownPaths, cutoff) }
+        val orphans = findOrphans(fileSystem, scanRoot, knownPaths, cutoff)
+        val more = if (orphans.size == MAX_ORPHANS_PER_CALL) "; limit reached, repeat the call to continue" else ""
         if (orphans.isEmpty()) {
             log.info("remove_orphan_files: no orphans for %s", scopeLabel)
             return
         }
         if (dryRun) {
-            log.info("remove_orphan_files (dry_run): %d orphan file(s) for %s would be deleted: %s",
-                    orphans.size, scopeLabel, orphans)
+            log.info("remove_orphan_files (dry_run): %d orphan file(s) for %s would be deleted%s: %s",
+                    orphans.size, scopeLabel, more, orphans)
             return
         }
         try {
@@ -186,82 +164,81 @@ class DucklakeRemoveOrphanFilesProcedure @Inject constructor(
         catch (e: IOException) {
             throw TrinoException(GENERIC_INTERNAL_ERROR, "Failed to delete orphan files for $scopeLabel: ${e.message}", e)
         }
-        log.info("remove_orphan_files: deleted %d orphan file(s) for %s", orphans.size, scopeLabel)
+        log.info("remove_orphan_files: deleted %d orphan file(s) for %s%s", orphans.size, scopeLabel, more)
     }
 
     /**
-     * Lists everything under the table data path and keeps files that are (a) not a known path,
-     * (b) not inside a known dataset directory (lance/vortex datasets register a directory whose
-     * member files must not be mistaken for orphans), and (c) older than the cutoff.
+     * Lists [scanRoot] and keeps up to [MAX_ORPHANS_PER_CALL] deletable orphans. Every listed
+     * entry examined is namespace-checked before any deletion happens.
      */
     private fun findOrphans(
             fileSystem: TrinoFileSystem,
-            tableDataPath: String,
+            scanRoot: String,
             knownPaths: Set<Key>,
             cutoff: Instant,
     ): List<Location> {
-        val rootKey = pathIdentity.key(tableDataPath)
-        val knownDirPrefixes = knownPaths.map { it.directoryPrefix() }
+        val rootKey = pathIdentity.key(scanRoot)
         val orphans = mutableListOf<Location>()
         try {
-            val files = fileSystem.listFiles(Location.of(tableDataPath))
-            while (files.hasNext()) {
+            val files = fileSystem.listFiles(Location.of(scanRoot))
+            while (files.hasNext() && orphans.size < MAX_ORPHANS_PER_CALL) {
                 val entry = files.next()
                 val key = pathIdentity.key(entry.location().toString())
                 pathIdentity.validateListing(rootKey, key)
-                if (isDeletableOrphan(entry, key, knownPaths, knownDirPrefixes, cutoff)) {
+                if (isDeletableOrphan(entry, key, knownPaths, cutoff)) {
                     orphans.add(entry.location())
                 }
             }
         }
         catch (e: IOException) {
             // A missing data path (table never written, or already cleaned) means no orphans.
-            log.info("remove_orphan_files: could not list %s (%s) — treating as no orphans", tableDataPath, e.message)
+            log.info("remove_orphan_files: could not list %s (%s) — treating as no orphans", scanRoot, e.message)
         }
         return orphans
     }
 
     /**
-     * An entry is a deletable orphan iff it is (a) not a known catalog path, (b) not a member of a
-     * registered dataset directory (lance/vortex datasets register a dir whose files must survive),
-     * (c) recognizably DuckLake-managed residue (see [isDucklakeManagedResidue]), and (d) older
-     * than the cutoff (the grace period protecting in-flight, possibly cross-engine, writers).
-     *
-     * The (c) gate is what keeps this from behaving like a blind `rm` of everything unreferenced
-     * under the data path: a user may legitimately park foreign files there (`_SUCCESS`, `foo.txt`,
-     * `.crc` sidecars, their own `data.parquet`), and those must never be deleted.
+     * An entry is a deletable orphan iff it is (a) not a known catalog path, (b) not inside a
+     * referenced directory (a dataset registered as a directory owns its member files),
+     * (c) recognizably DuckLake-managed residue, and (d) older than the cutoff.
      */
-    private fun isDeletableOrphan(
-            entry: io.trino.filesystem.FileEntry,
-            key: Key,
-            knownPaths: Set<Key>,
-            knownDirPrefixes: List<Key>,
-            cutoff: Instant,
-    ): Boolean {
-        val path = entry.location().toString()
-        return key !in knownPaths &&
-                knownDirPrefixes.none(key::isUnder) &&
-                isDucklakeManagedResidue(path) &&
+    private fun isDeletableOrphan(entry: FileEntry, key: Key, knownPaths: Set<Key>, cutoff: Instant): Boolean =
+        key !in knownPaths &&
+                !isInsideKnownDirectory(key, knownPaths) &&
+                isDucklakeManagedResidue(entry.location().toString()) &&
                 entry.lastModified().isBefore(cutoff)
+
+    /**
+     * Whether some known path is a directory ancestor of [key], i.e. `key.isUnder(known.directoryPrefix())`,
+     * found by probing each ancestor of [key] (with and without its trailing slash) in [knownPaths].
+     */
+    private fun isInsideKnownDirectory(key: Key, knownPaths: Set<Key>): Boolean {
+        if (Key(key.namespace, "") in knownPaths) {
+            return true
+        }
+        val path = key.path
+        var slash = path.indexOf('/')
+        while (slash >= 0) {
+            if (Key(key.namespace, path.substring(0, slash)) in knownPaths ||
+                    Key(key.namespace, path.substring(0, slash + 1)) in knownPaths) {
+                return true
+            }
+            slash = path.indexOf('/', slash + 1)
+        }
+        return false
     }
 
     /**
-     * Whether [path] is a file this connector (or any DuckLake engine) could have written as data
-     * or delete-file residue — the only files `remove_orphan_files` may delete. Two shapes:
+     * Whether [path] is a file a DuckLake writer could have produced as data or delete-file
+     * residue — the only files `remove_orphan_files` may delete. Two shapes:
      *
-     *  - A **single data/delete file**: basename starts with the `ducklake-` prefix that every
-     *    DuckLake writer uses (`ducklake-<uuid>.parquet|.vortex`, and delete files
-     *    `ducklake-delete-<uuid>.<ext>` (this connector) / `ducklake-<uuid>-delete.<ext>` (DuckDB))
-     *    AND ends with a managed extension (`.parquet`/`.puffin`/`.vortex`). `.db` is excluded:
-     *    a DuckLake metadata database can legally live under the data path.
-     *  - A **Lance dataset member**: Lance is a *directory* (`ducklake-<uuid>.lance/`) whose internal
-     *    files (the `data` and `_versions` subdir entries) do NOT carry the prefix — recognized by
-     *    the enclosing `ducklake-<uuid>.lance` dataset directory anywhere in the path.
-     *
-     * Anything else (foreign files, a user's own non-`ducklake-` parquet, `_SUCCESS`, …) returns
-     * false and is left untouched. This is intentionally narrower than a raw filesystem diff and
-     * broader than upstream DuckDB's `.parquet`/`.puffin` sweep (upstream added `.puffin` in DuckLake
-     * 1.5.5; we also reclaim our `.vortex`/`.lance` residue, which DuckDB abandons).
+     *  - A **single data/delete file**: basename starts with the `ducklake-` prefix every DuckLake
+     *    writer uses (`ducklake-<uuid>.parquet`; delete files `ducklake-delete-<uuid>.<ext>` from
+     *    this connector, `ducklake-<uuid>-delete.<ext>` from DuckDB) and ends with a managed
+     *    extension. `.vortex` is listed because earlier releases of this connector wrote it.
+     *  - A **Lance dataset member**: earlier releases also wrote Lance datasets as directories
+     *    (`ducklake-<uuid>.lance/`) whose member files do not carry the prefix, so they are
+     *    recognized by the enclosing dataset directory anywhere in the path.
      */
     private fun isDucklakeManagedResidue(path: String): Boolean {
         val basename = path.substringAfterLast('/')
@@ -290,49 +267,14 @@ class DucklakeRemoveOrphanFilesProcedure @Inject constructor(
         return pathIdentity.key(pathResolver.resolveFilePath(ref.path, ref.pathIsRelative, tablePath))
     }
 
-    private fun parseRetention(value: String?): Duration {
-        val raw = if (value.isNullOrBlank()) "7d" else value
-        val retention = try {
-            Duration.valueOf(raw)
-        }
-        catch (e: IllegalArgumentException) {
-            throw TrinoException(INVALID_PROCEDURE_ARGUMENT, "Invalid retention_threshold '$raw': ${e.message}", e)
-        }
-        if (retention.compareTo(minRetention) < 0) {
-            throw TrinoException(INVALID_PROCEDURE_ARGUMENT,
-                    "retention_threshold $retention is below the minimum ${minRetention} "
-                            + "(set by ducklake.remove-orphan-files.min-retention); refusing to delete recently-written files")
-        }
-        return retention
-    }
-
-    private fun resolveTable(schemaName: String, tableName: String, snapshotId: Long): Pair<DucklakeSchema, DucklakeTable> {
-        val schema: DucklakeSchema = catalog.getSchema(schemaName, snapshotId)
-            ?: throw TrinoException(SCHEMA_NOT_FOUND, "Schema not found: $schemaName")
-        val table: DucklakeTable = catalog.getTable(schemaName, tableName, snapshotId)
-            ?: throw TrinoException(TABLE_NOT_FOUND, "Table not found: $schemaName.$tableName")
-        return schema to table
-    }
-
     companion object {
         private val log: Logger = Logger.get(DucklakeRemoveOrphanFilesProcedure::class.java)
 
-        /** Filename prefix every DuckLake data/delete-file writer uses (this connector + DuckDB). */
+        /** Bounds the in-memory orphan list and the deletion work of one call. */
+        internal const val MAX_ORPHANS_PER_CALL: Int = 10_000
+
         private const val DUCKLAKE_FILE_PREFIX: String = "ducklake-"
         private const val LANCE_DATASET_SUFFIX: String = ".lance"
-
-        /** Single-file data/delete formats this connector or DuckDB can write. Lance is a dir (handled separately). */
         private val MANAGED_FILE_EXTENSIONS: List<String> = listOf(".parquet", ".puffin", ".vortex")
-
-        private val REMOVE_ORPHAN_FILES: MethodHandle = MethodHandles.lookup().findVirtual(
-                DucklakeRemoveOrphanFilesProcedure::class.java,
-                "removeOrphanFiles",
-                MethodType.methodType(
-                        Void.TYPE,
-                        ConnectorSession::class.java,
-                        String::class.java,
-                        String::class.java,
-                        String::class.java,
-                        java.lang.Boolean.TYPE))
     }
 }

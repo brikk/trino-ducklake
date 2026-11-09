@@ -22,12 +22,14 @@ import dev.brikk.ducklake.catalog.DucklakeCatalog
 import dev.brikk.ducklake.catalog.DucklakeCatalogCorruptionException
 import dev.brikk.ducklake.catalog.DucklakeColumn
 import dev.brikk.ducklake.catalog.DucklakeColumnStats
+import dev.brikk.ducklake.catalog.DucklakeCommitOutcomeUnknownException
 import dev.brikk.ducklake.catalog.DucklakeDeleteFragment
 import dev.brikk.ducklake.catalog.DucklakeEncryptedCatalogUnsupportedException
 import dev.brikk.ducklake.catalog.DucklakeEntityAlreadyExistsException
 import dev.brikk.ducklake.catalog.DucklakeEntityNotFoundException
 import dev.brikk.ducklake.catalog.DucklakeException
 import dev.brikk.ducklake.catalog.DucklakeInvalidOperationException
+import dev.brikk.ducklake.catalog.DucklakePostCommitException
 import dev.brikk.ducklake.catalog.DucklakeSchemaNotEmptyException
 import dev.brikk.ducklake.catalog.DucklakeUnsupportedCatalogVersionException
 import dev.brikk.ducklake.catalog.DucklakeWriteFragment
@@ -100,6 +102,7 @@ import java.util.LinkedHashMap
 import java.util.Locale
 import java.util.Optional
 import java.util.OptionalLong
+import java.util.concurrent.ConcurrentHashMap
 
 import com.google.common.collect.ImmutableList.toImmutableList
 import com.google.common.collect.ImmutableMap.toImmutableMap
@@ -153,6 +156,13 @@ class DucklakeMetadata(
         private val temporalPartitionEncoding: DucklakeTemporalPartitionEncoding)
         : DucklakeMetadataSpi()
 {
+    /**
+     * Tables created by [beginCreateTable] in this transaction whose CTAS data is not known to be
+     * published, keyed by table id. The catalog commits `createTable` and the data `commitInsert`
+     * as separate snapshots, so a failed CTAS would otherwise leave an empty table behind.
+     */
+    private val unpublishedCreatedTables: MutableMap<Long, SchemaTableName> = ConcurrentHashMap()
+
     override fun listSchemaNames(session: ConnectorSession): List<String>
     = catalog.queryReadSession(session.queryId) {
         val snapshotId = snapshotResolver.resolveSnapshotId(session)
@@ -1109,6 +1119,7 @@ class DucklakeMetadata(
         val snapshotId: Long = catalog.currentSnapshotId
         val table: DucklakeTable = catalog.getTable(tableName.schemaName, tableName.tableName, snapshotId)
             ?: throw TrinoException(GENERIC_INTERNAL_ERROR, "Table was not created: $tableName")
+        unpublishedCreatedTables[table.tableId] = tableName
 
         // For the WRITE handle, a column's type must match the blocks the engine will stream
         // from the CTAS source — not the catalog round-trip. The two agree for every type
@@ -1165,11 +1176,69 @@ class DucklakeMetadata(
         val handle = tableHandle as DucklakeWritableTableHandle
         val writeFragments: List<DucklakeWriteFragment> = deserializeFragments(fragments)
 
-        if (!writeFragments.isEmpty()) {
-            translateCatalogExceptions { catalog.commitInsert(handle.tableId, writeFragments) }
+        // Only a catalog failure that proves the commit rolled back keeps the table droppable.
+        // An unknown or acknowledged COMMIT, or any non-catalog failure, may have published the
+        // data, and published output must be retained for the operator to reconcile.
+        var mayHavePublished = true
+        try {
+            if (writeFragments.isNotEmpty()) {
+                catalog.commitInsert(handle.tableId, writeFragments)
+            }
+        }
+        catch (e: DucklakeException) {
+            mayHavePublished = e is DucklakeCommitOutcomeUnknownException || e is DucklakePostCommitException
+            throw translateCatalogException(e)
+        }
+        finally {
+            if (mayHavePublished) {
+                unpublishedCreatedTables.remove(handle.tableId)
+            }
         }
 
         return Optional.empty()
+    }
+
+    /**
+     * Rollback of a transaction whose CTAS never published its data: drop each table
+     * [beginCreateTable] created. A table is left in place, with a warning, when it is no longer
+     * the one this transaction created or another writer has committed rows into it since.
+     * Every table is attempted; the first failure is rethrown with the others suppressed.
+     */
+    internal fun dropUnpublishedCreatedTables()
+    {
+        val failures: MutableList<RuntimeException> = mutableListOf()
+        for ((tableId, tableName) in unpublishedCreatedTables) {
+            try {
+                dropUnpublishedCreatedTable(tableId, tableName)
+            }
+            catch (e: RuntimeException) {
+                failures += e
+            }
+        }
+        unpublishedCreatedTables.clear()
+        failures.firstOrNull()?.let { first ->
+            failures.drop(1).forEach(first::addSuppressed)
+            throw first
+        }
+    }
+
+    private fun dropUnpublishedCreatedTable(tableId: Long, tableName: SchemaTableName)
+    {
+        val snapshotId: Long = catalog.currentSnapshotId
+        val table: DucklakeTable? = catalog.getTable(tableName.schemaName, tableName.tableName, snapshotId)
+        if (table == null || table.tableId != tableId) {
+            log.warn("CTAS rollback: %s (table id %d) is no longer the table this query created; not dropping it",
+                    tableName, tableId)
+            return
+        }
+        val hasRows = catalog.getDataFiles(tableId, snapshotId).isNotEmpty()
+                || catalog.getInlinedDataInfos(tableId, snapshotId).any { it.hasLiveRows }
+        if (hasRows) {
+            log.warn("CTAS rollback: %s holds rows committed by another writer; not dropping it", tableName)
+            return
+        }
+        translateCatalogExceptions { catalog.dropTable(tableName.schemaName, tableName.tableName) }
+        log.info("CTAS rollback: dropped %s, created by the failed query", tableName)
     }
 
     private fun deserializeFragments(fragments: Collection<Slice>): List<DucklakeWriteFragment>
@@ -1442,12 +1511,12 @@ class DucklakeMetadata(
 
     override fun createView(session: ConnectorSession, viewName: SchemaTableName, definition: ConnectorViewDefinition, viewProperties: Map<String, Any?>, replace: Boolean)
     {
-        if (replace) {
-            val snapshotId = snapshotResolver.resolveSnapshotId(session)
-            val existing: DucklakeView? = catalog.getView(viewName.schemaName, viewName.tableName, snapshotId)
-            if (existing != null) {
-                translateCatalogExceptions { catalog.dropView(viewName.schemaName, viewName.tableName) }
-            }
+        // An existing view is replaced in one catalog snapshot, so readers never see it missing
+        // and a failed replace leaves the old definition. A concurrent DROP between this check
+        // and the replace fails the statement rather than silently creating the view.
+        if (replace && catalog.getView(viewName.schemaName, viewName.tableName, catalog.currentSnapshotId) != null) {
+            replaceTrinoView(viewName, definition)
+            return
         }
 
         // sql = the Trino SQL, dialect = 'trino', column_aliases = the spec quoted list of column

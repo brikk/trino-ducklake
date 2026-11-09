@@ -13,9 +13,13 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
+import io.airlift.units.Duration
 import io.trino.testing.MaterializedRow
+import io.trino.testing.assertions.Assert.assertEventually
 import org.assertj.core.api.Assertions.assertThat
+import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Test
+import java.util.concurrent.TimeUnit
 import org.junit.jupiter.api.parallel.Execution
 import org.junit.jupiter.api.parallel.ExecutionMode
 
@@ -223,6 +227,41 @@ class TestDucklakeInsertAndCtas : AbstractDucklakeIntegrationTest() {
         }
         finally {
             tryDropTable("test_schema.ctas_types")
+        }
+    }
+
+    @Test
+    fun testFailedCtasLeavesNoTable() {
+        assertThatThrownBy {
+            computeActual("CREATE TABLE test_schema.ctas_fails AS SELECT id / (id - id) AS boom FROM test_schema.simple_table")
+        }.hasMessageContaining("Division by zero")
+
+        // Trino rolls the transaction back asynchronously after reporting the failure.
+        assertEventually<RuntimeException>(Duration(30.0, TimeUnit.SECONDS)) {
+            assertThat(computeActual("SHOW TABLES FROM test_schema LIKE 'ctas_fails'").rowCount).isZero()
+        }
+        computeActual("CREATE TABLE test_schema.ctas_fails AS SELECT id FROM test_schema.simple_table")
+        try {
+            assertThat(computeScalar("SELECT count(*) FROM test_schema.ctas_fails")).isEqualTo(5L)
+        }
+        finally {
+            tryDropTable("test_schema.ctas_fails")
+        }
+    }
+
+    @Test
+    fun testWritesInExplicitTransactionAreRejected() {
+        computeActual("CREATE TABLE test_schema.explicit_tx (id INTEGER)")
+        try {
+            assertThatThrownBy {
+                newTransaction().execute(session) { transactionSession ->
+                    queryRunner.execute(transactionSession, "INSERT INTO test_schema.explicit_tx VALUES 1")
+                }
+            }.hasMessageContaining("only supports writes using autocommit")
+            assertThat(computeScalar("SELECT count(*) FROM test_schema.explicit_tx")).isEqualTo(0L)
+        }
+        finally {
+            tryDropTable("test_schema.explicit_tx")
         }
     }
 

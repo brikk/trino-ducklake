@@ -20,6 +20,7 @@ import dev.brikk.ducklake.catalog.TestingDucklakePostgreSqlCatalogServer
 import io.airlift.log.Logger
 import io.airlift.log.Logging
 import io.airlift.testing.Closeables.closeAllSuppress
+import io.trino.spi.Plugin
 import io.trino.testing.DistributedQueryRunner
 import io.trino.testing.TestingSession.testSessionBuilder
 
@@ -38,9 +39,16 @@ object DucklakeQueryRunner {
                     .build()) {
         private val connectorProperties: ImmutableMap.Builder<String, String> = ImmutableMap.builder()
         private var isolatedCatalogName: String? = null
+        private var plugin: Plugin = DucklakePlugin()
 
         fun addConnectorProperty(key: String, value: String): Builder {
             this.connectorProperties.put(key, value)
+            return self()
+        }
+
+        /** Install [plugin] instead of [DucklakePlugin], e.g. one whose connector injects failures. */
+        fun usePlugin(plugin: Plugin): Builder {
+            this.plugin = plugin
             return self()
         }
 
@@ -71,7 +79,7 @@ object DucklakeQueryRunner {
                         .putAll(connectorProperties.buildOrThrow())
                 val properties: Map<String, String> = propertiesBuilder.buildOrThrow()
 
-                queryRunner.installPlugin(DucklakePlugin())
+                queryRunner.installPlugin(plugin)
                 queryRunner.createCatalog(CATALOG, "ducklake", properties)
 
                 return queryRunner

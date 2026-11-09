@@ -138,9 +138,13 @@ SET SESSION ducklake.write_deletion_vectors = true;
 | `write_deletion_vectors` | `false` | Write Puffin instead of Parquet positional tombstones |
 | `write_row_lineage` | `true` | Preserve logical row IDs on UPDATE/MERGE rewrites |
 
-Snapshot ID and timestamp session pins are mutually exclusive. Writes use the
-connector's single-statement write path; multi-statement write transactions are
-not a supported contract.
+Snapshot ID and timestamp session pins are mutually exclusive. Writes run only in
+autocommit; a write inside `START TRANSACTION` is rejected. Each statement publishes
+its own catalog snapshot, except CTAS, which creates the table in one snapshot and
+publishes its rows in a second. If a CTAS fails before its rows are published, the
+connector drops the table it created. It keeps the table if the commit outcome is
+unknown, if another writer has added rows, or if the name now refers to a different
+table. `CREATE OR REPLACE VIEW` replaces an existing view in a single snapshot.
 
 | Table property | Type | Meaning |
 | --- | --- | --- |

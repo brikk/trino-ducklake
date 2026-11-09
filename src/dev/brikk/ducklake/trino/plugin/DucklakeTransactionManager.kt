@@ -18,8 +18,13 @@ import com.google.inject.Inject
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Manages transactions for the Ducklake connector.
- * Each transaction maintains its own metadata instance.
+ * Holds one [DucklakeMetadata] per open Trino transaction.
+ *
+ * Catalog writes are not deferred to [commit]: the catalog library has no transaction spanning
+ * several calls, so every metadata write publishes its own catalog snapshot when it runs. Trino
+ * only runs writes in autocommit transactions here ([DucklakeConnector.isSingleStatementWritesOnly]),
+ * so [commit] just releases the transaction. [rollback] undoes the one thing a failed statement
+ * can leave half done: a CTAS table whose data never published.
  */
 open class DucklakeTransactionManager @Inject constructor(private val metadataFactory: DucklakeMetadataFactory)
 {
@@ -27,8 +32,7 @@ open class DucklakeTransactionManager @Inject constructor(private val metadataFa
 
     open fun begin(transaction: DucklakeTransactionHandle)
     {
-        val metadata = metadataFactory.create()
-        transactions[transaction] = metadata
+        transactions[transaction] = metadataFactory.create()
     }
 
     open fun getMetadata(transaction: io.trino.spi.connector.ConnectorTransactionHandle): DucklakeMetadata
@@ -41,17 +45,14 @@ open class DucklakeTransactionManager @Inject constructor(private val metadataFa
 
     open fun commit(transaction: DucklakeTransactionHandle)
     {
-        val metadata =
-            transactions.remove(transaction) ?: throw IllegalArgumentException("Unknown transaction: $transaction")
-        // For read-only transactions, nothing to commit
-        // Write transactions will be implemented later
+        release(transaction)
     }
 
     open fun rollback(transaction: DucklakeTransactionHandle)
     {
-        val metadata =
-            transactions.remove(transaction) ?: throw IllegalArgumentException("Unknown transaction: $transaction")
-        // For read-only transactions, nothing to rollback
-        // Write transactions will be implemented later
+        release(transaction).dropUnpublishedCreatedTables()
     }
+
+    private fun release(transaction: DucklakeTransactionHandle): DucklakeMetadata =
+        transactions.remove(transaction) ?: throw IllegalArgumentException("Unknown transaction: $transaction")
 }

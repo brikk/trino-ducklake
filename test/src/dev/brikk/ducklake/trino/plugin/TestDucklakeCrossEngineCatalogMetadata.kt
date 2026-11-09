@@ -413,8 +413,8 @@ open class TestDucklakeCrossEngineCatalogMetadata
             val afterRename = readCurrentSchemaVersion(catalog)
             assertThat(afterRename).`as`("ALTER VIEW ... RENAME bumps schema_version").isGreaterThan(afterCreateView)
 
-            // COMMENT ON VIEW dispatches to replaceViewMetadata (the only SQL path that does —
-            // CREATE OR REPLACE VIEW goes through dropView + createView in DucklakeMetadata).
+            // COMMENT ON VIEW dispatches to replaceViewMetadata, as CREATE OR REPLACE VIEW does
+            // for an existing view.
             computeActual("COMMENT ON VIEW $schemaName.v2 IS 'a view with a comment'")
             val afterComment = readCurrentSchemaVersion(catalog)
             assertThat(afterComment).`as`("COMMENT ON VIEW (replaceViewMetadata) bumps schema_version").isGreaterThan(afterRename)

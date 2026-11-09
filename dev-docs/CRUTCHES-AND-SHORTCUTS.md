@@ -494,3 +494,44 @@ unchanged. Normal decoded catalog TIMESTAMP values are already `LocalDateTime`.
 Removal criterion: separately approve changing the legacy JDBC offset contract, with driver/backend
 qualification and an intentional test-contract change. Do not silently treat its text as catalog
 TIMESTAMP text. See [WP6 measurements and semantics](archive/WP6-READ-PATH-PERFORMANCE.md).
+
+## Non-atomic CTAS and per-call write transactions
+
+ducklake-catalog 0.17.0 publishes every write call in its own snapshot. Its write transaction
+(`JdbcDucklakeCatalog.executeWriteTransaction`, `DucklakeWriteTransaction`) is private or internal,
+and `readSession` refuses writes. `DucklakeTransactionManager.commit` therefore only releases the
+transaction. `DucklakeConnector.isSingleStatementWritesOnly` is pinned to `true`, so Trino rejects
+writes inside `START TRANSACTION`. INSERT, UPDATE/DELETE/MERGE and DDL each make one catalog call,
+so they are atomic.
+
+CTAS needs two calls. `beginCreateTable` calls `createTable` because the page sinks need the
+table id, the column ids and the data path. `finishCreateTable` then calls `commitInsert`.
+Between the two, other sessions can see the empty table. On rollback,
+`DucklakeMetadata.dropUnpublishedCreatedTables` drops the table this transaction created, but
+only if all of these hold:
+
+- the data commit was never attempted, or the catalog proved it rolled back (any
+  `DucklakeException` other than `DucklakeCommitOutcomeUnknownException` or
+  `DucklakePostCommitException`);
+- the name still resolves to the same table id;
+- the table has no live data files and no live inlined rows.
+
+Otherwise the table is kept and a warning is logged.
+
+Remaining gaps:
+
+- A failed CTAS leaves an empty table visible until Trino's asynchronous rollback runs. If the
+  coordinator dies first, the table stays and nothing drops it.
+- The checks and `dropTable(schema, name)` are separate catalog calls. A concurrent drop and
+  re-create, or an insert, between them is not detected.
+- If the commit outcome is unknown, the table and its output are kept for the operator to
+  reconcile, as for INSERT.
+- Files written by sinks that finished before the failure are not referenced by the catalog.
+  `remove_orphan_files` reclaims them when they are under the data root. If the table had an
+  absolute `location` outside the root, no call reaches them after the drop: the table-scoped
+  form cannot resolve a dropped table. Delete them by hand.
+
+**Removal criterion:** the catalog offers a create-table-with-data call that publishes the table
+and its first fragments in one snapshot (column ids returned before publication), or a public
+write transaction spanning several calls. A conditional `dropTable(tableId, expectedSnapshotId)`
+alone would close the check-then-drop race.

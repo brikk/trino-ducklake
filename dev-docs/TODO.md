@@ -77,8 +77,12 @@ port, feature and release history is not an instruction to redo shipped work.
   cannot; never turn per-file ordering into a global sorted-scan promise.
 - [ ] Align writer-option scope/precedence (compression, row groups, rollover,
   inlining and deletion vectors) only where semantics are qualified.
-- [ ] Explicitly test/enforce single-statement write behavior. Multi-statement
+- [x] Explicitly test/enforce single-statement write behavior. Multi-statement
   transaction support needs a real isolation/publication contract, not a declaration.
+- [ ] Catalog library: publish CTAS atomically. That needs a create-table-with-data call
+  (column ids returned before publication, table and first fragments in one snapshot) or
+  a public write transaction spanning several calls. Until then CTAS is two snapshots;
+  see CRUTCHES "Non-atomic CTAS".
 - [ ] Reclaim failed output only when the catalog's uncertain/acknowledged commit
   outcome proves it is safe; do not delete possibly committed files.
 - [ ] Adopt structured maintenance metrics where appropriate on 484 while preserving

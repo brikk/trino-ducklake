@@ -110,6 +110,9 @@ class DucklakeConnector @Inject constructor(
         return transaction
     }
 
+    /** Each write publishes on its own; [DucklakeTransactionManager] cannot defer it to commit. */
+    override fun isSingleStatementWritesOnly(): Boolean = true
+
     override fun commit(transaction: ConnectorTransactionHandle) {
         transactionManager.commit(transaction as DucklakeTransactionHandle)
     }

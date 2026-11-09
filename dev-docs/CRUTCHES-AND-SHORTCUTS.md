@@ -424,7 +424,7 @@ binding information; blindly accepting or qualifying arbitrary bare names is not
 `TrinoReplayEngine.classifyEngineError` (test code) turns a Trino mirror error into an
 engine-skip only by the server-side error code: connector-thrown `NOT_SUPPORTED`,
 `FUNCTION_NOT_FOUND` for an unknown function name, `TYPE_MISMATCH` against a bounded
-`varchar(n)` literal, and `TABLE_NOT_FOUND` for a name the lake never held as a table and holds
+character operand, and `TABLE_NOT_FOUND` for a name the lake never held as a table and holds
 only as a non-Trino-dialect view or not at all. Everything else fails.
 
 - Two parts still read message text, each only inside its error-code branch: the
@@ -437,6 +437,10 @@ only as a non-Trino-dialect view or not at all. Everything else fails.
 - Production must keep `NOT_SUPPORTED` for deliberate capability gates only; not-found and
   internal/corrupt-state conditions use `*_NOT_FOUND` or `GENERIC_INTERNAL_ERROR`. A new
   `NOT_SUPPORTED` for anything else silently becomes a corpus skip.
+- The string-literal heuristic is not proof of a literal: its regex also accepts `char(n)` and
+  cannot distinguish a literal from an explicitly bounded `varchar(n)` expression. A type-mapping
+  defect involving either could therefore skip. WP8's unit tests cover the intended varchar-literal
+  case without approving those wider cases; narrowing the classifier needs a separate behavior fix.
 
 **Removal criterion:** the replay library reports which relations a query reads from the lake
 versus the oracle session, and Trino reports the unresolved name structurally.

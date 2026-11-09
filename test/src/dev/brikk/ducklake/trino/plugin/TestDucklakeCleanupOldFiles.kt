@@ -14,6 +14,7 @@
 package dev.brikk.ducklake.trino.plugin
 
 import dev.brikk.ducklake.catalog.DucklakeCatalog
+import dev.brikk.ducklake.catalog.DucklakeCatalogCorruptionException
 import dev.brikk.ducklake.catalog.DucklakeFileKind
 import dev.brikk.ducklake.catalog.DucklakeFileKind.DATA
 import dev.brikk.ducklake.catalog.DucklakeFileKind.DELETE
@@ -71,15 +72,7 @@ class TestDucklakeCleanupOldFiles {
     @BeforeEach
     fun setUp() {
         warehouse = Files.createDirectories(root.resolve("warehouse"))
-        val database = root.resolve("catalog.db")
-        DriverManager.getConnection("jdbc:duckdb:").use { connection ->
-            connection.createStatement().use { statement ->
-                statement.execute("INSTALL ducklake")
-                statement.execute("LOAD ducklake")
-                statement.execute("ATTACH 'ducklake:$database' AS lake (DATA_PATH '$warehouse/', DUCKLAKE_VERSION '1.0', AUTOMATIC_MIGRATION FALSE)")
-            }
-        }
-        config = DucklakeConfig().setCatalogDatabaseUrl("jdbc:duckdb:$database")
+        config = DucklakeTestCatalogEnvironment.createLocalCatalog(root.resolve("catalog.db"), warehouse)
                 .setMaintenanceMinRetention(Duration.valueOf("0s"))
                 .setCleanupBatchSize(2)
                 .setCleanupMaxReferenceFiles(32)
@@ -258,7 +251,7 @@ class TestDucklakeCleanupOldFiles {
         val before = queued()
         sql("UPDATE ducklake_metadata SET value = ? WHERE key = 'data_path'", "x".repeat(16385))
 
-        assertThatThrownBy { cleanup() }.hasMessageContaining("Cleanup path exceeds")
+        assertThatThrownBy { cleanup() }.isInstanceOf(DucklakeCatalogCorruptionException::class.java)
 
         assertThat(orphan).exists()
         assertThat(queued()).containsExactlyElementsOf(before)
@@ -585,7 +578,7 @@ class TestDucklakeCleanupOldFiles {
     private fun parquet(name: String, query: String = "SELECT 42 AS id"): Path {
         val file = warehouse.resolve(name)
         Files.createDirectories(file.parent)
-        DriverManager.getConnection("jdbc:duckdb:").use { connection ->
+        DucklakeTestCatalogEnvironment.createDuckdbConnection().use { connection ->
             connection.createStatement().use { it.execute("COPY ($query) TO '$file' (FORMAT PARQUET)") }
         }
         return file

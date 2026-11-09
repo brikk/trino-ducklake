@@ -76,16 +76,8 @@ abstract class AbstractDucklakeCrossEngineTest : AbstractTestQueryFramework() {
     @Throws(Exception::class)
     protected fun createDuckdbConnection(): Connection {
         val catalog = getIsolatedCatalog()
-        val conn = DriverManager.getConnection("jdbc:duckdb:")
-        conn.createStatement().use { stmt ->
-            stmt.execute("INSTALL ducklake")
-            stmt.execute("LOAD ducklake")
-            stmt.execute("INSTALL postgres")
-            stmt.execute("LOAD postgres")
-            stmt.execute("ATTACH '" + catalog.duckDbAttachUri + "' AS ducklake_db " +
-                    "(DATA_PATH '" + catalog.dataDir.toAbsolutePath() + "', DUCKLAKE_VERSION '1.0', AUTOMATIC_MIGRATION FALSE)")
-        }
-        return conn
+        return DucklakeTestCatalogEnvironment.createDuckdbConnection(
+            catalog.duckDbAttachUri, catalog.dataDir.toAbsolutePath().toString(), "ducklake_db")
     }
 
     protected fun tryDropTable(tableName: String) {

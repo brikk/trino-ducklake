@@ -13,7 +13,6 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
-import com.google.common.collect.ImmutableMap
 import dev.brikk.ducklake.catalog.TestingDucklakeDuckDbQuackCatalogServer
 import dev.brikk.ducklake.catalog.TestingDucklakeLocalDuckDbCatalogFixture
 import dev.brikk.ducklake.catalog.TestingDucklakePostgreSqlCatalogServer
@@ -37,8 +36,9 @@ object DucklakeQueryRunner {
                     .setCatalog(CATALOG)
                     .setSchema("test_schema")
                     .build()) {
-        private val connectorProperties: ImmutableMap.Builder<String, String> = ImmutableMap.builder()
+        private val connectorProperties = mutableMapOf<String, String>()
         private var isolatedCatalogName: String? = null
+        private var catalogConfig: DucklakeConfig? = null
         private var plugin: Plugin = DucklakePlugin()
 
         fun addConnectorProperty(key: String, value: String): Builder {
@@ -62,22 +62,26 @@ object DucklakeQueryRunner {
             return self()
         }
 
+        fun useCatalog(config: DucklakeConfig): Builder {
+            catalogConfig = config
+            return self()
+        }
+
         @Throws(Exception::class)
         override fun build(): DistributedQueryRunner {
             val queryRunner: DistributedQueryRunner = super.build()
             try {
-                val baseProperties: Map<String, String> = if (isolatedCatalogName != null) {
+                val baseProperties: Map<String, String> = if (catalogConfig != null) {
+                    DucklakeTestCatalogEnvironment.connectorProperties(checkNotNull(catalogConfig))
+                }
+                else if (isolatedCatalogName != null) {
                     buildIsolatedCatalogProperties(isolatedCatalogName!!)
                 }
                 else {
                     DucklakeTestCatalogEnvironment.getConnectorProperties()
                 }
 
-                val propertiesBuilder: ImmutableMap.Builder<String, String> = ImmutableMap.builder<String, String>()
-                        .putAll(baseProperties)
-                        .put("fs.hadoop.enabled", "true")
-                        .putAll(connectorProperties.buildOrThrow())
-                val properties: Map<String, String> = propertiesBuilder.buildOrThrow()
+                val properties = baseProperties + mapOf("fs.hadoop.enabled" to "true") + connectorProperties
 
                 queryRunner.installPlugin(plugin)
                 queryRunner.createCatalog(CATALOG, "ducklake", properties)
@@ -108,16 +112,10 @@ object DucklakeQueryRunner {
                         DucklakeCatalogGenerator.generateIsolatedDuckDbQuackCatalog(server, testName)
                     }
                 }
-                val properties: ImmutableMap.Builder<String, String> = ImmutableMap.builder<String, String>()
-                        .put("ducklake.catalog.database-url", isolated.jdbcUrl)
-                        .put("ducklake.data-path", isolated.dataDir.toAbsolutePath().toString())
-                if (isolated.user != null) {
-                    properties.put("ducklake.catalog.database-user", isolated.user)
-                }
-                if (isolated.password != null) {
-                    properties.put("ducklake.catalog.database-password", isolated.password)
-                }
-                return properties.buildOrThrow()
+                return DucklakeTestCatalogEnvironment.connectorProperties(
+                    DucklakeConfig().setCatalogDatabaseUrl(isolated.jdbcUrl)
+                        .setDataPath(isolated.dataDir.toAbsolutePath().toString())
+                        .setCatalogDatabaseUser(isolated.user).setCatalogDatabasePassword(isolated.password))
             }
         }
     }

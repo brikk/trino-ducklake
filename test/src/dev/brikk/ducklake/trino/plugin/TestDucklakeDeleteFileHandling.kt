@@ -13,7 +13,6 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
-import com.google.common.collect.ImmutableList
 import dev.brikk.ducklake.catalog.DucklakeCatalog
 import dev.brikk.ducklake.catalog.DucklakeDataFile
 import dev.brikk.ducklake.catalog.DucklakeSchema
@@ -88,10 +87,9 @@ class TestDucklakeDeleteFileHandling {
                 deleteFilePath.pathIsRelative,
                 Files.size(deleteFilePath.absolutePath))
 
-            val splitAfterDelete = getSplits(splitManager, tableHandle).stream()
-                .filter { split -> split.dataFilePath == splitBeforeDelete.dataFilePath }
-                .findFirst()
-                .orElseThrow { AssertionError("Expected split for data file: " + splitBeforeDelete.dataFilePath) }
+            val splitAfterDelete = getSplits(splitManager, tableHandle)
+                .firstOrNull { split -> split.dataFilePath == splitBeforeDelete.dataFilePath }
+                ?: throw AssertionError("Expected split for data file: " + splitBeforeDelete.dataFilePath)
 
             assertThat(splitAfterDelete.deleteFilePaths).isNotEmpty()
             val rowsAfterDelete = countRows(pageSourceProvider, tableHandle, splitAfterDelete, priceColumn)
@@ -114,13 +112,13 @@ class TestDucklakeDeleteFileHandling {
                 tableHandle,
                 mutableSetOf(),
                 Constraint.alwaysTrue()).use { splitSource ->
-                val splits = ImmutableList.builder<DucklakeSplit>()
+                val splits = mutableListOf<DucklakeSplit>()
                 while (!splitSource.isFinished) {
                     for (split: ConnectorSplit in splitSource.getNextBatch(1000, DynamicFilterSnapshot.EMPTY).get()) {
                         splits.add(split as DucklakeSplit)
                     }
                 }
-                return splits.build()
+                return splits
             }
         }
 
@@ -138,7 +136,7 @@ class TestDucklakeDeleteFileHandling {
                 split,
                 tableHandle,
                 Optional.empty(),
-                ImmutableList.of<ColumnHandle>(column),
+                listOf<ColumnHandle>(column),
                 DynamicFilter.EMPTY).use { pageSource ->
                 while (!pageSource.isFinished) {
                     val page = pageSource.nextSourcePage
@@ -151,10 +149,9 @@ class TestDucklakeDeleteFileHandling {
         }
 
         private fun findDataFileForSplit(catalog: DucklakeCatalog, tableId: Long, snapshotId: Long, split: DucklakeSplit): DucklakeDataFile {
-            return catalog.getDataFiles(tableId, snapshotId).stream()
-                .filter { dataFile -> split.dataFilePath.endsWith(dataFile.path) }
-                .findFirst()
-                .orElseThrow { AssertionError("Missing data file metadata for split path: " + split.dataFilePath) }
+            return catalog.getDataFiles(tableId, snapshotId)
+                .firstOrNull { dataFile -> split.dataFilePath.endsWith(dataFile.path) }
+                ?: throw AssertionError("Missing data file metadata for split path: " + split.dataFilePath)
         }
 
         @Throws(Exception::class)
@@ -167,7 +164,7 @@ class TestDucklakeDeleteFileHandling {
             val deleteAbsolutePath = sourceParent.resolve(deleteFileName)
 
             Files.createDirectories(deleteAbsolutePath.parent)
-            DriverManager.getConnection("jdbc:duckdb:").use { conn ->
+            DucklakeTestCatalogEnvironment.createDuckdbConnection().use { conn ->
                 conn.createStatement().use { stmt ->
                     stmt.execute("COPY (SELECT " + deletedRowId + "::BIGINT AS row_id) TO '" +
                             escapeSql(deleteAbsolutePath.toAbsolutePath().toString()) +
@@ -205,7 +202,6 @@ class TestDucklakeDeleteFileHandling {
                     .set(delfile.DELETE_FILE_ID, nextDeleteFileId)
                     .set(delfile.TABLE_ID, tableId)
                     .set(delfile.BEGIN_SNAPSHOT, snapshotId)
-                    // END_SNAPSHOT, ENCRYPTION_KEY: omitted → SQL NULL (nullable columns).
                     .set(delfile.DATA_FILE_ID, dataFileId)
                     .set(delfile.PATH, deletePath)
                     .set(delfile.PATH_IS_RELATIVE, pathIsRelative)
@@ -222,26 +218,19 @@ class TestDucklakeDeleteFileHandling {
         }
 
         private fun getSchema(catalog: DucklakeCatalog, schemaName: String, snapshotId: Long): DucklakeSchema {
-            return catalog.listSchemas(snapshotId).stream()
-                .filter { schema -> schema.schemaName == schemaName }
-                .findFirst()
-                .orElseThrow { AssertionError("Missing schema: $schemaName") }
+            return catalog.listSchemas(snapshotId).firstOrNull { schema -> schema.schemaName == schemaName }
+                ?: throw AssertionError("Missing schema: $schemaName")
         }
 
         private fun getTable(catalog: DucklakeCatalog, schemaName: String, tableName: String, snapshotId: Long): DucklakeTable {
             val schema = getSchema(catalog, schemaName, snapshotId)
-            return catalog.listTables(schema.schemaId, snapshotId).stream()
-                .filter { table -> table.tableName == tableName }
-                .findFirst()
-                .orElseThrow { AssertionError("Missing table: $schemaName.$tableName") }
+            return catalog.listTables(schema.schemaId, snapshotId).firstOrNull { table -> table.tableName == tableName }
+                ?: throw AssertionError("Missing table: $schemaName.$tableName")
         }
 
         private fun getColumnId(catalog: DucklakeCatalog, tableId: Long, snapshotId: Long, columnName: String): Long {
-            return catalog.getTableColumns(tableId, snapshotId).stream()
-                .filter { column -> column.columnName == columnName }
-                .findFirst()
-                .orElseThrow { AssertionError("Missing column: $columnName") }
-                .columnId
+            return (catalog.getTableColumns(tableId, snapshotId).firstOrNull { column -> column.columnName == columnName }
+                ?: throw AssertionError("Missing column: $columnName")).columnId
         }
     }
 }

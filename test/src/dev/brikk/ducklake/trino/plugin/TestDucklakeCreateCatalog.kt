@@ -26,7 +26,6 @@ import org.junit.jupiter.api.parallel.Execution
 import org.junit.jupiter.api.parallel.ExecutionMode
 import java.nio.file.Files
 import java.nio.file.Path
-import java.sql.DriverManager
 
 /**
  * Exercises Trino's SQL `CREATE CATALOG <name> USING ducklake WITH (...)` dynamic-catalog path
@@ -60,11 +59,8 @@ class TestDucklakeCreateCatalog : AbstractTestQueryFramework() {
 
         // Seed a real DuckLake catalog + table through DuckDB so a dynamically-created Trino
         // catalog has something to read back.
-        DriverManager.getConnection("jdbc:duckdb:").use { conn ->
+        DucklakeTestCatalogEnvironment.createDuckdbConnection("ducklake:$lakeDb", "$dataDir/").use { conn ->
             conn.createStatement().use { st ->
-                st.execute("INSTALL ducklake")
-                st.execute("LOAD ducklake")
-                st.execute("ATTACH 'ducklake:$lakeDb' AS lake (DATA_PATH '$dataDir/', DUCKLAKE_VERSION '1.0', AUTOMATIC_MIGRATION FALSE)")
                 st.execute("USE lake")
                 st.execute("CREATE SCHEMA test_schema")
                 st.execute("CREATE TABLE test_schema.t AS SELECT i::INTEGER AS id FROM range(5) t(i)")

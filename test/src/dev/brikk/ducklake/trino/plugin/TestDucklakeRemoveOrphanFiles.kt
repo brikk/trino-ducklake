@@ -14,9 +14,7 @@
 package dev.brikk.ducklake.trino.plugin
 
 import io.trino.testing.AbstractTestQueryFramework
-import io.trino.testing.DistributedQueryRunner
 import io.trino.testing.QueryRunner
-import io.trino.testing.TestingSession.testSessionBuilder
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.AfterAll
@@ -33,8 +31,7 @@ import java.time.temporal.ChronoUnit
 import java.util.stream.Collectors
 
 /**
- * End-to-end coverage of `CALL system.remove_orphan_files(...)` — the first F6 maintenance
- * procedure (see dev-docs/DESIGN-maintenance.md). Orphans are files under a table's data path that
+ * End-to-end coverage of `CALL system.remove_orphan_files(...)`. Orphans are files under a table's data path that
  * no catalog row references (the residue of failed commits); the procedure deletes them only when
  * they are older than the retention threshold (the grace period that protects in-flight writers),
  * and the threshold is floored by `ducklake.remove-orphan-files.min-retention`.
@@ -58,38 +55,9 @@ class TestDucklakeRemoveOrphanFiles : AbstractTestQueryFramework() {
         val pg = DucklakeTestCatalogEnvironment.getServer()
         pgServer = pg
         dataDir = Files.createTempDirectory("ducklake-orphans-")
-        pg.createDatabase(dbName)
-        DriverManager.getConnection("jdbc:duckdb:").use { conn ->
-            conn.createStatement().use { stmt ->
-                stmt.execute("INSTALL postgres")
-                stmt.execute("LOAD postgres")
-                stmt.execute("INSTALL ducklake")
-                stmt.execute("LOAD ducklake")
-                stmt.execute("ATTACH '" + pg.getDuckDbAttachUri(dbName) + "' AS lake "
-                        + "(DATA_PATH '" + dataDir.toAbsolutePath() + "/', DUCKLAKE_VERSION '1.0', AUTOMATIC_MIGRATION FALSE)")
-                stmt.execute("CREATE SCHEMA lake.test_schema")
-            }
-        }
-
-        val session = testSessionBuilder()
-                .setCatalog("ducklake")
-                .setSchema("test_schema")
-                .build()
-        val runner = DistributedQueryRunner.builder(session).build()
-        try {
-            runner.installPlugin(DucklakePlugin())
-            runner.createCatalog("ducklake", "ducklake", mapOf(
-                    "ducklake.catalog.database-url" to pg.getJdbcUrl(dbName),
-                    "ducklake.catalog.database-user" to pg.getUser(),
-                    "ducklake.catalog.database-password" to pg.getPassword(),
-                    "ducklake.data-path" to (dataDir.toAbsolutePath().toString() + "/"),
-                    "fs.hadoop.enabled" to "true"))
-            return runner
-        }
-        catch (e: Throwable) {
-            runner.close()
-            throw e
-        }
+        val config = DucklakeTestCatalogEnvironment.createPostgresCatalog(dbName, "$dataDir/")
+        dev.brikk.ducklake.catalog.JdbcDucklakeCatalog(config.toCatalogConfig()).use { it.createSchema("test_schema") }
+        return DucklakeQueryRunner.builder().useCatalog(config).build()
     }
 
     @AfterAll
@@ -106,7 +74,7 @@ class TestDucklakeRemoveOrphanFiles : AbstractTestQueryFramework() {
      * deterministically. Must not be a "first .parquet under dataDir" scan: this suite is
      * SAME_THREAD over one shared catalog + data dir, and dropped-table files linger physically,
      * so a first-match scan can return a *different* table's dir — which silently plants the test's
-     * orphan where the per-table sweep never looks (the flake behind the line-181 control failure).
+     * orphan where the per-table sweep never looks.
      */
     private fun tableDataDir(bareTableName: String): Path =
         dataDir.resolve("test_schema").resolve(bareTableName)
@@ -171,7 +139,7 @@ class TestDucklakeRemoveOrphanFiles : AbstractTestQueryFramework() {
                 // Right prefix but not a managed data/delete extension — must survive.
                 plantOrphan(dir, "ducklake-scratch.log", ageDays = 30),
                 // A DuckDB metadata catalog can legally live under data_path. Even with the
-                // managed prefix it must never be eligible for orphan deletion (P-M3).
+                // managed prefix it must never be eligible for orphan deletion.
                 plantOrphan(dir, "ducklake-metadata.db", ageDays = 30),
             )
             // A genuine aged ducklake- orphan as a positive control (proves the sweep ran).
@@ -229,8 +197,7 @@ class TestDucklakeRemoveOrphanFiles : AbstractTestQueryFramework() {
 
     /**
      * A dropped table/schema remains time-travel-owned until its snapshots expire. Active-object
-     * listing cannot see it, so the old known set classified its aged data file as an orphan and
-     * deleted it. Catalog 0.7 returns the retained schema -> table -> file path hierarchy.
+     * listing cannot see it, so ownership must include retained history.
      */
     @Test
     fun catalogWideSweepProtectsDroppedUnexpiredSchemaFiles() {
@@ -308,9 +275,7 @@ class TestDucklakeRemoveOrphanFiles : AbstractTestQueryFramework() {
         try {
             computeActual("CREATE TABLE $table AS SELECT * FROM (VALUES (1, 'a')) AS t(id, name)")
             val dir = tableDataDir("orphan_dataset_dir")
-            // An orphaned lance dataset directory (from a failed commit): member files only. Named
-            // as this connector writes lance datasets (ducklake-<uuid>.lance) — the orphan scope
-            // recognizes it by that enclosing dataset-dir name, not by the member files.
+            // Legacy dataset residue is recognized by its enclosing directory, not member filenames.
             val dataset = dir.resolve("ducklake-${java.util.UUID.randomUUID()}.lance")
             val part = dataset.resolve("data").resolve("part-0.lance")
             val manifest = dataset.resolve("_versions").resolve("1.manifest")
@@ -346,7 +311,7 @@ class TestDucklakeRemoveOrphanFiles : AbstractTestQueryFramework() {
             computeActual("CREATE TABLE $table (id INTEGER)")
             val dir = Files.createDirectories(tableDataDir("orphan_mixed_paths"))
             val live = dir.resolve("ducklake-imported.parquet")
-            DriverManager.getConnection("jdbc:duckdb:").use { connection ->
+            DucklakeTestCatalogEnvironment.createDuckdbConnection().use { connection ->
                 connection.createStatement().use { statement ->
                     statement.execute("COPY (SELECT 42 AS id) TO '$live' (FORMAT PARQUET)")
                 }

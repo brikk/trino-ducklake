@@ -53,15 +53,7 @@ class TestDucklakeOrphanFilePathIdentity {
     @BeforeEach
     fun setUp() {
         warehouse = Files.createDirectories(root.resolve("warehouse"))
-        val database = root.resolve("catalog.db")
-        DriverManager.getConnection("jdbc:duckdb:").use { connection ->
-            connection.createStatement().use { statement ->
-                statement.execute("INSTALL ducklake")
-                statement.execute("LOAD ducklake")
-                statement.execute("ATTACH 'ducklake:$database' AS lake (DATA_PATH '$warehouse/', DUCKLAKE_VERSION '1.0', AUTOMATIC_MIGRATION FALSE)")
-            }
-        }
-        config = DucklakeConfig().setCatalogDatabaseUrl("jdbc:duckdb:$database")
+        config = DucklakeTestCatalogEnvironment.createLocalCatalog(root.resolve("catalog.db"), warehouse)
         catalog = JdbcDucklakeCatalog(config.toCatalogConfig())
         catalog.createSchema("test_schema")
         catalog.createTable("test_schema", "t", listOf(TableColumnSpec.leaf("id", "int32", true)),
@@ -80,7 +72,7 @@ class TestDucklakeOrphanFilePathIdentity {
         val tableId = catalog.getTable("test_schema", "t", catalog.currentSnapshotId)!!.tableId
         for (path in paths) {
             val physical = warehouse.resolve(path.substringAfterLast('/'))
-            DriverManager.getConnection("jdbc:duckdb:").use { connection ->
+            DucklakeTestCatalogEnvironment.createDuckdbConnection().use { connection ->
                 connection.createStatement().use { it.execute("COPY (SELECT 42 AS id) TO '$physical' (FORMAT PARQUET)") }
             }
             age(physical)

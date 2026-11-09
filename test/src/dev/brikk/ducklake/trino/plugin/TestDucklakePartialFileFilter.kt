@@ -14,9 +14,7 @@
 package dev.brikk.ducklake.trino.plugin
 
 import io.trino.testing.AbstractTestQueryFramework
-import io.trino.testing.DistributedQueryRunner
 import io.trino.testing.QueryRunner
-import io.trino.testing.TestingSession.testSessionBuilder
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.Test
@@ -25,7 +23,6 @@ import org.junit.jupiter.api.parallel.Execution
 import org.junit.jupiter.api.parallel.ExecutionMode
 import java.nio.file.Files
 import java.nio.file.Path
-import java.sql.Connection
 import java.sql.DriverManager
 
 /**
@@ -55,11 +52,8 @@ class TestDucklakePartialFileFilter : AbstractTestQueryFramework() {
         val lakeDb = rootDir.resolve("lake.db").toAbsolutePath().toString()
         val dataDir = rootDir.resolve("data").toAbsolutePath().toString()
 
-        DriverManager.getConnection("jdbc:duckdb:").use { conn ->
+        DucklakeTestCatalogEnvironment.createDuckdbConnection("ducklake:$lakeDb", "$dataDir/").use { conn ->
             conn.createStatement().use { st ->
-                st.execute("INSTALL ducklake")
-                st.execute("LOAD ducklake")
-                st.execute("ATTACH 'ducklake:$lakeDb' AS lake (DATA_PATH '$dataDir/', DUCKLAKE_VERSION '1.0', AUTOMATIC_MIGRATION FALSE)")
                 st.execute("USE lake")
                 st.execute("CREATE SCHEMA test_schema")
                 st.execute("CREATE TABLE test_schema.t (id INTEGER, data VARCHAR)")
@@ -85,20 +79,9 @@ class TestDucklakePartialFileFilter : AbstractTestQueryFramework() {
         }
         check(partialMax > beginSnapshot) { "expected partial_max ($partialMax) > begin ($beginSnapshot)" }
 
-        val session = testSessionBuilder().setCatalog("ducklake").setSchema("test_schema").build()
-        val runner = DistributedQueryRunner.builder(session).build()
-        try {
-            runner.installPlugin(DucklakePlugin())
-            runner.createCatalog("ducklake", "ducklake", mapOf(
-                    "ducklake.catalog.database-url" to "jdbc:duckdb:$lakeDb",
-                    "ducklake.data-path" to "$dataDir/",
-                    "fs.hadoop.enabled" to "true"))
-            return runner
-        }
-        catch (e: Throwable) {
-            runner.close()
-            throw e
-        }
+        return DucklakeQueryRunner.builder()
+            .useCatalog(DucklakeConfig().setCatalogDatabaseUrl("jdbc:duckdb:$lakeDb").setDataPath("$dataDir/"))
+            .build()
     }
 
     @AfterAll
@@ -137,9 +120,7 @@ class TestDucklakePartialFileFilter : AbstractTestQueryFramework() {
     /**
      * Integrity boundary: a data file the catalog marks partial (partial_max set) MUST physically
      * carry `_ducklake_internal_snapshot_id`. If it does not, the read must FAIL LOUD — returning an
-     * empty drop-set (the old behavior) would silently include rows newer than the requested
-     * snapshot. We simulate the corruption by setting partial_max on a plain (marker-less) file, per
-     * the reviewer's suggested proof.
+     * empty drop-set would silently include rows newer than the requested snapshot.
      */
     @Test
     fun partialFileMissingSnapshotMarkerFailsLoud() {

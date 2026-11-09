@@ -68,7 +68,7 @@ class TestDucklakeS3ParquetEndToEnd : AbstractTestQueryFramework() {
         val dbName = "ducklake_s3_parquet_e2e"
         pgServer = pg
         databaseName = dbName
-        bootstrapCatalog(pg, dbName)
+        bootstrapCatalog(dbName)
 
         val session = testSessionBuilder()
                 .setCatalog("ducklake")
@@ -109,21 +109,9 @@ class TestDucklakeS3ParquetEndToEnd : AbstractTestQueryFramework() {
     }
 
     /** Pure-metadata bootstrap: a fresh PG database ATTACHed with the s3 DATA_PATH + one schema. */
-    private fun bootstrapCatalog(
-            pg: dev.brikk.ducklake.catalog.TestingDucklakePostgreSqlCatalogServer, dbName: String) {
-        pg.createDatabase(dbName)
-        DriverManager.getConnection("jdbc:duckdb:").use { conn ->
-            conn.createStatement().use { stmt ->
-                stmt.execute("INSTALL postgres")
-                stmt.execute("LOAD postgres")
-                stmt.execute("INSTALL ducklake")
-                stmt.execute("LOAD ducklake")
-                // No data is written here, so the bootstrap DuckDB needs no s3 credentials.
-                stmt.execute("ATTACH '" + pg.getDuckDbAttachUri(dbName) + "' AS lake "
-                        + "(DATA_PATH 's3://$BUCKET/data/', DUCKLAKE_VERSION '1.0', AUTOMATIC_MIGRATION FALSE)")
-                stmt.execute("CREATE SCHEMA lake.test_schema")
-            }
-        }
+    private fun bootstrapCatalog(dbName: String) {
+        val config = DucklakeTestCatalogEnvironment.createPostgresCatalog(dbName, "s3://$BUCKET/data/")
+        dev.brikk.ducklake.catalog.JdbcDucklakeCatalog(config.toCatalogConfig()).use { it.createSchema("test_schema") }
     }
 
     private fun connectorProperties(

@@ -27,14 +27,7 @@ class TestDucklakeCatalogPool {
     fun boundPoolSettingsAndJdbcUrlParametersReachTheMetadataDriver() {
         val server = DucklakeTestCatalogEnvironment.getServer()
         val database = "pool_" + UUID.randomUUID().toString().replace("-", "")
-        server.createDatabase(database)
-        DriverManager.getConnection("jdbc:duckdb:").use { connection ->
-            connection.createStatement().use { statement ->
-                statement.execute("INSTALL ducklake; LOAD ducklake; INSTALL postgres; LOAD postgres")
-                statement.execute("ATTACH '${server.getDuckDbAttachUri(database)}' AS lake " +
-                    "(DATA_PATH '$data/', DUCKLAKE_VERSION '1.0', AUTOMATIC_MIGRATION FALSE)")
-            }
-        }
+        DucklakeTestCatalogEnvironment.createPostgresCatalog(database, "$data/")
         val baseUrl = server.getJdbcUrl(database)
         val application = "trino-pool-" + UUID.randomUUID().toString()
         val url = baseUrl + (if (baseUrl.contains('?')) "&" else "?") + "prepareThreshold=0&ApplicationName=$application"

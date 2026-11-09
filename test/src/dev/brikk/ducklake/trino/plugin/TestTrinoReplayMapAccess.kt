@@ -20,7 +20,6 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Path
 import java.sql.Connection
-import java.sql.DriverManager
 
 class TestTrinoReplayMapAccess {
     @TempDir
@@ -109,13 +108,7 @@ class TestTrinoReplayMapAccess {
 
     private fun withLake(action: (Connection, TrinoReplayEngine) -> Unit) {
         TrinoReplayEngine().use { engine ->
-            DriverManager.getConnection("jdbc:duckdb:").use { connection ->
-                connection.createStatement().use { statement ->
-                    statement.execute("INSTALL ducklake")
-                    statement.execute("LOAD ducklake")
-                    statement.execute("INSTALL postgres")
-                    statement.execute("LOAD postgres")
-                }
+            DucklakeTestCatalogEnvironment.createDuckdbConnection(listOf("ducklake", "postgres")).use { connection ->
                 attach(connection, engine, "first")
                 action(connection, engine)
             }
@@ -125,8 +118,8 @@ class TestTrinoReplayMapAccess {
     private fun attach(connection: Connection, engine: TrinoReplayEngine, name: String) {
         val uri = engine.metadataRewriter(name)
         val dataPath = directory.resolve(name).toString()
+        DucklakeTestCatalogEnvironment.attachDucklake(connection, "ducklake:$uri", dataPath)
         connection.createStatement().use { statement ->
-            statement.execute("ATTACH 'ducklake:$uri' AS lake (DATA_PATH '$dataPath', DUCKLAKE_VERSION '1.0', AUTOMATIC_MIGRATION FALSE)")
             statement.execute("CALL lake.set_option('data_inlining_row_limit', 0)")
         }
         engine.connect(OracleAttachment(uri, dataPath, "lake"))

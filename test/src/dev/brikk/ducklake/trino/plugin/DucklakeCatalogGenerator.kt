@@ -18,7 +18,6 @@ import dev.brikk.ducklake.catalog.TestingDucklakeLocalDuckDbCatalogFixture
 import dev.brikk.ducklake.catalog.TestingDucklakePostgreSqlCatalogServer
 import java.nio.file.Files
 import java.nio.file.Path
-import java.sql.DriverManager
 
 /**
  * Utility to generate a test Ducklake catalog using DuckDB's embedded JDBC driver.
@@ -50,7 +49,7 @@ object DucklakeCatalogGenerator {
     /**
      * Generate an isolated PostgreSQL test catalog in a unique database.
      * Each call creates a new database in the shared container, generates all test tables/views,
-     * and returns a map with JDBC URL + data directory for the new catalog.
+     * and returns the JDBC URL + data directory for the new catalog.
      * Use this for write tests that need their own catalog to avoid cross-test interference.
      */
     @JvmStatic
@@ -136,11 +135,8 @@ object DucklakeCatalogGenerator {
      * connector's `JdbcDucklakeCatalog` knows how to interpret.
      *
      * Unlike the PG path, this does not pre-create the 17-table test fixture
-     * data. Tests that need pre-bootstrapped tables either skip under
-     * `DUCKDB_QUACK` or create the rows themselves in setUp(). Most
-     * cross-engine tests create their own tables, so this is fine for the
-     * smoke set; expanding parity with the PG bootstrap is tracked in
-     * `TODO-WRITE-MODE.md`.
+     * data. Tests that need pre-bootstrapped tables must create their own data under
+     * `DUCKDB_QUACK`.
      */
     @JvmStatic
     @Throws(Exception::class)
@@ -160,22 +156,11 @@ object DucklakeCatalogGenerator {
         // JdbcDucklakeCatalog issues its first SELECT. Doing it here keeps the
         // connector-side init script idempotent and front-loads any extension-
         // download cost into test setup (visible) rather than the first query.
-        DriverManager.getConnection("jdbc:duckdb:").use { conn ->
+        DucklakeTestCatalogEnvironment.createDuckdbConnection(listOf("quack", "ducklake")).use { conn ->
             conn.createStatement().use { stmt ->
-                stmt.execute("INSTALL quack")
-                stmt.execute("LOAD quack")
-                stmt.execute("INSTALL ducklake")
-                stmt.execute("LOAD ducklake")
                 stmt.execute("CREATE OR REPLACE SECRET (TYPE quack, TOKEN '" + escapeSql(server.getToken()) + "')")
-                stmt.execute(
-                    "ATTACH '" + server.getDucklakeAttachUri() + "' AS lake " +
-                        "(DATA_PATH '" + escapeSql(dataDir.toAbsolutePath().toString()) +
-                        "', METADATA_CATALOG '" + metadataCatalog + "', DUCKLAKE_VERSION '1.0', AUTOMATIC_MIGRATION FALSE)",
-                )
-                // Touch the catalog so DuckLake materialises its metadata schema in the
-                // remote DuckDB before any reader hits it. CREATE SCHEMA on the lake
-                // is idempotent and produces visible metadata rows we can later assert
-                // against from JdbcDucklakeCatalog's jOOQ DSL.
+                stmt.execute(DucklakeTestCatalogEnvironment.ducklakeAttachSql(
+                    server.getDucklakeAttachUri(), dataDir.toAbsolutePath().toString(), metadataCatalog = metadataCatalog))
                 stmt.execute("USE lake")
                 stmt.execute("CREATE SCHEMA IF NOT EXISTS test_schema")
             }
@@ -214,10 +199,8 @@ object DucklakeCatalogGenerator {
         println("Backend: $backendName")
         println()
 
-        // Create target directory
         Files.createDirectories(TARGET_DIR)
 
-        // Remove old catalog data if exists
         if (Files.exists(catalogDirectory)) {
             println("Removing existing test catalog data...")
             deleteDirectory(catalogDirectory)
@@ -226,38 +209,20 @@ object DucklakeCatalogGenerator {
         println("Creating DuckLake 1.0 test catalog with DuckDB + Ducklake extension...")
         println()
 
-        // Create catalog directory and data directory
         Files.createDirectories(catalogDirectory)
         val dataDir = catalogDirectory.resolve("data")
         Files.createDirectories(dataDir)
 
-        // Connect to DuckDB in-memory
-        val jdbcUrl = "jdbc:duckdb:"
-        DriverManager.getConnection(jdbcUrl).use { conn ->
+        DucklakeTestCatalogEnvironment.createDuckdbConnection(listOf("ducklake") + extraExtensions).use { conn ->
             conn.createStatement().use { stmt ->
-                // Install and load extensions
-                println("Installing extensions...")
-                stmt.execute("INSTALL ducklake")
-                for (extension in extraExtensions) {
-                    stmt.execute("INSTALL $extension")
-                }
-                println("Loading extensions...")
-                stmt.execute("LOAD ducklake")
-                for (extension in extraExtensions) {
-                    stmt.execute("LOAD $extension")
-                }
-
-                // Attach Ducklake catalog
                 println("Attaching Ducklake catalog...")
-                val attachSql = "ATTACH '" + escapeSql(ducklakeAttachUri) + "' AS ducklake_db (DATA_PATH '" +
-                    escapeSql(dataDir.toAbsolutePath().toString()) + "', DUCKLAKE_VERSION '1.0', AUTOMATIC_MIGRATION FALSE)"
+                val attachSql = DucklakeTestCatalogEnvironment.ducklakeAttachSql(
+                    ducklakeAttachUri, dataDir.toAbsolutePath().toString(), "ducklake_db")
                 stmt.execute(attachSql)
 
-                // Create test schema in Ducklake
                 println("Creating test schema...")
                 stmt.execute("CREATE SCHEMA ducklake_db.test_schema")
 
-                // Table 1: Simple primitives only
                 println("Creating simple_table (primitives only)...")
                 stmt.execute(
                     """
@@ -283,7 +248,6 @@ object DucklakeCatalogGenerator {
                     """.trimIndent(),
                 )
 
-                // Table 2: Primitives + array(varchar)
                 println("Creating array_table (primitives + array)...")
                 stmt.execute(
                     """
@@ -308,7 +272,6 @@ object DucklakeCatalogGenerator {
                     """.trimIndent(),
                 )
 
-                // Table 3: Partitioned by region (identity transform)
                 println("Creating partitioned_table...")
                 stmt.execute(
                     """
@@ -346,7 +309,6 @@ object DucklakeCatalogGenerator {
                     """.trimIndent(),
                 )
 
-                // Table 4: Partitioned by temporal transforms (year, month, day)
                 println("Creating temporal_partitioned_table...")
                 stmt.execute(
                     """
@@ -387,7 +349,6 @@ object DucklakeCatalogGenerator {
                     """.trimIndent(),
                 )
 
-                // Table 5: Partitioned down to day level
                 println("Creating daily_partitioned_table...")
                 stmt.execute(
                     """
@@ -432,7 +393,6 @@ object DucklakeCatalogGenerator {
                     """.trimIndent(),
                 )
 
-                // Table 18: Partitioned by day on a TIMESTAMPTZ column
                 println("Creating timestamp_partitioned_table (TIMESTAMPTZ partitioned by day)...")
                 stmt.execute(
                     """
@@ -472,7 +432,6 @@ object DucklakeCatalogGenerator {
                     """.trimIndent(),
                 )
 
-                // Table 6: Nested types (struct, map, nested arrays)
                 println("Creating nested_table (struct, map, nested arrays)...")
                 stmt.execute(
                     """
@@ -511,7 +470,6 @@ object DucklakeCatalogGenerator {
                     """.trimIndent(),
                 )
 
-                // Table 7: Wide types table (covers many primitive types)
                 println("Creating wide_types_table...")
                 stmt.execute(
                     """
@@ -542,7 +500,6 @@ object DucklakeCatalogGenerator {
                     """.trimIndent(),
                 )
 
-                // Table 8: Nullable table (NULLs in every column type)
                 println("Creating nullable_table...")
                 stmt.execute(
                     """
@@ -569,7 +526,6 @@ object DucklakeCatalogGenerator {
                     """.trimIndent(),
                 )
 
-                // Table 9: Empty table (no rows, tests empty result handling)
                 println("Creating empty_table...")
                 stmt.execute(
                     """
@@ -581,7 +537,6 @@ object DucklakeCatalogGenerator {
                     """.trimIndent(),
                 )
 
-                // Table 10: Schema evolution table
                 println("Creating schema_evolution_table...")
                 stmt.execute(
                     """
@@ -613,7 +568,6 @@ object DucklakeCatalogGenerator {
                     """.trimIndent(),
                 )
 
-                // Table 11: Large-ish table for aggregation/stats tests
                 println("Creating aggregation_table...")
                 stmt.execute(
                     """
@@ -641,7 +595,6 @@ object DucklakeCatalogGenerator {
                 }
                 stmt.execute(insertSql.toString())
 
-                // Table 12: Table with deleted rows
                 println("Creating deleted_rows_table...")
                 stmt.execute(
                     """
@@ -669,7 +622,6 @@ object DucklakeCatalogGenerator {
                 println("Deleting rows from deleted_rows_table...")
                 stmt.execute("DELETE FROM ducklake_db.test_schema.deleted_rows_table WHERE name = 'delete'")
 
-                // Table 13: Simple struct with full-NULL rows and variable-length arrays with null elements
                 println("Creating complex_nulls_table...")
                 stmt.execute(
                     """
@@ -692,7 +644,6 @@ object DucklakeCatalogGenerator {
                     """.trimIndent(),
                 )
 
-                // Table 14: Multi-file table (separate INSERTs produce separate Parquet files)
                 println("Creating multi_file_table...")
                 stmt.execute(
                     """
@@ -738,7 +689,6 @@ object DucklakeCatalogGenerator {
                 println("Re-attaching catalog for inlined table creation...")
                 stmt.execute(attachSql)
 
-                // Table 15: Inlined data table
                 println("Creating inlined_table (data stays inlined in metadata catalog)...")
                 stmt.execute(
                     """
@@ -759,7 +709,6 @@ object DucklakeCatalogGenerator {
                     """.trimIndent(),
                 )
 
-                // Table 16: Inlined data table with NULLs
                 println("Creating inlined_nullable_table (inlined data with NULLs)...")
                 stmt.execute(
                     """
@@ -780,7 +729,6 @@ object DucklakeCatalogGenerator {
                     """.trimIndent(),
                 )
 
-                // Table 17: Mixed inlined + Parquet table
                 println("Creating mixed_inline_table (inlined + Parquet in same snapshot)...")
                 stmt.execute(
                     """
@@ -813,7 +761,6 @@ object DucklakeCatalogGenerator {
                     """.trimIndent(),
                 )
 
-                // ==================== Views ====================
 
                 println("Creating simple_view (compatible DuckDB view)...")
                 stmt.execute(

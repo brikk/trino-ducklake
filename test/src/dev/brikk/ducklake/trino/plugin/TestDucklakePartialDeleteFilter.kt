@@ -14,9 +14,7 @@
 package dev.brikk.ducklake.trino.plugin
 
 import io.trino.testing.AbstractTestQueryFramework
-import io.trino.testing.DistributedQueryRunner
 import io.trino.testing.QueryRunner
-import io.trino.testing.TestingSession.testSessionBuilder
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.Test
@@ -55,11 +53,8 @@ class TestDucklakePartialDeleteFilter : AbstractTestQueryFramework() {
         val lakeDb = rootDir.resolve("lake.db").toAbsolutePath().toString()
         val dataDir = rootDir.resolve("data").toAbsolutePath().toString()
 
-        DriverManager.getConnection("jdbc:duckdb:").use { conn ->
+        DucklakeTestCatalogEnvironment.createDuckdbConnection("ducklake:$lakeDb", "$dataDir/").use { conn ->
             conn.createStatement().use { st ->
-                st.execute("INSTALL ducklake")
-                st.execute("LOAD ducklake")
-                st.execute("ATTACH 'ducklake:$lakeDb' AS lake (DATA_PATH '$dataDir/', DUCKLAKE_VERSION '1.0', AUTOMATIC_MIGRATION FALSE)")
                 st.execute("USE lake")
                 st.execute("CREATE SCHEMA test_schema")
                 st.execute("CREATE TABLE test_schema.t AS SELECT i::INTEGER AS id FROM range(10) t(i)")
@@ -77,28 +72,15 @@ class TestDucklakePartialDeleteFilter : AbstractTestQueryFramework() {
                     firstDeleteSnapshot = rs.getLong(1)
                     partialMax = rs.getLong(2)
                 }
-                // Reproduce upstream's flush-written shape: embedded snapshots are authoritative,
-                // while the catalog's partial_max is NULL. Before TR-6 the connector therefore
-                // treated this as a 2-column file and applied the future deletion during time travel.
+                // Upstream flush-written files use embedded snapshots even when partial_max is NULL.
                 st.executeUpdate("UPDATE ducklake_delete_file SET partial_max = NULL WHERE partial_max IS NOT NULL")
             }
         }
         check(partialMax > firstDeleteSnapshot) { "expected partial_max ($partialMax) > begin ($firstDeleteSnapshot)" }
 
-        val session = testSessionBuilder().setCatalog("ducklake").setSchema("test_schema").build()
-        val runner = DistributedQueryRunner.builder(session).build()
-        try {
-            runner.installPlugin(DucklakePlugin())
-            runner.createCatalog("ducklake", "ducklake", mapOf(
-                    "ducklake.catalog.database-url" to "jdbc:duckdb:$lakeDb",
-                    "ducklake.data-path" to "$dataDir/",
-                    "fs.hadoop.enabled" to "true"))
-            return runner
-        }
-        catch (e: Throwable) {
-            runner.close()
-            throw e
-        }
+        return DucklakeQueryRunner.builder()
+            .useCatalog(DucklakeConfig().setCatalogDatabaseUrl("jdbc:duckdb:$lakeDb").setDataPath("$dataDir/"))
+            .build()
     }
 
     @AfterAll

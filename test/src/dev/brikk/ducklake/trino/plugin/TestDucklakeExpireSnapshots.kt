@@ -14,9 +14,7 @@
 package dev.brikk.ducklake.trino.plugin
 
 import io.trino.testing.AbstractTestQueryFramework
-import io.trino.testing.DistributedQueryRunner
 import io.trino.testing.QueryRunner
-import io.trino.testing.TestingSession.testSessionBuilder
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.Test
@@ -29,8 +27,8 @@ import java.sql.DriverManager
 import java.util.stream.Collectors
 
 /**
- * End-to-end coverage of `expire_snapshots` + `cleanup_old_files` — the F6 catalog-driven reclaim
- * pair (see dev-docs/DESIGN-maintenance.md). expire_snapshots deletes old (catalog-wide) snapshots
+ * End-to-end coverage of `expire_snapshots` + `cleanup_old_files`.
+ * expire_snapshots deletes old (catalog-wide) snapshots
  * and SCHEDULES the now-dead data/delete files; cleanup_old_files physically deletes scheduled
  * files past the grace period. Two-phase deletion: expiry never unlinks a file directly.
  *
@@ -54,35 +52,10 @@ class TestDucklakeExpireSnapshots : AbstractTestQueryFramework() {
         pgServer = pg
         val dbName = "ducklake_expire_snapshots_e2e"
         dataDir = Files.createTempDirectory("ducklake-expire-")
-        pg.createDatabase(dbName)
-        DriverManager.getConnection("jdbc:duckdb:").use { conn ->
-            conn.createStatement().use { stmt ->
-                stmt.execute("INSTALL postgres")
-                stmt.execute("LOAD postgres")
-                stmt.execute("INSTALL ducklake")
-                stmt.execute("LOAD ducklake")
-                stmt.execute("ATTACH '" + pg.getDuckDbAttachUri(dbName) + "' AS lake "
-                        + "(DATA_PATH '" + dataDir.toAbsolutePath() + "/', DUCKLAKE_VERSION '1.0', AUTOMATIC_MIGRATION FALSE)")
-                stmt.execute("CREATE SCHEMA lake.test_schema")
-            }
-        }
-        val session = testSessionBuilder().setCatalog("ducklake").setSchema("test_schema").build()
-        val runner = DistributedQueryRunner.builder(session).build()
-        try {
-            runner.installPlugin(DucklakePlugin())
-            runner.createCatalog("ducklake", "ducklake", mapOf(
-                    "ducklake.catalog.database-url" to pg.getJdbcUrl(dbName),
-                    "ducklake.catalog.database-user" to pg.getUser(),
-                    "ducklake.catalog.database-password" to pg.getPassword(),
-                    "ducklake.data-path" to (dataDir.toAbsolutePath().toString() + "/"),
-                    "ducklake.maintenance.min-retention" to "0s",
-                    "fs.hadoop.enabled" to "true"))
-            return runner
-        }
-        catch (e: Throwable) {
-            runner.close()
-            throw e
-        }
+        val config = DucklakeTestCatalogEnvironment.createPostgresCatalog(dbName, "$dataDir/")
+        dev.brikk.ducklake.catalog.JdbcDucklakeCatalog(config.toCatalogConfig()).use { it.createSchema("test_schema") }
+        return DucklakeQueryRunner.builder().useCatalog(config)
+            .addConnectorProperty("ducklake.maintenance.min-retention", "0s").build()
     }
 
     @AfterAll
@@ -207,9 +180,7 @@ class TestDucklakeExpireSnapshots : AbstractTestQueryFramework() {
 
     /**
      * An explicit EMPTY snapshot_ids array means "expire nothing" — it must NOT fall through to
-     * retention-threshold expiry. Regression: the procedure used to key off the *filtered* set
-     * being non-empty, so `ARRAY[]` collapsed into the retention branch and (with a short/zero
-     * threshold) expired every non-latest snapshot.
+     * retention-threshold expiry, which could expire every non-latest snapshot.
      */
     @Test
     fun emptyExplicitSnapshotIdsIsNoOpNotRetentionExpiry() {
@@ -343,12 +314,9 @@ class TestDucklakeExpireSnapshots : AbstractTestQueryFramework() {
     }
 
     private fun assertDuckdbCleanupPreservesOwner(owner: String) {
-        DriverManager.getConnection("jdbc:duckdb:").use { conn ->
+        DucklakeTestCatalogEnvironment.createDuckdbConnection(
+                pgServer!!.getDuckDbAttachUri("ducklake_expire_snapshots_e2e"), "$dataDir/").use { conn ->
             conn.createStatement().use { stmt ->
-                stmt.execute("LOAD postgres")
-                stmt.execute("LOAD ducklake")
-                stmt.execute("ATTACH '" + pgServer!!.getDuckDbAttachUri("ducklake_expire_snapshots_e2e")
-                        + "' AS lake (DATA_PATH '" + dataDir.toAbsolutePath() + "/', DUCKLAKE_VERSION '1.0', AUTOMATIC_MIGRATION FALSE)")
                 stmt.execute("CALL ducklake_cleanup_old_files('lake', cleanup_all => true)")
                 stmt.executeQuery("SELECT id FROM lake.$owner").use { rs ->
                     assertThat(rs.next()).isTrue()
@@ -570,8 +538,7 @@ class TestDucklakeExpireSnapshots : AbstractTestQueryFramework() {
 
     /**
      * Expiring a dropped VIEW's whole lifetime GCs its dangling `ducklake_view` rows, while a live
-     * view is untouched. Companion to deadDroppedTableMetadataIsGarbageCollected for the
-     * schema/view/macro sweep added with the compaction work.
+     * view is untouched.
      */
     @Test
     @Throws(Exception::class)

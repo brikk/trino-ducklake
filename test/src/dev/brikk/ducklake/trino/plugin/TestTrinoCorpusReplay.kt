@@ -24,7 +24,6 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
 import java.nio.file.Files
 import java.nio.file.Path
-import java.sql.DriverManager
 
 /**
  * Corpus replay with the Trino engine mirroring lake reads (live-vs-live
@@ -62,14 +61,7 @@ class TestTrinoCorpusReplay {
     fun setup() {
         val ducklakeOk =
             runCatching {
-                DriverManager.getConnection("jdbc:duckdb:").use { c ->
-                    c.createStatement().use {
-                        it.execute("INSTALL ducklake")
-                        it.execute("LOAD ducklake")
-                        it.execute("INSTALL postgres")
-                        it.execute("LOAD postgres")
-                    }
-                }
+                DucklakeTestCatalogEnvironment.createDuckdbConnection(listOf("ducklake", "postgres")).use { }
             }.isSuccess
         assumeTrue(ducklakeOk, "ducklake/postgres extensions not installable (network?)")
         assumeTrue(Files.isDirectory(corpusRoot), "corpus submodule not initialized at $corpusRoot")

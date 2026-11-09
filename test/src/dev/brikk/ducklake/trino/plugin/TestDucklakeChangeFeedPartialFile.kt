@@ -14,9 +14,7 @@
 package dev.brikk.ducklake.trino.plugin
 
 import io.trino.testing.AbstractTestQueryFramework
-import io.trino.testing.DistributedQueryRunner
 import io.trino.testing.QueryRunner
-import io.trino.testing.TestingSession.testSessionBuilder
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.Test
@@ -28,18 +26,10 @@ import java.nio.file.Path
 import java.sql.DriverManager
 
 /**
- * Change-feed correctness over a cross-snapshot compacted ("partial") data file — the insert-side
- * `partial_max` fix (R6). DuckLake's `merge_adjacent_files` merges rows from several source
+ * Change-feed correctness over a cross-snapshot compacted ("partial") data file.
+ * DuckLake's `merge_adjacent_files` merges rows from several source
  * snapshots into ONE Parquet file whose `begin_snapshot` is only the MIN origin and `partial_max`
  * the MAX; each row physically carries its origin `_ducklake_internal_snapshot_id`.
- *
- * Before the fix, the change feed stamped EVERY merged row with the file's `begin_snapshot`, so
- * `table_insertions` / `table_changes` mis-attributed all rows to one snapshot and could include or
- * exclude rows on the wrong side of the (inclusive) window boundary. This test drives DuckDB to
- * produce the partial file, then asserts Trino attributes each row to its true origin snapshot and
- * windows correctly. Mirrors upstream DuckLake / datafusion-ducklake #185.
- *
- * Self-contained local DuckLake catalog (same recipe as TestDucklakePartialFileFilter).
  *
  * SAME_THREAD: single shared local catalog.
  */
@@ -57,11 +47,8 @@ class TestDucklakeChangeFeedPartialFile : AbstractTestQueryFramework() {
         val lakeDb = rootDir.resolve("lake.db").toAbsolutePath().toString()
         val dataDir = rootDir.resolve("data").toAbsolutePath().toString()
 
-        DriverManager.getConnection("jdbc:duckdb:").use { conn ->
+        DucklakeTestCatalogEnvironment.createDuckdbConnection("ducklake:$lakeDb", "$dataDir/").use { conn ->
             conn.createStatement().use { st ->
-                st.execute("INSTALL ducklake")
-                st.execute("LOAD ducklake")
-                st.execute("ATTACH 'ducklake:$lakeDb' AS lake (DATA_PATH '$dataDir/', DUCKLAKE_VERSION '1.0', AUTOMATIC_MIGRATION FALSE)")
                 st.execute("USE lake")
                 st.execute("CREATE SCHEMA test_schema")
                 st.execute("CREATE TABLE test_schema.t (id INTEGER, data VARCHAR)")
@@ -87,20 +74,9 @@ class TestDucklakeChangeFeedPartialFile : AbstractTestQueryFramework() {
         }
         check(snap2 > snap1) { "expected partial_max ($snap2) > begin ($snap1)" }
 
-        val session = testSessionBuilder().setCatalog("ducklake").setSchema("test_schema").build()
-        val runner = DistributedQueryRunner.builder(session).build()
-        try {
-            runner.installPlugin(DucklakePlugin())
-            runner.createCatalog("ducklake", "ducklake", mapOf(
-                    "ducklake.catalog.database-url" to "jdbc:duckdb:$lakeDb",
-                    "ducklake.data-path" to "$dataDir/",
-                    "fs.hadoop.enabled" to "true"))
-            return runner
-        }
-        catch (e: Throwable) {
-            runner.close()
-            throw e
-        }
+        return DucklakeQueryRunner.builder()
+            .useCatalog(DucklakeConfig().setCatalogDatabaseUrl("jdbc:duckdb:$lakeDb").setDataPath("$dataDir/"))
+            .build()
     }
 
     @AfterAll
@@ -119,8 +95,7 @@ class TestDucklakeChangeFeedPartialFile : AbstractTestQueryFramework() {
     @Test
     fun eachRowAttributedToItsOriginSnapshotNotBeginSnapshot() {
         // Over the FULL window both source snapshots' rows appear, and — crucially — each row's
-        // reported snapshot_id is its OWN origin, not the merged file's begin_snapshot (snap1 for
-        // all). Before the fix every 's2' row reported snap1.
+        // reported snapshot_id is its OWN origin, not the merged file's begin_snapshot.
         val all = computeActual("SELECT snapshot_id, data FROM " +
                 "TABLE(ducklake.system.table_insertions('test_schema', 't', 1, $snap2))")
                 .materializedRows
@@ -135,7 +110,7 @@ class TestDucklakeChangeFeedPartialFile : AbstractTestQueryFramework() {
     fun windowToFirstSnapshotExcludesLaterOriginRows() {
         // Window [1, snap1]: only the first insert's rows are in range. The second insert's rows
         // (origin snap2 > snap1) must be DROPPED even though they live in the same physical file
-        // whose begin_snapshot == snap1. Before the fix they leaked in (all rows stamped snap1).
+        // whose begin_snapshot == snap1.
         val rows = insertions(1, snap1)
         assertThat(rows.map { it.second }.distinct()).containsExactly("s1")
         assertThat(rows).hasSize(100)

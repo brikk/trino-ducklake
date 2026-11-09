@@ -129,6 +129,13 @@ port, feature and release history is not an instruction to redo shipped work.
 
 ## Architecture and delivery hygiene
 
+- [ ] Narrow replay TYPE_MISMATCH skips to proven varchar literals. The classifier's current
+  `(var)?char(n)` message pattern also accepts CHAR and explicitly bounded expressions; neither
+  proves an implicit literal cast. Preserve failures for connector type-mapping defects.
+- [ ] Strengthen two test checks in a separate assertion-change package: the purported id-range
+  checks in `TestDucklakeChangeFeedPartialFile.windowToSecondSnapshotOnlyIncludesLaterOriginRows`
+  repeat snapshot/data checks (`insertions` discards id); the field-count `allSatisfy` in
+  `TestDucklakeS3ParquetEndToEnd.schemaEvolutionOverS3` admits an empty result.
 - [ ] Repair opt-in qualification fixtures' explicit format selection: the four legacy
   `TestPublishedNestedReads` cases select a 1.1 client for 1.0 lakes; the two direct-reader
   statistics cases in `TestR07ConsumerTrial` enable 1.1 reads after constructing a catalog

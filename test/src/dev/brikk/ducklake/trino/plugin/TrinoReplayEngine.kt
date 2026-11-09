@@ -44,8 +44,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * `accepts` gate: alias-qualified reads only (`<alias>.<table>` — bare names may be the oracle's
  * in-memory temp tables, not the lake) AND [TrinoCorpusDialect] returns a `Run`. The dialect is
  * transpile-first (brikk-sql translates DuckDB→Trino and keys off the transpiler's own
- * unmappable/unsupported/verify signals), replacing the former hand-maintained DuckDB-ism token
- * deny-list + hand-rolled rewrites. [executeQuery] runs the transpiled SQL (after the
+ * unmappable/unsupported/verify signals). [executeQuery] runs the transpiled SQL (after the
  * corpus-specific alias→catalog rewrite).
  */
 class TrinoReplayEngine : ReplayReadEngine {
@@ -182,65 +181,13 @@ class TrinoReplayEngine : ReplayReadEngine {
                 }
                 runner.execute(session, typedSql)
             } catch (e: RuntimeException) {
-                throw classifyEngineError(e)
+                throw classifyEngineError(e, currentCatalog) { schema, table ->
+                    currentConfig?.let { lakeRelationsNamed(it, schema, table) }
+                }
             }
         val types = result.types
         return result.materializedRows.map { row ->
             (0 until row.fieldCount).map { i -> renderTyped(row.getField(i), types[i]) }
-        }
-    }
-
-    /**
-     * Turns an engine error into a [ReplayEngineSkip] only when its server-side Trino error code
-     * shows it is not a connector defect; message text only narrows a code, never decides alone:
-     *  - `NOT_SUPPORTED` thrown from this connector's own code: a deliberate capability gate.
-     *    `NOT_SUPPORTED` raised by Trino itself (e.g. its Parquet reader refusing a column type
-     *    the connector exposed) is a connector gap and fails.
-     *  - `FUNCTION_NOT_FOUND` for a function name Trino does not have at all. An argument-type
-     *    mismatch carries the same code but can come from a wrong column type mapping, so it fails.
-     *  - `TYPE_MISMATCH` comparing against a length-bounded `varchar(n)`, i.e. a string literal
-     *    DuckDB would implicitly cast. Connector columns map to unbounded `varchar`.
-     *  - `TABLE_NOT_FOUND` for a name the lake's catalog has never held as a table and holds
-     *    only as a non-Trino-dialect view or not at all (oracle-local tables, file paths).
-     * Everything else propagates as a failure.
-     */
-    private fun classifyEngineError(e: RuntimeException): RuntimeException {
-        val failure = generateSequence<Throwable>(e) { it.cause }
-            .filterIsInstance<FailureException>()
-            .firstOrNull()
-            ?.failureInfo
-            ?: return e
-        val first = failure.message.orEmpty().lineSequence().first()
-        val reason = when (failure.errorInfo?.name) {
-            "NOT_SUPPORTED" ->
-                "connector rejects an explicitly unsupported capability: $first".takeIf { thrownByConnector(failure) }
-            "FUNCTION_NOT_FOUND" ->
-                "dialect: function does not exist in Trino: $first".takeIf { UNKNOWN_FUNCTION.containsMatchIn(first) }
-            "TYPE_MISMATCH" ->
-                "dialect: no implicit cast from a string literal: $first".takeIf { STRING_LITERAL_OPERAND.containsMatchIn(first) }
-            "TABLE_NOT_FOUND" -> relationOutsideLake(first)
-            else -> null
-        }
-        return reason?.let { ReplayEngineSkip(it) } ?: e
-    }
-
-    private fun thrownByConnector(failure: FailureInfo): Boolean =
-        failure.stack.firstOrNull()?.startsWith(CONNECTOR_PACKAGE) == true
-
-    private fun relationOutsideLake(message: String): String? {
-        val match = MISSING_TABLE.find(message) ?: return null
-        val (catalog, schema, table) = match.destructured
-        if (catalog != currentCatalog) return null
-        val config = currentConfig ?: return null
-        val schemaName = unquote(schema)
-        val tableName = unquote(table)
-        val dialects = lakeRelationsNamed(config, schemaName, tableName)
-        return when {
-            dialects.isEmpty() ->
-                "query reads $schemaName.$tableName, which the lake has never contained (oracle-local table or file)"
-            dialects.all { it != null && !isTrinoDialect(it) } ->
-                "lake view $schemaName.$tableName has a non-Trino dialect (${dialects.toSet()}); the connector does not serve it"
-            else -> null
         }
     }
 
@@ -263,16 +210,6 @@ class TrinoReplayEngine : ReplayReadEngine {
                     }
                 }
             }
-
-    private fun isTrinoDialect(dialect: String): Boolean =
-        dialect.substringBefore('/').equals(DucklakeTrinoViewCodec.DIALECT, ignoreCase = true)
-
-    private fun unquote(identifier: String): String =
-        if (identifier.length >= 2 && identifier.startsWith('"') && identifier.endsWith('"')) {
-            identifier.substring(1, identifier.length - 1).replace("\"\"", "\"")
-        } else {
-            identifier
-        }
 
     /**
      * Renders a materialized Trino value into DuckDB's text dialect so it
@@ -325,10 +262,74 @@ class TrinoReplayEngine : ReplayReadEngine {
         runCatching { server.close() }
     }
 
-    private companion object {
-        const val CONNECTOR_PACKAGE = "dev.brikk.ducklake.trino."
-        val UNKNOWN_FUNCTION = Regex("""Function '[^']+' not registered""")
-        val STRING_LITERAL_OPERAND = Regex("""Cannot apply operator: .*\b(var)?char\(\d+\)""")
-        val MISSING_TABLE = Regex("""Table '([^.']+)\.("[^"]*(?:""[^"]*)*"|[^.']+)\.(.+)' does not exist""")
+    companion object {
+        private const val CONNECTOR_PACKAGE = "dev.brikk.ducklake.trino."
+        private val UNKNOWN_FUNCTION = Regex("""Function '[^']+' not registered""")
+        private val STRING_LITERAL_OPERAND = Regex("""Cannot apply operator: .*\b(var)?char\(\d+\)""")
+        private val MISSING_TABLE = Regex("""Table '([^.']+)\.("[^"]*(?:""[^"]*)*"|[^.']+)\.(.+)' does not exist""")
+
+        /**
+         * Message text only narrows server-side error codes. Engine NOT_SUPPORTED and function
+         * argument mismatches fail; a connector NOT_SUPPORTED gate or unknown function can skip.
+         * Bounded character operands approximate DuckDB's implicit literal casts. Relation lookup
+         * includes every snapshot: a name ever held by a table or Trino view must fail, not skip.
+         * A null lookup means no lake is connected, not an empty relation history.
+         */
+        internal fun classifyEngineError(
+            e: RuntimeException,
+            currentCatalog: String?,
+            lakeRelationsNamed: (String, String) -> List<String?>?,
+        ): RuntimeException {
+            val failure = generateSequence<Throwable>(e) { it.cause }
+                .filterIsInstance<FailureException>()
+                .firstOrNull()
+                ?.failureInfo
+                ?: return e
+            val first = failure.message.orEmpty().lineSequence().first()
+            val reason = when (failure.errorInfo?.name) {
+                "NOT_SUPPORTED" ->
+                    "connector rejects an explicitly unsupported capability: $first".takeIf { thrownByConnector(failure) }
+                "FUNCTION_NOT_FOUND" ->
+                    "dialect: function does not exist in Trino: $first".takeIf { UNKNOWN_FUNCTION.containsMatchIn(first) }
+                "TYPE_MISMATCH" ->
+                    "dialect: no implicit cast from a string literal: $first".takeIf { STRING_LITERAL_OPERAND.containsMatchIn(first) }
+                "TABLE_NOT_FOUND" -> relationOutsideLake(first, currentCatalog, lakeRelationsNamed)
+                else -> null
+            }
+            return reason?.let { ReplayEngineSkip(it) } ?: e
+        }
+
+        private fun thrownByConnector(failure: FailureInfo): Boolean =
+            failure.stack.firstOrNull()?.startsWith(CONNECTOR_PACKAGE) == true
+
+        private fun relationOutsideLake(
+            message: String,
+            currentCatalog: String?,
+            lakeRelationsNamed: (String, String) -> List<String?>?,
+        ): String? {
+            val match = MISSING_TABLE.find(message) ?: return null
+            val (catalog, schema, table) = match.destructured
+            if (catalog != currentCatalog) return null
+            val schemaName = unquote(schema)
+            val tableName = unquote(table)
+            val dialects = lakeRelationsNamed(schemaName, tableName) ?: return null
+            return when {
+                dialects.isEmpty() ->
+                    "query reads $schemaName.$tableName, which the lake has never contained (oracle-local table or file)"
+                dialects.all { it != null && !isTrinoDialect(it) } ->
+                    "lake view $schemaName.$tableName has a non-Trino dialect (${dialects.toSet()}); the connector does not serve it"
+                else -> null
+            }
+        }
+
+        private fun isTrinoDialect(dialect: String): Boolean =
+            dialect.substringBefore('/').equals(DucklakeTrinoViewCodec.DIALECT, ignoreCase = true)
+
+        private fun unquote(identifier: String): String =
+            if (identifier.length >= 2 && identifier.startsWith('"') && identifier.endsWith('"')) {
+                identifier.substring(1, identifier.length - 1).replace("\"\"", "\"")
+            } else {
+                identifier
+            }
     }
 }

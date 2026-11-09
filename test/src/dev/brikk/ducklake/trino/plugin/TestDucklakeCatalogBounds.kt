@@ -13,7 +13,6 @@ package dev.brikk.ducklake.trino.plugin
 import dev.brikk.ducklake.catalog.DucklakeInvalidOperationException
 import dev.brikk.ducklake.catalog.JdbcDucklakeCatalog
 import io.trino.testing.DistributedQueryRunner
-import io.trino.testing.TestingSession.testSessionBuilder
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Test
@@ -94,28 +93,15 @@ class TestDucklakeCatalogBounds {
     private fun withLake(seed: String, action: (DistributedQueryRunner, JdbcDucklakeCatalog) -> Unit) {
         val server = DucklakeTestCatalogEnvironment.getServer()
         val database = "trial017_" + UUID.randomUUID().toString().replace("-", "")
-        server.createDatabase(database)
-        config = DucklakeConfig().setCatalogDatabaseUrl(server.getJdbcUrl(database))
-            .setCatalogDatabaseUser(server.getUser()).setCatalogDatabasePassword(server.getPassword())
-            .setDataPath(data.toString())
-        DriverManager.getConnection("jdbc:duckdb:").use { connection ->
+        config = DucklakeTestCatalogEnvironment.createPostgresCatalog(database, "$data/").setDataPath(data.toString())
+        DucklakeTestCatalogEnvironment.createDuckdbConnection(server.getDuckDbAttachUri(database), "$data/").use { connection ->
             connection.createStatement().use { statement ->
-                statement.execute("INSTALL ducklake; LOAD ducklake; INSTALL postgres; LOAD postgres")
-                statement.execute("ATTACH '${server.getDuckDbAttachUri(database)}' AS lake " +
-                    "(DATA_PATH '$data/', DUCKLAKE_VERSION '1.0', AUTOMATIC_MIGRATION FALSE)")
                 statement.execute("CALL lake.set_option('data_inlining_row_limit',0)")
                 statement.execute(seed)
             }
         }
-        val session = testSessionBuilder().setCatalog("ducklake").setSchema("main").build()
-        DistributedQueryRunner.builder(session).setWorkerCount(2)
+        DucklakeQueryRunner.builder().useCatalog(config).amendSession { it.setSchema("main") }.setWorkerCount(2)
             .addCoordinatorProperty("node-scheduler.include-coordinator", "false").build().use { runner ->
-                runner.installPlugin(DucklakePlugin())
-                runner.createCatalog("ducklake", "ducklake", mapOf(
-                    "ducklake.catalog.database-url" to server.getJdbcUrl(database),
-                    "ducklake.catalog.database-user" to server.getUser(),
-                    "ducklake.catalog.database-password" to server.getPassword(),
-                    "ducklake.data-path" to data.toString(), "fs.hadoop.enabled" to "true"))
                 JdbcDucklakeCatalog(config.toCatalogConfig()).use { catalog -> action(runner, catalog) }
             }
     }

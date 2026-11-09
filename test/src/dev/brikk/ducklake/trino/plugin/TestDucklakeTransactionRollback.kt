@@ -41,7 +41,6 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
-import java.sql.DriverManager
 import java.sql.SQLException
 import java.util.Optional
 
@@ -60,16 +59,7 @@ class TestDucklakeTransactionRollback {
     @BeforeEach
     fun setUp() {
         val warehouse = Files.createDirectories(root.resolve("warehouse"))
-        val database = root.resolve("catalog.db")
-        DriverManager.getConnection("jdbc:duckdb:").use { connection ->
-            connection.createStatement().use { statement ->
-                statement.execute("INSTALL ducklake")
-                statement.execute("LOAD ducklake")
-                statement.execute("ATTACH 'ducklake:$database' AS lake " +
-                        "(DATA_PATH '$warehouse/', DUCKLAKE_VERSION '1.0', AUTOMATIC_MIGRATION FALSE)")
-            }
-        }
-        val config = DucklakeConfig().setCatalogDatabaseUrl("jdbc:duckdb:$database")
+        val config = DucklakeTestCatalogEnvironment.createLocalCatalog(root.resolve("catalog.db"), warehouse)
         rawCatalog = JdbcDucklakeCatalog(config.toCatalogConfig())
         rawCatalog.createSchema("test_schema")
         val catalog = object : DucklakeCatalog by rawCatalog {

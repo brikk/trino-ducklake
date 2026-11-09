@@ -14,9 +14,7 @@
 package dev.brikk.ducklake.trino.plugin
 
 import io.trino.testing.AbstractTestQueryFramework
-import io.trino.testing.DistributedQueryRunner
 import io.trino.testing.QueryRunner
-import io.trino.testing.TestingSession.testSessionBuilder
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.Test
@@ -29,12 +27,10 @@ import java.sql.DriverManager
 import java.util.Comparator
 
 /**
- * End-to-end coverage of `rewrite_data_files` — the non-partial / Iceberg-style compaction WRITER
- * (dev-docs/DESIGN-maintenance.md § 7). Full-Trino: a PostgreSQL metadata catalog ATTACHed with a
- * LOCAL data path, the connector's own parquet read+write path (the v1 writer is non-partial).
+ * End-to-end coverage of `rewrite_data_files` with PostgreSQL metadata and local Parquet data.
  * Asserts file count drops while the row set / values are preserved,
  * time-travel still resolves the pre-compaction files, deletes are physically applied, and the v1
- * gates (partitioned reject, below-count no-op) hold.
+ * below-count no-op holds.
  *
  * SAME_THREAD: writes to one shared catalog.
  */
@@ -47,36 +43,10 @@ class TestDucklakeRewriteDataFiles : AbstractTestQueryFramework() {
 
     @Throws(Exception::class)
     override fun createQueryRunner(): QueryRunner {
-        val pg = DucklakeTestCatalogEnvironment.getServer()
         dataDir = Files.createTempDirectory("ducklake-rewrite-")
-        pg.createDatabase(dbName)
-        DriverManager.getConnection("jdbc:duckdb:").use { conn ->
-            conn.createStatement().use { stmt ->
-                stmt.execute("INSTALL postgres")
-                stmt.execute("LOAD postgres")
-                stmt.execute("INSTALL ducklake")
-                stmt.execute("LOAD ducklake")
-                stmt.execute("ATTACH '" + pg.getDuckDbAttachUri(dbName) + "' AS lake "
-                        + "(DATA_PATH '" + dataDir.toAbsolutePath() + "/', DUCKLAKE_VERSION '1.0', AUTOMATIC_MIGRATION FALSE)")
-                stmt.execute("CREATE SCHEMA lake.test_schema")
-            }
-        }
-        val session = testSessionBuilder().setCatalog("ducklake").setSchema("test_schema").build()
-        val runner = DistributedQueryRunner.builder(session).build()
-        try {
-            runner.installPlugin(DucklakePlugin())
-            runner.createCatalog("ducklake", "ducklake", mapOf(
-                    "ducklake.catalog.database-url" to pg.getJdbcUrl(dbName),
-                    "ducklake.catalog.database-user" to pg.getUser(),
-                    "ducklake.catalog.database-password" to pg.getPassword(),
-                    "ducklake.data-path" to (dataDir.toAbsolutePath().toString() + "/"),
-                    "fs.hadoop.enabled" to "true"))
-            return runner
-        }
-        catch (e: Throwable) {
-            runner.close()
-            throw e
-        }
+        val config = DucklakeTestCatalogEnvironment.createPostgresCatalog(dbName, "$dataDir/")
+        dev.brikk.ducklake.catalog.JdbcDucklakeCatalog(config.toCatalogConfig()).use { it.createSchema("test_schema") }
+        return DucklakeQueryRunner.builder().useCatalog(config).build()
     }
 
     @AfterAll
@@ -268,10 +238,8 @@ class TestDucklakeRewriteDataFiles : AbstractTestQueryFramework() {
 
     /**
      * File basenames are not unique: hive/add_files layouts routinely contain paths such as
-     * `a/data.parquet` and `b/data.parquet`. Candidate matching used `associateBy(basename)`, so one
-     * file replaced the other in the map; both files' rows were rewritten but only one source id
-     * retired, leaving duplicate rows. This fixture gives two real files the same basename in
-     * different subdirectories and pins path-exact matching.
+     * `a/data.parquet` and `b/data.parquet`. Candidate matching must use the exact resolved path
+     * so both source IDs are retired, without leaving duplicate rows.
      */
     @Test
     fun rewriteMatchesCandidateFilesByResolvedPathNotBasename() {

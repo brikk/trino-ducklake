@@ -13,11 +13,14 @@
  */
 package dev.brikk.ducklake.trino.plugin
 
-import com.google.common.collect.ImmutableMap
 import dev.brikk.ducklake.catalog.TestingDucklakeDuckDbQuackCatalogServer
 import dev.brikk.ducklake.catalog.TestingDucklakeLocalDuckDbCatalogFixture
 import dev.brikk.ducklake.catalog.TestingDucklakePostgreSqlCatalogServer
 import org.junit.jupiter.api.Assumptions
+import java.nio.file.Files
+import java.nio.file.Path
+import java.sql.Connection
+import java.sql.DriverManager
 
 /**
  * Manages the shared catalog-backend fixtures used by Trino plugin tests. Holds
@@ -31,6 +34,70 @@ import org.junit.jupiter.api.Assumptions
  * test process — flipping the system property mid-suite isn't supported.
  */
 object DucklakeTestCatalogEnvironment {
+    fun createLocalCatalog(database: Path, dataDirectory: Path): DucklakeConfig {
+        Files.createDirectories(dataDirectory)
+        createDuckdbConnection("ducklake:${database.toAbsolutePath()}", "$dataDirectory/").use { }
+        return DucklakeConfig().setCatalogDatabaseUrl("jdbc:duckdb:${database.toAbsolutePath()}")
+    }
+
+    fun createPostgresCatalog(databaseName: String, dataPath: String): DucklakeConfig {
+        val server = getServer()
+        server.createDatabase(databaseName)
+        createDuckdbConnection(server.getDuckDbAttachUri(databaseName), dataPath).use { }
+        return DucklakeConfig().setCatalogDatabaseUrl(server.getJdbcUrl(databaseName))
+            .setCatalogDatabaseUser(server.getUser()).setCatalogDatabasePassword(server.getPassword())
+            .setDataPath(dataPath)
+    }
+
+    fun createDuckdbConnection(extensions: List<String> = emptyList()): Connection {
+        val connection = DriverManager.getConnection("jdbc:duckdb:")
+        try {
+            connection.createStatement().use { statement ->
+                for (extension in extensions) {
+                    statement.execute("INSTALL $extension")
+                    statement.execute("LOAD $extension")
+                }
+            }
+            return connection
+        }
+        catch (failure: Throwable) {
+            io.airlift.testing.Closeables.closeAllSuppress(failure, connection)
+            throw failure
+        }
+    }
+
+    fun createDuckdbConnection(attachUri: String, dataPath: String, alias: String = "lake"): Connection {
+        val extensions = listOf("ducklake") + if (attachUri.startsWith("ducklake:postgres:")) listOf("postgres") else emptyList()
+        val connection = createDuckdbConnection(extensions)
+        try {
+            attachDucklake(connection, attachUri, dataPath, alias)
+            return connection
+        }
+        catch (failure: Throwable) {
+            io.airlift.testing.Closeables.closeAllSuppress(failure, connection)
+            throw failure
+        }
+    }
+
+    fun attachDucklake(connection: Connection, attachUri: String, dataPath: String, alias: String = "lake") {
+        connection.createStatement().use { statement ->
+            statement.execute(ducklakeAttachSql(attachUri, dataPath, alias))
+        }
+    }
+
+    /** Native fixtures must not silently migrate into a format the connector cannot write. */
+    fun ducklakeAttachSql(attachUri: String, dataPath: String, alias: String = "lake", metadataCatalog: String? = null): String =
+        "ATTACH '${attachUri.replace("'", "''")}' AS \"${alias.replace("\"", "\"\"")}\" " +
+            "(DATA_PATH '${dataPath.replace("'", "''")}', DUCKLAKE_VERSION '1.0', AUTOMATIC_MIGRATION FALSE" +
+            (metadataCatalog?.let { ", METADATA_CATALOG '${it.replace("'", "''")}'" } ?: "") + ")"
+
+    fun connectorProperties(config: DucklakeConfig): Map<String, String> = buildMap {
+        put("ducklake.catalog.database-url", requireNotNull(config.getCatalogDatabaseUrl()))
+        put("ducklake.data-path", requireNotNull(config.getDataPath()))
+        config.getCatalogDatabaseUser()?.let { put("ducklake.catalog.database-user", it) }
+        config.getCatalogDatabasePassword()?.let { put("ducklake.catalog.database-password", it) }
+    }
+
     private val LOCK = Any()
 
     @Volatile
@@ -56,8 +123,7 @@ object DucklakeTestCatalogEnvironment {
     /**
      * Returns the PG server. Only valid when the selected backend is POSTGRES
      * — callers that need backend-pluggable behaviour should branch on
-     * [selectedBackend] first. Kept as-is for source compatibility
-     * with the existing PG-only test code.
+     * [selectedBackend] first.
      */
     @JvmStatic
     @Throws(Exception::class)
@@ -105,21 +171,7 @@ object DucklakeTestCatalogEnvironment {
     @JvmStatic
     @Throws(Exception::class)
     fun getConnectorProperties(): Map<String, String> {
-        val config = createDucklakeConfig()
-        val properties = ImmutableMap.builder<String, String>()
-            .put("ducklake.catalog.database-url", requireNotNull(config.getCatalogDatabaseUrl()) { "catalogDatabaseUrl is null" })
-            .put("ducklake.data-path", requireNotNull(config.getDataPath()) { "dataPath is null" })
-
-        val catalogDatabaseUser = config.getCatalogDatabaseUser()
-        if (catalogDatabaseUser != null) {
-            properties.put("ducklake.catalog.database-user", catalogDatabaseUser)
-        }
-        val catalogDatabasePassword = config.getCatalogDatabasePassword()
-        if (catalogDatabasePassword != null) {
-            properties.put("ducklake.catalog.database-password", catalogDatabasePassword)
-        }
-
-        return properties.buildOrThrow()
+        return connectorProperties(createDucklakeConfig())
     }
 
     @Throws(Exception::class)
@@ -165,9 +217,6 @@ object DucklakeTestCatalogEnvironment {
                 result = quackServer
                 if (result == null) {
                     try {
-                        // The Quack CATALOG-plane DuckDB server (metadata backend). It needs no
-                        // DuckDB extension beyond core Quack; the trino_parity DATA-plane extension
-                        // moved to brikk/duckbridge and is no longer part of this repo.
                         result = TestingDucklakeDuckDbQuackCatalogServer()
                         quackServer = result
                         Runtime.getRuntime().addShutdownHook(Thread { result!!.close() })

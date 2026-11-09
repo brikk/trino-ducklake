@@ -14,9 +14,7 @@
 package dev.brikk.ducklake.trino.plugin
 
 import io.trino.testing.AbstractTestQueryFramework
-import io.trino.testing.DistributedQueryRunner
 import io.trino.testing.QueryRunner
-import io.trino.testing.TestingSession.testSessionBuilder
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.Test
@@ -36,9 +34,6 @@ import java.sql.DriverManager
  * each deletion at its OWN snapshot, and window accordingly — not attribute the whole batch to
  * `begin_snapshot` or infer the shape from `partial_max`.
  *
- * Recipe (probe-verified, same as TestDucklakePartialDeleteFilter): two deletes at adjacent
- * snapshots, consolidated by flush_inlined_data into one partial delete file.
- *
  * SAME_THREAD: single shared local catalog.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -55,11 +50,8 @@ class TestDucklakeChangeFeedPartialDelete : AbstractTestQueryFramework() {
         val lakeDb = rootDir.resolve("lake.db").toAbsolutePath().toString()
         val dataDir = rootDir.resolve("data").toAbsolutePath().toString()
 
-        DriverManager.getConnection("jdbc:duckdb:").use { conn ->
+        DucklakeTestCatalogEnvironment.createDuckdbConnection("ducklake:$lakeDb", "$dataDir/").use { conn ->
             conn.createStatement().use { st ->
-                st.execute("INSTALL ducklake")
-                st.execute("LOAD ducklake")
-                st.execute("ATTACH 'ducklake:$lakeDb' AS lake (DATA_PATH '$dataDir/', DUCKLAKE_VERSION '1.0', AUTOMATIC_MIGRATION FALSE)")
                 st.execute("USE lake")
                 st.execute("CREATE SCHEMA test_schema")
                 st.execute("CREATE TABLE test_schema.t AS SELECT i::INTEGER AS id FROM range(10) t(i)")
@@ -77,28 +69,15 @@ class TestDucklakeChangeFeedPartialDelete : AbstractTestQueryFramework() {
                     delSnapA = rs.getLong(1)
                     delSnapB = rs.getLong(2)
                 }
-                // Upstream flush-written delete files can carry embedded snapshots while leaving
-                // partial_max NULL. Before TR-7 the change feed then treated every position as if
-                // it were deleted at begin_snapshot.
+                // Upstream flush-written files use embedded snapshots even when partial_max is NULL.
                 st.executeUpdate("UPDATE ducklake_delete_file SET partial_max = NULL WHERE partial_max IS NOT NULL")
             }
         }
         check(delSnapB > delSnapA) { "expected partial_max ($delSnapB) > begin ($delSnapA)" }
 
-        val session = testSessionBuilder().setCatalog("ducklake").setSchema("test_schema").build()
-        val runner = DistributedQueryRunner.builder(session).build()
-        try {
-            runner.installPlugin(DucklakePlugin())
-            runner.createCatalog("ducklake", "ducklake", mapOf(
-                    "ducklake.catalog.database-url" to "jdbc:duckdb:$lakeDb",
-                    "ducklake.data-path" to "$dataDir/",
-                    "fs.hadoop.enabled" to "true"))
-            return runner
-        }
-        catch (e: Throwable) {
-            runner.close()
-            throw e
-        }
+        return DucklakeQueryRunner.builder()
+            .useCatalog(DucklakeConfig().setCatalogDatabaseUrl("jdbc:duckdb:$lakeDb").setDataPath("$dataDir/"))
+            .build()
     }
 
     @AfterAll

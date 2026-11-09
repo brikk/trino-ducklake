@@ -14,9 +14,7 @@
 package dev.brikk.ducklake.trino.plugin
 
 import io.trino.testing.AbstractTestQueryFramework
-import io.trino.testing.DistributedQueryRunner
 import io.trino.testing.QueryRunner
-import io.trino.testing.TestingSession.testSessionBuilder
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.Test
@@ -35,8 +33,7 @@ import java.util.zip.CRC32
 
 /**
  * End-to-end proof that the connector snapshot-filters a CONSOLIDATED ("partial") PUFFIN delete
- * file on read — the change that retired the last partial-file read gate (DESIGN-maintenance.md
- * § 6). A real PFA1 puffin container (`Magic Blob1 Blob2 Footer`) is written next to a
+ * file on read. A real PFA1 puffin container (`Magic Blob1 Blob2 Footer`) is written next to a
  * Trino-produced data file, each blob tagged with a `ducklake-snapshot-id`, and a
  * `ducklake_delete_file` row (format='puffin', partial_max) is injected. Reads at different
  * snapshots must apply only the deletions whose blob snapshot id is `<= read snapshot`.
@@ -58,34 +55,9 @@ class TestDucklakePuffinPartialDelete : AbstractTestQueryFramework() {
         val pg = DucklakeTestCatalogEnvironment.getServer()
         pgServer = pg
         dataDir = Files.createTempDirectory("ducklake-puffin-partial-")
-        pg.createDatabase(dbName)
-        DriverManager.getConnection("jdbc:duckdb:").use { conn ->
-            conn.createStatement().use { stmt ->
-                stmt.execute("INSTALL postgres")
-                stmt.execute("LOAD postgres")
-                stmt.execute("INSTALL ducklake")
-                stmt.execute("LOAD ducklake")
-                stmt.execute("ATTACH '" + pg.getDuckDbAttachUri(dbName) + "' AS lake "
-                        + "(DATA_PATH '" + dataDir.toAbsolutePath() + "/', DUCKLAKE_VERSION '1.0', AUTOMATIC_MIGRATION FALSE)")
-                stmt.execute("CREATE SCHEMA lake.test_schema")
-            }
-        }
-        val session = testSessionBuilder().setCatalog("ducklake").setSchema("test_schema").build()
-        val runner = DistributedQueryRunner.builder(session).build()
-        try {
-            runner.installPlugin(DucklakePlugin())
-            runner.createCatalog("ducklake", "ducklake", mapOf(
-                    "ducklake.catalog.database-url" to pg.getJdbcUrl(dbName),
-                    "ducklake.catalog.database-user" to pg.getUser(),
-                    "ducklake.catalog.database-password" to pg.getPassword(),
-                    "ducklake.data-path" to (dataDir.toAbsolutePath().toString() + "/"),
-                    "fs.hadoop.enabled" to "true"))
-            return runner
-        }
-        catch (e: Throwable) {
-            runner.close()
-            throw e
-        }
+        val config = DucklakeTestCatalogEnvironment.createPostgresCatalog(dbName, "$dataDir/")
+        dev.brikk.ducklake.catalog.JdbcDucklakeCatalog(config.toCatalogConfig()).use { it.createSchema("test_schema") }
+        return DucklakeQueryRunner.builder().useCatalog(config).build()
     }
 
     @AfterAll

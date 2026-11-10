@@ -29,6 +29,27 @@ toolchain is JDK 25; CI also executes tests on JDK 26. A test-JVM classpath conf
 is not proof of a deployed-plugin failure. Verify the selected target, actual runtime
 and resolved/packaged JARs before proposing a workaround.
 
+## Detekt metric advisories
+
+Prioritize readable, cohesive code over metric compliance. These enabled Detekt rules
+are advisory review signals, not mandatory limits or build/CI gates:
+- `MaxLineLength`: 120 characters.
+- `LongMethod`: 60 lines.
+- `CognitiveComplexMethod`: complexity 15.
+- `CyclomaticComplexMethod`: complexity 14.
+- `ReturnCount`: 4 returns, excluding guard clauses and lambda returns.
+
+Do not wrap lines, split methods, add trivial helpers, introduce mutable state, or
+rewrite clear control flow solely to clear an advisory. Extract helpers when they
+express meaningful responsibilities, isolate invariants, or remove duplication.
+Advisories require neither suppressions nor baseline entries; keep their findings visible.
+Do not mechanically undo existing refactorings: this is policy, not production behavior.
+
+Detekt 2.x uses per-rule `severity: warning` and `failOnSeverity = Error`. Keep all
+other rule enforcement unchanged; do not globally enable `ignoreFailures` or disable
+lint. If changing Detekt versions, verify warning-only findings pass and an unrelated
+error still fails; do not assume this configuration works on older Detekt versions.
+
 ## Testing discipline
 - Bound bulk maintenance reads with SQL-limited pages/batches and enforce reasonable
   per-call work budgets before destructive side effects. Do not materialize an

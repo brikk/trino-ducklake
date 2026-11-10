@@ -1,3 +1,4 @@
+import dev.detekt.gradle.extensions.FailOnSeverity
 import java.security.MessageDigest
 import org.gradle.jvm.toolchain.JavaLanguageVersion
 
@@ -29,6 +30,8 @@ version = "$trinoVersion-0.5.4" + if (r07CatalogCandidate != null) "-r07" else "
 // Idiomatic-Kotlin quality gate (detekt 2.0 runs on the JDK 25 daemon; jvmTarget is read
 // from the Kotlin compilerOptions). Custom src/test layout, so point detekt at it explicitly.
 detekt {
+    // Only errors gate builds; the five metric advisories remain visible as warnings.
+    failOnSeverity.set(FailOnSeverity.Error)
     buildUponDefaultConfig = true
     config.setFrom(rootProject.file("config/detekt/detekt.yml"))
     baseline = file("detekt-baseline.xml")

@@ -24,6 +24,23 @@ must match one target. See [Trino compatibility](TRINO-COMPATIBILITY.md). Experi
 final-1.1 planning remains a separate [opt-in mode](CATALOG-CANDIDATE.md), not a
 capability enabled by the dependency upgrade.
 
+## Detekt policy
+
+Detekt **2.0.0-alpha.3** reports five metric advisories as warnings: `MaxLineLength`
+(120 characters), `LongMethod` (60 lines), `CognitiveComplexMethod` (15),
+`CyclomaticComplexMethod` (14), and `ReturnCount` (4, excluding guard clauses and
+lambda returns). These are review signals, not mandatory limits. Findings remain
+visible in console/report output and must not be added to `detekt-baseline.xml`.
+The build fails at `FailOnSeverity.Error`; other rules retain their existing
+enforcement, with no global `ignoreFailures` or lint disablement.
+
+Follow the [agent readability guidance](../AGENTS.md#detekt-metric-advisories): do
+not reshape clear code just to satisfy a metric. Existing refactorings stay unless
+there is an independent reason to change them. When changing this setup, verify
+that violations of all five advisories pass and an unrelated error still fails.
+Older Detekt versions require checking their non-blocking mechanism, not copying
+the 2.x severity settings blindly.
+
 ## Tests
 
 Initialize the `ducklake` corpus submodule when running integration/corpus tests:

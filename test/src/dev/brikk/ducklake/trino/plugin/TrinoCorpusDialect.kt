@@ -47,7 +47,6 @@ object TrinoCorpusDialect {
     /** Engine-skip with a specific reason (never a failure). */
     data class Skip(val reason: String) : Gate
 
-    @Suppress("ReturnCount")
     fun gate(duckdbSql: String): Gate {
         val (pre, preSkip) = preprocess(duckdbSql)
         if (preSkip != null) return preSkip
@@ -93,7 +92,6 @@ object TrinoCorpusDialect {
      * explicit residual skips. Returns `(pre-body, null)` when ready to parse+transpile, or
      * `(null, Skip)` to short-circuit.
      */
-    @Suppress("ReturnCount")
     private fun preprocess(duckdbSql: String): Pair<String?, Skip?> {
         val trimmed = duckdbSql.trim().removeSuffix(";").trim()
         val body = stripLeadingCommentsAndWhitespace(trimmed)
